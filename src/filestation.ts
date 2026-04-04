@@ -133,13 +133,17 @@ export class FileStation {
 
     this.sid = data.data.sid;
 
-    // DSM returns device token as 'did' in the response
-    const did = data.data.did || data.data.device_id || data.data.device_token;
+    // DSM 7 returns the device token in different fields depending on version:
+    // - 'did' (older DSM)
+    // - 'device_id' (DSM 7.x)
+    // Note: data.data.device_id is the DEVICE TOKEN for re-login, not our UUID.
+    const deviceToken = data.data.did || data.data.device_id || data.data.device_token;
+    debugLog(`AUTH: extracted deviceToken=${redact(deviceToken)} from response`);
 
     return {
       sid: data.data.sid,
-      deviceId: params.device_id || this.config.deviceId || "",
-      deviceToken: did || undefined,
+      deviceId: this.config.deviceId || "",
+      deviceToken: deviceToken || undefined,
     };
   }
 

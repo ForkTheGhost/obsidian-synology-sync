@@ -1,7 +1,7 @@
 {
   "id": "synology-sync",
   "name": "Synology Sync",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "minAppVersion": "1.0.0",
   "description": "Sync your Obsidian vault to a Synology NAS folder. Supports QuickConnect IDs and direct connections via File Station API.",
   "author": "ForkTheGhost",
