@@ -1,8 +1,22 @@
 # Synology Sync for Obsidian
 
-> **Status: UNTESTED** - Code complete but never built or run. Needs npm install + build + manual testing with a real Synology NAS.
+> **Status: BETA** - Looking for testers. See quick install below.
 
 Sync your Obsidian vault directly to a Synology NAS folder using the File Station API. No WebDAV Server package required - uses the same API that DSM's File Station uses internally.
+
+## Beta Testing - Quick Install
+
+1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Obsidian's Community Plugins (Settings > Community plugins > Browse > search "BRAT")
+2. In BRAT settings, click **Add Beta Plugin**
+3. Enter: `ForkTheGhost/obsidian-synology-sync`
+4. Enable **Synology Sync** in Settings > Community plugins
+5. Configure in Settings > Synology Sync:
+   - Enter your **QuickConnect ID** (or switch to direct IP/hostname)
+   - Enter your DSM **username** and **password**
+   - Set the **remote folder path** (e.g. `/homes/username/Obsidian/MyVault`)
+6. Click **Sync now** or use the ribbon icon
+
+Works on desktop (Windows, Mac, Linux) and mobile (iOS, Android).
 
 ## Features
 
