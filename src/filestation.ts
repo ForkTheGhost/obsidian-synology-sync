@@ -94,10 +94,10 @@ export class FileStation {
 
     debugLog(`AUTH: baseUrl=${this.config.baseUrl}`);
     debugLog(`AUTH: user=${this.config.username}`);
-    debugLog(`AUTH: password=${redact(this.config.password)}`);
+    debugLog(`AUTH: password=${this.config.password ? "********" : "(empty)"}`);
     debugLog(`AUTH: config.deviceToken=${redact(this.config.deviceToken)}`);
     debugLog(`AUTH: config.deviceId=${redact(this.config.deviceId)}`);
-    debugLog(`AUTH: config.otpCode=${redact(this.config.otpCode)}`);
+    debugLog(`AUTH: config.otpCode=${this.config.otpCode ? "(set)" : "(empty)"}`);
     debugLog(`AUTH: params.device_id=${redact(params.device_id)}`);
     debugLog(`AUTH: params.device_name=${params.device_name || "(unset)"}`);
     debugLog(`AUTH: params.enable_device_token=${params.enable_device_token}`);
