@@ -55,18 +55,21 @@ export class FileStation {
       format: "sid",
     };
 
-    // If we have a saved device token, use it to skip 2FA
-    if (this.config.deviceId && this.config.deviceToken) {
-      params.device_id = this.config.deviceId;
+    // Always request device token capability
+    params.enable_device_token = "yes";
+
+    // If we have a saved device token, pass it as device_id to skip 2FA
+    if (this.config.deviceToken) {
+      params.device_id = this.config.deviceToken;
       params.device_name = "Obsidian Synology Sync";
-      params.device_token = this.config.deviceToken;
     }
-    // If an OTP code was provided (first-time 2FA), request a device token
+    // If an OTP code was provided (first-time 2FA setup)
     else if (this.config.otpCode) {
       params.otp_code = this.config.otpCode;
-      params.enable_device_token = "yes";
-      params.device_id = this.config.deviceId || crypto.randomUUID();
       params.device_name = "Obsidian Synology Sync";
+      if (this.config.deviceId) {
+        params.device_id = this.config.deviceId;
+      }
     }
 
     const resp = await requestUrl({
@@ -88,10 +91,13 @@ export class FileStation {
 
     this.sid = data.data.sid;
 
+    // DSM returns device token as 'did' in the response
+    const did = data.data.did || data.data.device_id || data.data.device_token;
+
     return {
       sid: data.data.sid,
       deviceId: params.device_id || this.config.deviceId || "",
-      deviceToken: data.data.did || data.data.device_token || undefined,
+      deviceToken: did || undefined,
     };
   }
 
