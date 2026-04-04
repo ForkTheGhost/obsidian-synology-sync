@@ -15,7 +15,7 @@ export interface FileInfo {
 }
 
 export interface FileStationConfig {
-  baseUrl: string; // e.g. https://192.168.1.201:5001
+  baseUrl: string; // e.g. https://nas.local:5001
   username: string;
   password: string;
 }

@@ -102,7 +102,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
         .setDesc("NAS IP address or hostname")
         .addText((text) =>
           text
-            .setPlaceholder("192.168.1.201")
+            .setPlaceholder("nas.local")
             .setValue(this.plugin.settings.host)
             .onChange(async (value) => {
               this.plugin.settings.host = value.trim();
