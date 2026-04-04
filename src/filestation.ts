@@ -22,6 +22,7 @@ export interface FileStationConfig {
   deviceId?: string;
   deviceToken?: string;
   otpCode?: string;
+  twoFaToken?: string; // JWT from initial 403 response, needed for OTP step
 }
 
 export interface LoginResult {
@@ -66,10 +67,28 @@ export class FileStation {
     }
     // If an OTP code was provided (first-time 2FA setup)
     else if (this.config.otpCode) {
+      // DSM 7 two-step auth: first we need the JWT token from a 403 response,
+      // then we send OTP + JWT token together.
+      if (!this.config.twoFaToken) {
+        debugLog("AUTH: Step 1 - getting 2FA JWT token from initial login attempt");
+        const step1Resp = await requestUrl({
+          url: this.url("", params),
+          method: "GET",
+        });
+        const step1Data = step1Resp.json;
+        if (!step1Data.success && step1Data.error?.code === 403) {
+          this.config.twoFaToken = step1Data.error.errors?.token;
+          debugLog(`AUTH: Got 2FA JWT token: ${redact(this.config.twoFaToken, 10)}`);
+        }
+      }
+
       params.otp_code = this.config.otpCode;
       params.device_name = "Obsidian Synology Sync";
       if (this.config.deviceId) {
         params.device_id = this.config.deviceId;
+      }
+      if (this.config.twoFaToken) {
+        params["2FA_token"] = this.config.twoFaToken;
       }
     }
 
