@@ -1,5 +1,5 @@
 import { Plugin, Notice } from "obsidian";
-import { FileStation, FileStationConfig } from "./filestation";
+import { FileStation, FileStationConfig, LoginResult } from "./filestation";
 import { resolveQuickConnect } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS } from "./settings";
@@ -77,29 +77,63 @@ export default class SynologySync extends Plugin {
     }
   }
 
-  async getFileStation(): Promise<FileStation> {
-    let config: FileStationConfig;
+  async buildConfig(otpCode?: string): Promise<FileStationConfig> {
+    let baseUrl: string;
 
     if (this.settings.connectionType === "quickconnect") {
       if (!this.settings.quickConnectId) throw new Error("QuickConnect ID not configured");
       const resolved = await resolveQuickConnect(this.settings.quickConnectId);
-      config = {
-        baseUrl: `${resolved.https ? "https" : "http"}://${resolved.host}:${resolved.port}`,
-        username: this.settings.username,
-        password: this.settings.password,
-      };
+      baseUrl = `${resolved.https ? "https" : "http"}://${resolved.host}:${resolved.port}`;
     } else {
       const proto = this.settings.https ? "https" : "http";
-      config = {
-        baseUrl: `${proto}://${this.settings.host}:${this.settings.port}`,
-        username: this.settings.username,
-        password: this.settings.password,
-      };
+      baseUrl = `${proto}://${this.settings.host}:${this.settings.port}`;
     }
 
+    return {
+      baseUrl,
+      username: this.settings.username,
+      password: this.settings.password,
+      deviceId: this.settings.deviceId || undefined,
+      deviceToken: this.settings.deviceToken || undefined,
+      otpCode,
+    };
+  }
+
+  async getFileStation(): Promise<FileStation> {
+    const config = await this.buildConfig();
     const fs = new FileStation(config);
-    await fs.login();
+    const result = await fs.login();
+
+    // If we got a new device token, save it
+    if (result.deviceToken && result.deviceToken !== this.settings.deviceToken) {
+      this.settings.deviceId = result.deviceId;
+      this.settings.deviceToken = result.deviceToken;
+      await this.saveSettings();
+    }
+
     return fs;
+  }
+
+  async trustDevice(otpCode: string): Promise<LoginResult> {
+    // Generate a stable device ID if we don't have one
+    if (!this.settings.deviceId) {
+      this.settings.deviceId = crypto.randomUUID();
+    }
+
+    const config = await this.buildConfig(otpCode);
+    config.deviceId = this.settings.deviceId;
+
+    const fs = new FileStation(config);
+    const result = await fs.login();
+    await fs.logout();
+
+    if (result.deviceToken) {
+      this.settings.deviceToken = result.deviceToken;
+    }
+    this.settings.deviceId = result.deviceId || this.settings.deviceId;
+    await this.saveSettings();
+
+    return result;
   }
 
   async runSync(overrideStrategy?: SynologySyncSettings["conflictStrategy"]): Promise<void> {

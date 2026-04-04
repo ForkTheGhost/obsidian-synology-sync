@@ -17,6 +17,8 @@ export interface SynologySyncSettings {
   excludePatterns: string;
   syncOnStartup: boolean;
   lastSync: number;
+  deviceId: string;
+  deviceToken: string;
 }
 
 export const DEFAULT_SETTINGS: SynologySyncSettings = {
@@ -34,6 +36,8 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   excludePatterns: "",
   syncOnStartup: false,
   lastSync: 0,
+  deviceId: "",
+  deviceToken: "",
 };
 
 export class SynologySyncSettingTab extends PluginSettingTab {
@@ -160,6 +164,53 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+
+    // 2FA device trust
+    if (this.plugin.settings.deviceToken) {
+      new Setting(containerEl)
+        .setName("2FA device trust")
+        .setDesc("This device is trusted - 2FA will be skipped on login")
+        .addButton((btn) =>
+          btn.setButtonText("Forget device").onClick(async () => {
+            this.plugin.settings.deviceId = "";
+            this.plugin.settings.deviceToken = "";
+            await this.plugin.saveSettings();
+            new Notice("Device trust cleared. You will need to enter a 2FA code on next sync.");
+            this.display();
+          })
+        );
+    } else {
+      new Setting(containerEl)
+        .setName("2FA setup")
+        .setDesc("If your DSM account has 2FA enabled, enter your authenticator code to trust this device")
+        .addText((text) =>
+          text.setPlaceholder("6-digit code").onChange(() => {})
+        )
+        .addButton((btn) =>
+          btn.setButtonText("Trust device").onClick(async () => {
+            const otpInput = containerEl.querySelector<HTMLInputElement>(
+              'input[placeholder="6-digit code"]'
+            );
+            const otpCode = otpInput?.value?.trim();
+            if (!otpCode || otpCode.length < 6) {
+              new Notice("Enter your 6-digit authenticator code");
+              return;
+            }
+            try {
+              new Notice("Authenticating with 2FA...");
+              const result = await this.plugin.trustDevice(otpCode);
+              if (result.deviceToken) {
+                new Notice("Device trusted! 2FA will be skipped on future logins.");
+              } else {
+                new Notice("Logged in but no device token returned. 2FA may still be required.");
+              }
+              this.display();
+            } catch (e) {
+              new Notice(`2FA failed: ${(e as Error).message}`);
+            }
+          })
+        );
+    }
 
     // Sync target
     containerEl.createEl("h3", { text: "Sync Target" });

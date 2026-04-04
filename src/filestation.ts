@@ -18,6 +18,15 @@ export interface FileStationConfig {
   baseUrl: string; // e.g. https://nas.local:5001
   username: string;
   password: string;
+  deviceId?: string;
+  deviceToken?: string;
+  otpCode?: string;
+}
+
+export interface LoginResult {
+  sid: string;
+  deviceId: string;
+  deviceToken?: string; // returned on first OTP login; save this for future logins
 }
 
 export class FileStation {
@@ -34,17 +43,34 @@ export class FileStation {
     return `${this.config.baseUrl}/webapi/entry.cgi?${qs.toString()}`;
   }
 
-  async login(): Promise<void> {
+  async login(): Promise<LoginResult> {
+    // Build login params
+    const params: Record<string, string> = {
+      api: "SYNO.API.Auth",
+      version: "7",
+      method: "login",
+      account: this.config.username,
+      passwd: this.config.password,
+      session: "FileStation",
+      format: "sid",
+    };
+
+    // If we have a saved device token, use it to skip 2FA
+    if (this.config.deviceId && this.config.deviceToken) {
+      params.device_id = this.config.deviceId;
+      params.device_name = "Obsidian Synology Sync";
+      params.device_token = this.config.deviceToken;
+    }
+    // If an OTP code was provided (first-time 2FA), request a device token
+    else if (this.config.otpCode) {
+      params.otp_code = this.config.otpCode;
+      params.enable_device_token = "yes";
+      params.device_id = this.config.deviceId || crypto.randomUUID();
+      params.device_name = "Obsidian Synology Sync";
+    }
+
     const resp = await requestUrl({
-      url: this.url("", {
-        api: "SYNO.API.Auth",
-        version: "7",
-        method: "login",
-        account: this.config.username,
-        passwd: this.config.password,
-        session: "FileStation",
-        format: "sid",
-      }),
+      url: this.url("", params),
       method: "GET",
     });
 
@@ -54,11 +80,19 @@ export class FileStation {
       const msg = code === 400 ? "Invalid credentials"
         : code === 401 ? "Account disabled"
         : code === 402 ? "Permission denied"
-        : code === 403 ? "2FA required"
+        : code === 403 ? "2FA code required"
+        : code === 404 ? "2FA code failed"
         : `Error code ${code}`;
       throw new Error(`Synology login failed: ${msg}`);
     }
+
     this.sid = data.data.sid;
+
+    return {
+      sid: data.data.sid,
+      deviceId: params.device_id || this.config.deviceId || "",
+      deviceToken: data.data.did || data.data.device_token || undefined,
+    };
   }
 
   async logout(): Promise<void> {
