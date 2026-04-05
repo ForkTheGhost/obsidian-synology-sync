@@ -42,7 +42,8 @@ export class FileStation {
   private url(api: string, params: Record<string, string>): string {
     const qs = new URLSearchParams(params);
     if (this.sid) qs.set("_sid", this.sid);
-    return `${this.config.baseUrl}/webapi/entry.cgi?${qs.toString()}`;
+    // Replace + with %20 - Synology's API doesn't accept + for spaces in path params
+    return `${this.config.baseUrl}/webapi/entry.cgi?${qs.toString().replace(/\+/g, "%20")}`;
   }
 
   async login(): Promise<LoginResult> {
