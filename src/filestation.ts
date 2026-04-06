@@ -290,13 +290,15 @@ export class FileStation {
         api: "SYNO.FileStation.CreateFolder",
         version: "2",
         method: "create",
-        folder_path: folderPath,
-        name,
+        folder_path: JSON.stringify([folderPath]),
+        name: JSON.stringify([name]),
+        force_parent: "true",
       }),
       method: "GET",
     });
-    // Ignore "already exists" errors
-    if (!resp.json.success && resp.json.error?.code !== 1100) {
+    // Ignore "already exists" (1100) and "folder exists" (414) errors
+    const errCode = resp.json.error?.code;
+    if (!resp.json.success && errCode !== 1100 && errCode !== 414) {
       throw new Error(`createFolder failed: ${JSON.stringify(resp.json.error)}`);
     }
   }
