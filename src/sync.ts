@@ -41,6 +41,9 @@ export class SyncEngine {
     this.excludePatterns = [
       /^\.obsidian\/plugins\/synology-sync\//,
       /^\.trash\//,
+      /^\.obsidian\/plugins\/text-extractor\/cache\//,
+      /\/\.git\//,
+      /^\.obsidian\/workspace-/,
       ...excludePatterns.map((p) => new RegExp(p)),
     ];
   }
@@ -162,11 +165,15 @@ export class SyncEngine {
       ? `${this.remotePath}/${parts.join("/")}`
       : this.remotePath;
 
-    // Ensure remote directory exists
+    // Ensure remote directory exists (createFolder already ignores "exists" errors)
     if (parts.length > 0) {
       let current = this.remotePath;
       for (const part of parts) {
-        await this.fs.createFolder(current, part);
+        try {
+          await this.fs.createFolder(current, part);
+        } catch {
+          // Folder may already exist -- safe to ignore
+        }
         current += "/" + part;
       }
     }
@@ -184,7 +191,11 @@ export class SyncEngine {
       const dirPath = parts.join("/");
       const existing = this.vault.getAbstractFileByPath(dirPath);
       if (!existing) {
-        await this.vault.createFolder(dirPath);
+        try {
+          await this.vault.createFolder(dirPath);
+        } catch {
+          // Folder may have been created by a concurrent download -- ignore
+        }
       }
     }
 
