@@ -1,9 +1,9 @@
-import { Plugin, Notice } from "obsidian";
+import { Plugin, Notice, Modal, App } from "obsidian";
 import { FileStation, FileStationConfig, LoginResult } from "./filestation";
 import { resolveQuickConnect } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS } from "./settings";
-import { debugLog } from "./debug";
+import { debugLog, getDebugLog } from "./debug";
 
 export default class SynologySync extends Plugin {
   settings: SynologySyncSettings = DEFAULT_SETTINGS;
@@ -198,8 +198,6 @@ export default class SynologySync extends Plugin {
     if (result.conflicts.length) parts.push(`${result.conflicts.length} conflicts`);
     if (result.errors.length) parts.push(`${result.errors.length} errors`);
 
-    new Notice(`Synology Sync: ${parts.join(", ")}`);
-
     if (result.errors.length > 0) {
       console.error("Synology Sync errors:", result.errors);
       debugLog(`--- ${result.errors.length} ERRORS ---`);
@@ -210,5 +208,81 @@ export default class SynologySync extends Plugin {
 
     // Log summary to debug log
     debugLog(`Sync complete: ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.errors.length} errors`);
+
+    // Clickable notice that opens the debug log
+    const frag = document.createDocumentFragment();
+    const text = frag.createEl("span", { text: `Synology Sync: ${parts.join(", ")}` });
+    if (result.errors.length > 0 || total > 0) {
+      frag.createEl("br");
+      frag.createEl("span", {
+        text: "Click for details",
+        attr: { style: "font-size: 0.85em; opacity: 0.7;" },
+      });
+    }
+    const notice = new Notice(frag, result.errors.length > 0 ? 10000 : 5000);
+    notice.noticeEl.style.cursor = "pointer";
+    notice.noticeEl.addEventListener("click", () => {
+      notice.hide();
+      new SyncLogModal(this.app, result, getDebugLog()).open();
+    });
+  }
+}
+
+class SyncLogModal extends Modal {
+  private result: SyncResult;
+  private log: string;
+
+  constructor(app: App, result: SyncResult, log: string) {
+    super(app);
+    this.result = result;
+    this.log = log;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Synology Sync Results" });
+
+    const r = this.result;
+
+    if (r.uploaded.length) {
+      contentEl.createEl("h4", { text: `Uploaded (${r.uploaded.length})` });
+      const ul = contentEl.createEl("ul");
+      for (const p of r.uploaded.slice(0, 50)) ul.createEl("li", { text: p });
+      if (r.uploaded.length > 50) ul.createEl("li", { text: `... and ${r.uploaded.length - 50} more` });
+    }
+
+    if (r.downloaded.length) {
+      contentEl.createEl("h4", { text: `Downloaded (${r.downloaded.length})` });
+      const ul = contentEl.createEl("ul");
+      for (const p of r.downloaded.slice(0, 50)) ul.createEl("li", { text: p });
+      if (r.downloaded.length > 50) ul.createEl("li", { text: `... and ${r.downloaded.length - 50} more` });
+    }
+
+    if (r.deleted.length) {
+      contentEl.createEl("h4", { text: `Deleted (${r.deleted.length})` });
+      const ul = contentEl.createEl("ul");
+      for (const p of r.deleted.slice(0, 50)) ul.createEl("li", { text: p });
+      if (r.deleted.length > 50) ul.createEl("li", { text: `... and ${r.deleted.length - 50} more` });
+    }
+
+    if (r.errors.length) {
+      contentEl.createEl("h4", { text: `Errors (${r.errors.length})`, attr: { style: "color: var(--text-error);" } });
+      const ul = contentEl.createEl("ul");
+      for (const e of r.errors.slice(0, 100)) {
+        ul.createEl("li", { text: `${e.path}: ${e.error}`, attr: { style: "font-size: 0.9em;" } });
+      }
+      if (r.errors.length > 100) ul.createEl("li", { text: `... and ${r.errors.length - 100} more` });
+    }
+
+    contentEl.createEl("h4", { text: "Debug Log" });
+    const pre = contentEl.createEl("pre", {
+      attr: { style: "max-height: 300px; overflow: auto; font-size: 0.8em; padding: 8px; background: var(--background-secondary); border-radius: 4px;" },
+    });
+    pre.createEl("code", { text: this.log || "(empty)" });
+  }
+
+  onClose() {
+    this.contentEl.empty();
   }
 }
