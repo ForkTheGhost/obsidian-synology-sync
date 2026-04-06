@@ -3,6 +3,7 @@ import { FileStation, FileStationConfig, LoginResult } from "./filestation";
 import { resolveQuickConnect } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS } from "./settings";
+import { debugLog } from "./debug";
 
 export default class SynologySync extends Plugin {
   settings: SynologySyncSettings = DEFAULT_SETTINGS;
@@ -201,6 +202,13 @@ export default class SynologySync extends Plugin {
 
     if (result.errors.length > 0) {
       console.error("Synology Sync errors:", result.errors);
+      debugLog(`--- ${result.errors.length} ERRORS ---`);
+      for (const err of result.errors) {
+        debugLog(`  ERROR: ${err.path} - ${err.error}`);
+      }
     }
+
+    // Log summary to debug log
+    debugLog(`Sync complete: ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.errors.length} errors`);
   }
 }

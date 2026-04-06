@@ -1,5 +1,6 @@
 import { TFile, TFolder, Vault, Notice } from "obsidian";
 import { FileStation, FileInfo } from "./filestation";
+import { debugLog } from "./debug";
 
 interface SyncItem {
   relativePath: string;
@@ -141,7 +142,9 @@ export class SyncEngine {
           }
         }
       } catch (e) {
-        result.errors.push({ path, error: (e as Error).message });
+        const errMsg = (e as Error).message;
+        result.errors.push({ path, error: errMsg });
+        debugLog(`SYNC ERROR: ${path} - ${errMsg}`);
       }
     }
 
