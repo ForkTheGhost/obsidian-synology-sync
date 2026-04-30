@@ -38,19 +38,31 @@ interface ResolvedNAS {
   https: boolean;
 }
 
+interface QCCandidate extends ResolvedNAS {
+  allowUnverifiedFallback: boolean;
+}
+
 const PING_TIMEOUT_MS = 3000;
 
 function normalizeQuickConnectId(quickConnectId: string): string {
   return quickConnectId.trim().toLowerCase();
 }
 
-function addCandidate(candidates: ResolvedNAS[], candidate: ResolvedNAS): void {
+function addCandidate(candidates: QCCandidate[], candidate: QCCandidate): void {
   if (!candidate.host || !candidate.port) return;
   const key = `${candidate.https ? "https" : "http"}://${candidate.host.toLowerCase()}:${candidate.port}`;
   const exists = candidates.some((c) =>
     `${c.https ? "https" : "http"}://${c.host.toLowerCase()}:${c.port}` === key
   );
   if (!exists) candidates.push(candidate);
+}
+
+function toResolvedNAS(candidate: QCCandidate): ResolvedNAS {
+  return {
+    host: candidate.host,
+    port: candidate.port,
+    https: candidate.https,
+  };
 }
 
 async function requestUrlWithTimeout(url: string, timeoutMs: number): Promise<RequestUrlResponse> {
@@ -106,7 +118,7 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
   // Build candidate list ordered by preference.
   // SmartDNS hostnames have valid wildcard certs under *.direct.quickconnect.to,
   // so HTTPS works without self-signed cert errors (even for LAN IPs).
-  const candidates: ResolvedNAS[] = [];
+  const candidates: QCCandidate[] = [];
 
   for (const info of results) {
     if (info.errno) continue;
@@ -121,6 +133,7 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
         host: `${normalizedQuickConnectId}.${info.env.relay_region}.quickconnect.to`,
         port: 443,
         https: true,
+        allowUnverifiedFallback: false,
       });
     }
 
@@ -128,41 +141,41 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
     //    e.g. 192-168-1-201.MY-NAS.direct.quickconnect.to
     if (dns?.lan) {
       for (const lanHost of dns.lan) {
-        addCandidate(candidates, { host: lanHost, port: svc.port, https: true });
+        addCandidate(candidates, { host: lanHost, port: svc.port, https: true, allowUnverifiedFallback: true });
       }
     }
 
     // 3. SmartDNS external hostname (valid cert + WAN)
     if (dns?.external) {
       const port = svc.ext_port || svc.port;
-      addCandidate(candidates, { host: dns.external, port, https: true });
+      addCandidate(candidates, { host: dns.external, port, https: true, allowUnverifiedFallback: true });
     }
 
     // 4. SmartDNS base host (fallback)
     if (dns?.host) {
-      addCandidate(candidates, { host: dns.host, port: svc.port, https: true });
+      addCandidate(candidates, { host: dns.host, port: svc.port, https: true, allowUnverifiedFallback: true });
     }
 
     // 5. HTTPS relay (tunnel through Synology's relay servers)
     if (svc.https_ip && svc.https_port) {
-      addCandidate(candidates, { host: svc.https_ip, port: svc.https_port, https: true });
+      addCandidate(candidates, { host: svc.https_ip, port: svc.https_port, https: true, allowUnverifiedFallback: true });
     }
 
     // 6. FQDN / DDNS
     if (srv.fqdn && srv.fqdn !== "NULL") {
       const port = svc.ext_port || svc.port;
-      addCandidate(candidates, { host: srv.fqdn, port, https: true });
+      addCandidate(candidates, { host: srv.fqdn, port, https: true, allowUnverifiedFallback: true });
     }
     if (srv.ddns && srv.ddns !== "NULL") {
       const port = svc.ext_port || svc.port;
-      addCandidate(candidates, { host: srv.ddns, port, https: true });
+      addCandidate(candidates, { host: srv.ddns, port, https: true, allowUnverifiedFallback: true });
     }
 
     // 7. Raw LAN IPs over HTTP (no cert needed, but unencrypted)
     if (srv.interface) {
       for (const iface of srv.interface) {
         if (iface.ip) {
-          addCandidate(candidates, { host: iface.ip, port: svc.port, https: false });
+          addCandidate(candidates, { host: iface.ip, port: svc.port, https: false, allowUnverifiedFallback: true });
         }
       }
     }
@@ -171,7 +184,7 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
     if (srv.external?.ip && srv.external.ip !== "0.0.0.0") {
       const port = svc.ext_port || svc.port;
       if (port) {
-        addCandidate(candidates, { host: srv.external.ip, port, https: false });
+        addCandidate(candidates, { host: srv.external.ip, port, https: false, allowUnverifiedFallback: true });
       }
     }
   }
@@ -194,7 +207,7 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
       const r = await requestUrlWithTimeout(url, PING_TIMEOUT_MS);
       if (r.status === 200 && r.json?.success) {
         debugLog(`QC: reachable: ${proto}://${c.host}:${c.port}`);
-        return c;
+        return toResolvedNAS(c);
       }
       debugLog(`QC: not reachable (status ${r.status}): ${c.host}`);
     } catch {
@@ -202,6 +215,14 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
     }
   }
 
-  // If ping-pong fails on all, return first candidate as best guess
-  return candidates[0];
+  // If ping-pong fails on all, return the first API-shaped candidate as best
+  // guess. The regional browser portal can return HTML for /webapi calls, so it
+  // must not be used unless ping-pong explicitly proves it works as an API host.
+  const fallback = candidates.find((c) => c.allowUnverifiedFallback);
+  if (fallback) {
+    debugLog(`QC: no candidate passed ping-pong; using best API fallback: ${fallback.https ? "https" : "http"}://${fallback.host}:${fallback.port}`);
+    return toResolvedNAS(fallback);
+  }
+
+  throw new Error(`QuickConnect could not find a reachable API endpoint for "${quickConnectId}"`);
 }

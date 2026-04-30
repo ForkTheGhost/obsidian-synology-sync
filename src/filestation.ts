@@ -1,4 +1,5 @@
-import { requestUrl, RequestUrlResponse } from "obsidian";
+import { requestUrl } from "obsidian";
+import type { RequestUrlResponse } from "obsidian";
 import { debugLog, redact } from "./debug";
 
 export interface FileInfo {
@@ -29,6 +30,11 @@ export interface LoginResult {
   sid: string;
   deviceId: string;
   deviceToken?: string; // returned on first OTP login; save this for future logins
+}
+
+function isLikelyHtmlResponse(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /invalid json/i.test(msg) || /unexpected token\s*</i.test(msg) || msg.includes("<!DOCTYPE") || msg.includes("<html");
 }
 
 export class FileStation {
@@ -84,12 +90,26 @@ export class FileStation {
     debugLog(`AUTH: params.enable_device_token=${params.enable_device_token}`);
     debugLog(`AUTH: params.otp_code=${params.otp_code ? "set" : "(unset)"}`);
 
-    const resp = await requestUrl({
-      url: this.url("", params),
-      method: "GET",
-    });
+    let resp: RequestUrlResponse;
+    try {
+      resp = await requestUrl({
+        url: this.url("", params),
+        method: "GET",
+      });
+    } catch (e) {
+      if (isLikelyHtmlResponse(e)) {
+        debugLog("AUTH: login endpoint returned HTML/non-JSON; selected baseUrl is not a File Station API endpoint");
+        throw new Error("Synology login failed: selected QuickConnect endpoint returned HTML instead of File Station API JSON");
+      }
+      debugLog(`AUTH: request failed: ${(e as Error).message}`);
+      throw e;
+    }
 
     const data = resp.json;
+    if (!data || typeof data !== "object") {
+      debugLog("AUTH: response was not JSON object");
+      throw new Error("Synology login failed: File Station API returned a non-JSON response");
+    }
     debugLog(`AUTH: response success=${data.success}`);
     if (data.success) {
       const keys = Object.keys(data.data || {});

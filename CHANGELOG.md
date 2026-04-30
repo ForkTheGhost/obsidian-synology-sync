@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### fix: Avoid QuickConnect portal HTML auth fallback — closes #13
+
+Prevents browser-only regional QuickConnect portal candidates from being used as unverified File Station API fallbacks and reports HTML/non-JSON auth responses clearly.
+
 ## 2026.04.30.1
 
 ### fix: QuickConnect regional portal fallback — closes #8
