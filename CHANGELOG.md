@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### fix: Use BRAT-compatible three-part CalVer — closes #17
+
+Switches release metadata from four-part `YYYY.MM.DD.N` versions to three-part `YYYY.MDD.N` versions so BRAT detects updates reliably.
+
 ### fix: Avoid QuickConnect portal HTML auth fallback — closes #13
 
 Prevents browser-only regional QuickConnect portal candidates from being used as unverified File Station API fallbacks and reports HTML/non-JSON auth responses clearly.

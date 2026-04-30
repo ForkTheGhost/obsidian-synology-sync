@@ -1,6 +1,6 @@
 {
   "name": "obsidian-synology-sync",
-  "version": "2026.04.30.1",
+  "version": "2026.430.1",
   "description": "Sync Obsidian vault to Synology NAS via File Station API",
   "main": "main.js",
   "scripts": {
