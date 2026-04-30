@@ -59,7 +59,7 @@ describe("resolveQuickConnect", () => {
     });
   });
 
-  it("does not use the regional portal as the unverified API fallback", async () => {
+  it("fails clearly when no candidate passes ping-pong", async () => {
     mockedRequestUrl
       .mockResolvedValueOnce(quickConnectResponse())
       .mockResolvedValue({
@@ -67,12 +67,8 @@ describe("resolveQuickConnect", () => {
         json: { success: false },
       });
 
-    const resolved = await resolveQuickConnect("Example-NAS");
-
-    expect(resolved).toEqual({
-      host: "192-0-2-10.EXAMPLE-NAS.direct.quickconnect.to",
-      port: 5001,
-      https: true,
-    });
+    await expect(resolveQuickConnect("Example-NAS")).rejects.toThrow(
+      'QuickConnect could not find a reachable API endpoint for "Example-NAS"'
+    );
   });
 });

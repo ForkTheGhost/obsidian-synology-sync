@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### fix: Stop QuickConnect unreachable fallback — closes #19
+
+Stops the resolver from attempting auth against candidates that already failed ping-pong and reports a clear no-reachable-endpoint error instead.
+
 ### fix: Use BRAT-compatible three-part CalVer — closes #17
 
 Switches release metadata from four-part `YYYY.MM.DD.N` versions to three-part `YYYY.MDD.N` versions so BRAT detects updates reliably.
