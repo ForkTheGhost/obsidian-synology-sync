@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### fix: Use entry.cgi with timeout for QuickConnect relay auth — closes #23
+
+Switches relay login to the DSM web-client `entry.cgi` auth endpoint and bounds relay login requests with explicit timeout logging.
+
 ## 2026.430.3
 
 ### fix: Use QuickConnect relay auth for off-network access — closes #21

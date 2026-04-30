@@ -46,10 +46,34 @@ describe("FileStation", () => {
       throw: false,
     });
     expect(mockedRequestUrl).toHaveBeenNthCalledWith(2, {
-      url: "https://example-nas.us5.quickconnect.to:443/webapi/auth.cgi",
+      url: "https://example-nas.us5.quickconnect.to:443/webapi/entry.cgi",
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
       body: expect.stringContaining("api=SYNO.API.Auth"),
     });
+    expect(mockedRequestUrl).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      body: expect.stringContaining("client=browser"),
+    }));
+  });
+
+  it("fails clearly when relay auth times out", async () => {
+    jest.useFakeTimers();
+    mockedRequestUrl
+      .mockRejectedValueOnce(new Error("invalid json '<'"))
+      .mockReturnValueOnce(new Promise(() => undefined));
+
+    const fs = new FileStation({
+      baseUrl: "https://example-nas.us5.quickconnect.to:443",
+      username: "user",
+      password: "pass",
+      quickConnectRelay: true,
+    });
+
+    const login = fs.login();
+    const expectation = expect(login).rejects.toThrow("relay entry.cgi login request timed out");
+    await jest.runAllTimersAsync();
+
+    await expectation;
+    jest.useRealTimers();
   });
 });

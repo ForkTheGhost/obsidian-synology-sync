@@ -33,9 +33,25 @@ export interface LoginResult {
   deviceToken?: string; // returned on first OTP login; save this for future logins
 }
 
+const LOGIN_TIMEOUT_MS = 10000;
+
 function isLikelyHtmlResponse(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return /invalid json/i.test(msg) || /unexpected token\s*</i.test(msg) || msg.includes("<!DOCTYPE") || msg.includes("<html");
+}
+
+async function requestUrlWithTimeout(options: Parameters<typeof requestUrl>[0], timeoutMs: number, label: string): Promise<RequestUrlResponse> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      requestUrl(options),
+      new Promise<RequestUrlResponse>((_, reject) => {
+        timeoutId = globalThis.setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
+  }
 }
 
 export class FileStation {
@@ -79,29 +95,40 @@ export class FileStation {
 
   private async requestLogin(params: Record<string, string>): Promise<RequestUrlResponse> {
     if (!this.config.quickConnectRelay) {
-      return requestUrl({
+      return requestUrlWithTimeout({
         url: this.url("", params),
         method: "GET",
-      });
+      }, LOGIN_TIMEOUT_MS, "direct login request");
     }
 
-    debugLog("AUTH: QuickConnect relay mode; using portal-compatible POST auth flow");
+    debugLog("AUTH: QuickConnect relay mode; using entry.cgi POST auth flow");
     try {
-      await requestUrl({
+      debugLog("AUTH: relay portal bootstrap start");
+      await requestUrlWithTimeout({
         url: `${this.config.baseUrl}/`,
         method: "GET",
         throw: false,
-      });
-    } catch {
-      debugLog("AUTH: relay portal bootstrap returned non-JSON/HTML; continuing to auth endpoint");
+      }, LOGIN_TIMEOUT_MS, "relay portal bootstrap");
+      debugLog("AUTH: relay portal bootstrap complete");
+    } catch (e) {
+      debugLog(`AUTH: relay portal bootstrap did not return JSON (${(e as Error).message}); continuing to entry.cgi auth`);
     }
 
-    return requestUrl({
-      url: `${this.config.baseUrl}/webapi/auth.cgi`,
+    const relayParams = {
+      ...params,
+      logintype: "local",
+      client: "browser",
+      enable_syno_token: "yes",
+      rememberme: "0",
+    };
+
+    debugLog("AUTH: relay entry.cgi login request start");
+    return requestUrlWithTimeout({
+      url: `${this.config.baseUrl}/webapi/entry.cgi`,
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-      body: new URLSearchParams(params).toString(),
-    });
+      body: new URLSearchParams(relayParams).toString(),
+    }, LOGIN_TIMEOUT_MS, "relay entry.cgi login request");
   }
 
   async login(): Promise<LoginResult> {
