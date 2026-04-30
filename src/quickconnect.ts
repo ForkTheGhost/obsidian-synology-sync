@@ -36,6 +36,7 @@ interface ResolvedNAS {
   host: string;
   port: number;
   https: boolean;
+  relay?: boolean;
 }
 
 interface QCCandidate extends ResolvedNAS {
@@ -62,6 +63,7 @@ function toResolvedNAS(candidate: QCCandidate): ResolvedNAS {
     host: candidate.host,
     port: candidate.port,
     https: candidate.https,
+    relay: candidate.kind === "portal" || undefined,
   };
 }
 
@@ -213,6 +215,12 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
     } catch {
       debugLog(`QC: not reachable (timeout/error): ${c.host}`);
     }
+  }
+
+  const relay = candidates.find((c) => c.kind === "portal");
+  if (relay) {
+    debugLog(`QC: no direct candidate passed ping-pong; using QuickConnect relay portal: https://${relay.host}:${relay.port}`);
+    return toResolvedNAS(relay);
   }
 
   debugLog("QC: no candidate passed ping-pong; no reachable File Station API endpoint found");

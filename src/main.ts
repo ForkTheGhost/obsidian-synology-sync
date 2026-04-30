@@ -113,11 +113,14 @@ export default class SynologySync extends Plugin {
 
   async buildConfig(otpCode?: string): Promise<FileStationConfig> {
     let baseUrl: string;
+    let quickConnectRelay = false;
 
     if (this.settings.connectionType === "quickconnect") {
       if (!this.settings.quickConnectId) throw new Error("QuickConnect ID not configured");
       const resolved = await resolveQuickConnect(this.settings.quickConnectId);
       baseUrl = `${resolved.https ? "https" : "http"}://${resolved.host}:${resolved.port}`;
+      quickConnectRelay = !!resolved.relay;
+      debugLog(`QC: selected ${resolved.relay ? "relay" : "direct"} endpoint`);
     } else {
       const proto = this.settings.https ? "https" : "http";
       baseUrl = `${proto}://${this.settings.host}:${this.settings.port}`;
@@ -130,6 +133,7 @@ export default class SynologySync extends Plugin {
       deviceId: this.settings.deviceId || undefined,
       deviceToken: this.settings.deviceToken || undefined,
       otpCode,
+      quickConnectRelay,
     };
   }
 

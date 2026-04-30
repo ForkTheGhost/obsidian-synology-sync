@@ -51,6 +51,7 @@ describe("resolveQuickConnect", () => {
       host: "example-nas.us5.quickconnect.to",
       port: 443,
       https: true,
+      relay: true,
     });
     expect(mockedRequestUrl).toHaveBeenNthCalledWith(2, {
       url: "https://example-nas.us5.quickconnect.to:443/webman/pingpong.cgi?action=cors&quickconnect=true",
@@ -59,7 +60,7 @@ describe("resolveQuickConnect", () => {
     });
   });
 
-  it("fails clearly when no candidate passes ping-pong", async () => {
+  it("uses the regional relay portal when no direct candidate passes ping-pong", async () => {
     mockedRequestUrl
       .mockResolvedValueOnce(quickConnectResponse())
       .mockResolvedValue({
@@ -67,8 +68,11 @@ describe("resolveQuickConnect", () => {
         json: { success: false },
       });
 
-    await expect(resolveQuickConnect("Example-NAS")).rejects.toThrow(
-      'QuickConnect could not find a reachable API endpoint for "Example-NAS"'
-    );
+    await expect(resolveQuickConnect("Example-NAS")).resolves.toEqual({
+      host: "example-nas.us5.quickconnect.to",
+      port: 443,
+      https: true,
+      relay: true,
+    });
   });
 });

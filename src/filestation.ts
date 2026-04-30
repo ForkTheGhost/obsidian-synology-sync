@@ -24,6 +24,7 @@ export interface FileStationConfig {
   deviceToken?: string;
   otpCode?: string;
   twoFaToken?: string; // JWT from initial 403 response, needed for OTP step
+  quickConnectRelay?: boolean;
 }
 
 export interface LoginResult {
@@ -52,8 +53,7 @@ export class FileStation {
     return `${this.config.baseUrl}/webapi/entry.cgi?${qs.toString().replace(/\+/g, "%20")}`;
   }
 
-  async login(): Promise<LoginResult> {
-    // Build login params
+  private buildLoginParams(): Record<string, string> {
     const params: Record<string, string> = {
       api: "SYNO.API.Auth",
       version: "7",
@@ -64,20 +64,48 @@ export class FileStation {
       format: "sid",
     };
 
-    // Always request device token capability
     params.enable_device_token = "yes";
 
-    // If we have a saved device token, pass it as device_id to skip 2FA
     if (this.config.deviceToken) {
       params.device_id = this.config.deviceToken;
       params.device_name = "Obsidian Synology Sync";
-    }
-    // If an OTP code was provided (first-time 2FA setup)
-    // Do NOT send device_id here - let DSM generate one and return it
-    else if (this.config.otpCode) {
+    } else if (this.config.otpCode) {
       params.otp_code = this.config.otpCode;
       params.device_name = "Obsidian Synology Sync";
     }
+
+    return params;
+  }
+
+  private async requestLogin(params: Record<string, string>): Promise<RequestUrlResponse> {
+    if (!this.config.quickConnectRelay) {
+      return requestUrl({
+        url: this.url("", params),
+        method: "GET",
+      });
+    }
+
+    debugLog("AUTH: QuickConnect relay mode; using portal-compatible POST auth flow");
+    try {
+      await requestUrl({
+        url: `${this.config.baseUrl}/`,
+        method: "GET",
+        throw: false,
+      });
+    } catch {
+      debugLog("AUTH: relay portal bootstrap returned non-JSON/HTML; continuing to auth endpoint");
+    }
+
+    return requestUrl({
+      url: `${this.config.baseUrl}/webapi/auth.cgi`,
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+      body: new URLSearchParams(params).toString(),
+    });
+  }
+
+  async login(): Promise<LoginResult> {
+    const params = this.buildLoginParams();
 
     debugLog(`AUTH: baseUrl=${this.config.baseUrl}`);
     debugLog(`AUTH: user=${this.config.username}`);
@@ -87,15 +115,13 @@ export class FileStation {
     debugLog(`AUTH: config.otpCode=${this.config.otpCode ? "(set)" : "(empty)"}`);
     debugLog(`AUTH: params.device_id=${redact(params.device_id)}`);
     debugLog(`AUTH: params.device_name=${params.device_name || "(unset)"}`);
+    debugLog(`AUTH: quickConnectRelay=${this.config.quickConnectRelay ? "true" : "false"}`);
     debugLog(`AUTH: params.enable_device_token=${params.enable_device_token}`);
     debugLog(`AUTH: params.otp_code=${params.otp_code ? "set" : "(unset)"}`);
 
     let resp: RequestUrlResponse;
     try {
-      resp = await requestUrl({
-        url: this.url("", params),
-        method: "GET",
-      });
+      resp = await this.requestLogin(params);
     } catch (e) {
       if (isLikelyHtmlResponse(e)) {
         debugLog("AUTH: login endpoint returned HTML/non-JSON; selected baseUrl is not a File Station API endpoint");
