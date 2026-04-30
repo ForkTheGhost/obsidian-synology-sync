@@ -6,6 +6,10 @@
 
 Adds the regional QuickConnect portal host returned by Synology relay metadata to the resolver candidate list, deduplicates candidates, and enforces the intended per-candidate ping timeout.
 
+### docs: Add contributing requirements — closes #10
+
+Adds contributor rules matching the issue-first, architecture-impact, changelog, and CI gates used by `ForkTheGhost/Skills`.
+
 ## 2026.04.24.2
 
 ### Fixed
