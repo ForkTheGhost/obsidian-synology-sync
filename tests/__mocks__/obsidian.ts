@@ -83,3 +83,12 @@ export class DataAdapter {
   async remove(_p: string): Promise<void> {}
   async rename(_from: string, _to: string): Promise<void> {}
 }
+
+export interface RequestUrlResponse {
+  status: number;
+  json?: any;
+  text?: string;
+  arrayBuffer?: ArrayBuffer;
+}
+
+export const requestUrl = jest.fn();

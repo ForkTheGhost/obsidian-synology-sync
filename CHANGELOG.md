@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### fix: QuickConnect regional portal fallback — closes #8
+
+Adds the regional QuickConnect portal host returned by Synology relay metadata to the resolver candidate list, deduplicates candidates, and enforces the intended per-candidate ping timeout.
+
 ## 2026.04.24.2
 
 ### Fixed

@@ -1,4 +1,5 @@
 import { requestUrl } from "obsidian";
+import type { RequestUrlResponse } from "obsidian";
 import { debugLog } from "./debug";
 
 interface QCServerInfo {
@@ -37,8 +38,38 @@ interface ResolvedNAS {
   https: boolean;
 }
 
+const PING_TIMEOUT_MS = 3000;
+
+function normalizeQuickConnectId(quickConnectId: string): string {
+  return quickConnectId.trim().toLowerCase();
+}
+
+function addCandidate(candidates: ResolvedNAS[], candidate: ResolvedNAS): void {
+  if (!candidate.host || !candidate.port) return;
+  const key = `${candidate.https ? "https" : "http"}://${candidate.host.toLowerCase()}:${candidate.port}`;
+  const exists = candidates.some((c) =>
+    `${c.https ? "https" : "http"}://${c.host.toLowerCase()}:${c.port}` === key
+  );
+  if (!exists) candidates.push(candidate);
+}
+
+async function requestUrlWithTimeout(url: string, timeoutMs: number): Promise<RequestUrlResponse> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      requestUrl({ url, method: "GET", throw: false }),
+      new Promise<RequestUrlResponse>((_, reject) => {
+        timeoutId = globalThis.setTimeout(() => reject(new Error("QuickConnect ping timed out")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
+  }
+}
+
 export async function resolveQuickConnect(quickConnectId: string): Promise<ResolvedNAS> {
   debugLog(`QC: resolving "${quickConnectId}"`);
+  const normalizedQuickConnectId = normalizeQuickConnectId(quickConnectId);
   const body = JSON.stringify([
     {
       version: 1,
@@ -83,54 +114,64 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
     const srv = info.server;
     const dns = info.smartdns;
 
-    // 1. SmartDNS LAN hostnames (best: valid cert + LAN speed)
+    // 1. Regional QuickConnect portal host. This is the same hostname Synology
+    // redirects browsers to and can remain reachable when direct candidates are not.
+    if (info.env?.relay_region) {
+      addCandidate(candidates, {
+        host: `${normalizedQuickConnectId}.${info.env.relay_region}.quickconnect.to`,
+        port: 443,
+        https: true,
+      });
+    }
+
+    // 2. SmartDNS LAN hostnames (best: valid cert + LAN speed)
     //    e.g. 192-168-1-201.MY-NAS.direct.quickconnect.to
     if (dns?.lan) {
       for (const lanHost of dns.lan) {
-        candidates.push({ host: lanHost, port: svc.port, https: true });
+        addCandidate(candidates, { host: lanHost, port: svc.port, https: true });
       }
     }
 
-    // 2. SmartDNS external hostname (valid cert + WAN)
+    // 3. SmartDNS external hostname (valid cert + WAN)
     if (dns?.external) {
       const port = svc.ext_port || svc.port;
-      candidates.push({ host: dns.external, port, https: true });
+      addCandidate(candidates, { host: dns.external, port, https: true });
     }
 
-    // 3. SmartDNS base host (fallback)
+    // 4. SmartDNS base host (fallback)
     if (dns?.host) {
-      candidates.push({ host: dns.host, port: svc.port, https: true });
+      addCandidate(candidates, { host: dns.host, port: svc.port, https: true });
     }
 
-    // 4. HTTPS relay (tunnel through Synology's relay servers)
+    // 5. HTTPS relay (tunnel through Synology's relay servers)
     if (svc.https_ip && svc.https_port) {
-      candidates.push({ host: svc.https_ip, port: svc.https_port, https: true });
+      addCandidate(candidates, { host: svc.https_ip, port: svc.https_port, https: true });
     }
 
-    // 5. FQDN / DDNS
+    // 6. FQDN / DDNS
     if (srv.fqdn && srv.fqdn !== "NULL") {
       const port = svc.ext_port || svc.port;
-      candidates.push({ host: srv.fqdn, port, https: true });
+      addCandidate(candidates, { host: srv.fqdn, port, https: true });
     }
     if (srv.ddns && srv.ddns !== "NULL") {
       const port = svc.ext_port || svc.port;
-      candidates.push({ host: srv.ddns, port, https: true });
+      addCandidate(candidates, { host: srv.ddns, port, https: true });
     }
 
-    // 6. Raw LAN IPs over HTTP (no cert needed, but unencrypted)
+    // 7. Raw LAN IPs over HTTP (no cert needed, but unencrypted)
     if (srv.interface) {
       for (const iface of srv.interface) {
         if (iface.ip) {
-          candidates.push({ host: iface.ip, port: svc.port, https: false });
+          addCandidate(candidates, { host: iface.ip, port: svc.port, https: false });
         }
       }
     }
 
-    // 7. Raw external IP (last resort)
+    // 8. Raw external IP (last resort)
     if (srv.external?.ip && srv.external.ip !== "0.0.0.0") {
       const port = svc.ext_port || svc.port;
       if (port) {
-        candidates.push({ host: srv.external.ip, port, https: false });
+        addCandidate(candidates, { host: srv.external.ip, port, https: false });
       }
     }
   }
@@ -150,11 +191,7 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
     const proto = c.https ? "https" : "http";
     const url = `${proto}://${c.host}:${c.port}/webman/pingpong.cgi?action=cors&quickconnect=true`;
     try {
-      // Race the request against a 3-second timeout
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3000);
-      const r = await requestUrl({ url, method: "GET", throw: false });
-      clearTimeout(timeout);
+      const r = await requestUrlWithTimeout(url, PING_TIMEOUT_MS);
       if (r.status === 200 && r.json?.success) {
         debugLog(`QC: reachable: ${proto}://${c.host}:${c.port}`);
         return c;
