@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### fix: Bound QuickConnect server-info lookup — closes #25
+
+Adds explicit logging and a timeout around the initial QuickConnect `Serv.php` lookup so resolution cannot hang after only logging the QuickConnect ID.
+
 ## 2026.430.4
 
 ### fix: Use entry.cgi with timeout for QuickConnect relay auth — closes #23

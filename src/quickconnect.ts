@@ -43,6 +43,7 @@ interface QCCandidate extends ResolvedNAS {
   kind: "portal" | "api";
 }
 
+const LOOKUP_TIMEOUT_MS = 10000;
 const PING_TIMEOUT_MS = 3000;
 
 function normalizeQuickConnectId(quickConnectId: string): string {
@@ -67,13 +68,17 @@ function toResolvedNAS(candidate: QCCandidate): ResolvedNAS {
   };
 }
 
-async function requestUrlWithTimeout(url: string, timeoutMs: number): Promise<RequestUrlResponse> {
+async function requestUrlWithTimeout(
+  request: Parameters<typeof requestUrl>[0],
+  timeoutMs: number,
+  message: string
+): Promise<RequestUrlResponse> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      requestUrl({ url, method: "GET", throw: false }),
+      requestUrl(request),
       new Promise<RequestUrlResponse>((_, reject) => {
-        timeoutId = globalThis.setTimeout(() => reject(new Error("QuickConnect ping timed out")), timeoutMs);
+        timeoutId = globalThis.setTimeout(() => reject(new Error(message)), timeoutMs);
       }),
     ]);
   } finally {
@@ -105,12 +110,20 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
     },
   ]);
 
-  const resp = await requestUrl({
-    url: "https://global.quickconnect.to/Serv.php",
-    method: "POST",
-    body,
-    headers: { "Content-Type": "application/json" },
-  });
+  debugLog("QC: requesting server info from global.quickconnect.to");
+  let resp: RequestUrlResponse;
+  try {
+    resp = await requestUrlWithTimeout({
+      url: "https://global.quickconnect.to/Serv.php",
+      method: "POST",
+      body,
+      headers: { "Content-Type": "application/json" },
+    }, LOOKUP_TIMEOUT_MS, "QuickConnect server-info lookup timed out");
+  } catch (e) {
+    debugLog(`QC: server-info lookup failed: ${(e as Error).message}`);
+    throw e;
+  }
+  debugLog("QC: server-info response received");
 
   const results: QCServerInfo[] = resp.json;
   if (!results || results.length === 0) {
@@ -206,7 +219,11 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
     const proto = c.https ? "https" : "http";
     const url = `${proto}://${c.host}:${c.port}/webman/pingpong.cgi?action=cors&quickconnect=true`;
     try {
-      const r = await requestUrlWithTimeout(url, PING_TIMEOUT_MS);
+      const r = await requestUrlWithTimeout({
+        url,
+        method: "GET",
+        throw: false,
+      }, PING_TIMEOUT_MS, "QuickConnect ping timed out");
       if (r.status === 200 && r.json?.success) {
         debugLog(`QC: reachable: ${proto}://${c.host}:${c.port}`);
         return toResolvedNAS(c);

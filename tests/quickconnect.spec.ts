@@ -75,4 +75,16 @@ describe("resolveQuickConnect", () => {
       relay: true,
     });
   });
+
+  it("fails clearly when the server-info lookup times out", async () => {
+    jest.useFakeTimers();
+    mockedRequestUrl.mockReturnValueOnce(new Promise(() => undefined));
+
+    const resolution = resolveQuickConnect("Example-NAS");
+    const expectation = expect(resolution).rejects.toThrow("QuickConnect server-info lookup timed out");
+    await jest.runAllTimersAsync();
+
+    await expectation;
+    jest.useRealTimers();
+  });
 });
