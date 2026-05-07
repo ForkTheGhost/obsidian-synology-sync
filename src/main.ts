@@ -74,8 +74,12 @@ export default class SynologySync extends Plugin {
     this.setupAutoSync();
 
     if (this.settings.syncOnStartup && this.settings.remotePath) {
-      // Delay startup sync to let vault finish loading
-      setTimeout(() => this.runSync(), 5000);
+      // Use onLayoutReady instead of a fixed 5s timeout so we sync as soon as
+      // the workspace is ready (typically <1s) rather than always waiting 5s.
+      // It also avoids racing with vault index population on slow startups.
+      this.app.workspace.onLayoutReady(() => {
+        this.runSync();
+      });
     }
   }
 
@@ -208,6 +212,7 @@ export default class SynologySync extends Plugin {
         tombstoneJitterMs: this.settings.tombstoneJitterMs,
         honorTombstoneOnRecreate: this.settings.honorTombstoneOnRecreate,
         remoteAbsenceGraceCycles: this.settings.remoteAbsenceGraceCycles,
+        maxFileSizeMb: this.settings.maxFileSizeMb,
       });
 
       // Safety: suppress the deleteOrphans flag on first sync (legacy #1 guard).
@@ -220,8 +225,18 @@ export default class SynologySync extends Plugin {
       }
 
       const result = await engine.sync(deleteOrphans);
-      this.settings.lastSync = Date.now();
-      await this.saveSettings();
+
+      // Only advance lastSync when no infrastructure-level errors occurred.
+      // Infrastructure errors are tagged with bracketed pseudo-paths
+      // (e.g. "<shard>", "<prev-sync>") and indicate that the sync did not
+      // achieve a clean steady state — keeping lastSync at its prior value
+      // ensures the next sync still treats this as a continuation rather
+      // than the first-sync safety branch.
+      const hasInfraError = result.errors.some((e) => e.path.startsWith("<"));
+      if (!hasInfraError) {
+        this.settings.lastSync = Date.now();
+        await this.saveSettings();
+      }
 
       this.showResult(result);
     } catch (e) {

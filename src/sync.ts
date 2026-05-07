@@ -51,6 +51,39 @@ export interface SyncEngineOptions {
   tombstoneJitterMs: number;
   honorTombstoneOnRecreate: boolean;
   remoteAbsenceGraceCycles: number;
+  /** Skip files larger than this many megabytes (0 = no limit). Default 100. */
+  maxFileSizeMb?: number;
+}
+
+/**
+ * Runs `fn` over `items` with up to `concurrency` workers in flight.
+ * Each worker pulls from a shared queue and processes items sequentially
+ * within its own promise chain, so total parallelism is bounded.
+ */
+async function runConcurrent<T>(
+  items: T[],
+  fn: (item: T) => Promise<void>,
+  concurrency: number,
+): Promise<void> {
+  if (items.length === 0) return;
+  const queue = [...items];
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (item === undefined) return;
+        await fn(item);
+      }
+    }),
+  );
+}
+
+interface PlannedAction {
+  path: string;
+  action: Action;
+  local: LocalEntry | undefined;
+  remote: (RemoteEntry & { fullPath: string }) | undefined;
 }
 
 export class SyncEngine {
@@ -64,6 +97,15 @@ export class SyncEngine {
   private tombstoneJitterMs: number;
   private honorTombstoneOnRecreate: boolean;
   private remoteAbsenceGraceCycles: number;
+  private maxFileSizeMb: number;
+  /**
+   * Per-sync cache of remote directory paths known to exist (full server
+   * paths, e.g. `/volume1/vault/foo/bar`). Seeded from the remote listing at
+   * the start of `sync()` and extended every time `ensureRemoteDir` creates
+   * a folder. Avoids hundreds of redundant `createFolder` round trips when
+   * uploading many files into existing directory trees.
+   */
+  private knownRemoteDirs = new Set<string>();
 
   constructor(vault: Vault, fs: FileStation, opts: SyncEngineOptions) {
     this.vault = vault;
@@ -75,6 +117,7 @@ export class SyncEngine {
     this.tombstoneJitterMs = opts.tombstoneJitterMs;
     this.honorTombstoneOnRecreate = opts.honorTombstoneOnRecreate;
     this.remoteAbsenceGraceCycles = opts.remoteAbsenceGraceCycles;
+    this.maxFileSizeMb = opts.maxFileSizeMb ?? 100;
     this.excludePatterns = [
       /^\.obsidian\/plugins\/synology-sync\//,
       /^\.trash\//,
@@ -146,8 +189,25 @@ export class SyncEngine {
       errors: [],
     };
 
+    // Reset per-sync state.  knownRemoteDirs is a per-sync directory cache so
+    // upload bursts don't repeatedly hit createFolder for paths we've already
+    // confirmed (or just created) on the NAS.
+    this.knownRemoteDirs = new Set<string>();
+
     const local = await this.getLocalFiles();
     const remote = await this.getRemoteFiles();
+
+    // Seed the directory cache from the existing remote listing.  Every
+    // ancestor of every known remote file is, by definition, an existing
+    // directory — no need to ask File Station to create it again.
+    for (const rpath of remote.keys()) {
+      const parts = rpath.split("/");
+      let acc = this.remotePath;
+      for (let i = 0; i < parts.length - 1; i++) {
+        acc = acc + "/" + parts[i];
+        this.knownRemoteDirs.add(acc);
+      }
+    }
 
     // Read per-device history (local JSON) and union of all tombstone shards (NAS).
     const history: PrevSyncMap = await readPrevSync(this.adapter);
@@ -178,6 +238,10 @@ export class SyncEngine {
       ...tombstones.keys(),
     ]);
 
+    // ---------------------------------------------------------------------
+    // Pass 1 — Decision (sequential, no I/O)
+    // ---------------------------------------------------------------------
+    const planned: PlannedAction[] = [];
     for (const path of allPaths) {
       if (this.isExcluded(path)) continue;
 
@@ -202,12 +266,43 @@ export class SyncEngine {
         cfg,
       );
 
+      planned.push({ path, action, local: l, remote: r });
+    }
+
+    // ---------------------------------------------------------------------
+    // Pass 2 — Execution (concurrent within independent buckets)
+    // ---------------------------------------------------------------------
+    const uploads: PlannedAction[] = [];
+    const downloads: PlannedAction[] = [];
+    const deletes: PlannedAction[] = [];
+    const others: PlannedAction[] = [];
+
+    for (const p of planned) {
+      switch (p.action.kind) {
+        case "upload":
+          uploads.push(p);
+          break;
+        case "download":
+        case "recreate-after-delete":
+          downloads.push(p);
+          break;
+        case "delete-local":
+        case "delete-remote":
+        case "delete-remote-stale-tombstone":
+          deletes.push(p);
+          break;
+        default:
+          others.push(p);
+      }
+    }
+
+    const runOne = async (p: PlannedAction): Promise<void> => {
       try {
         await this.applyAction(
-          action,
-          path,
-          l,
-          r,
+          p.action,
+          p.path,
+          p.local,
+          p.remote,
           pendingShardWrites,
           pendingShardPurges,
           result,
@@ -215,10 +310,25 @@ export class SyncEngine {
         );
       } catch (e) {
         const errMsg = (e as Error).message;
-        result.errors.push({ path, error: errMsg });
-        erroredPaths.add(path);
-        debugLog(`SYNC ERROR: ${path} - ${errMsg} (action=${action.kind})`);
+        // Array.push and Set.add are synchronous and safe to call from
+        // multiple concurrent async workers — the JS event loop never
+        // interleaves the actual mutation.
+        result.errors.push({ path: p.path, error: errMsg });
+        erroredPaths.add(p.path);
+        debugLog(`SYNC ERROR: ${p.path} - ${errMsg} (action=${p.action.kind})`);
       }
+    };
+
+    const CONCURRENCY = 5;
+    await runConcurrent(uploads, runOne, CONCURRENCY);
+    await runConcurrent(downloads, runOne, CONCURRENCY);
+    await runConcurrent(deletes, runOne, CONCURRENCY);
+    // "others" includes conflict-resolve, history-cleanup variants, noop, and
+    // keep-local-purge-tombstone. They mutate per-path state and may upload
+    // (keep-local-purge-tombstone) — keep them sequential to preserve the
+    // simple ordering invariants that already exist around them.
+    for (const p of others) {
+      await runOne(p);
     }
 
     // Persist own shard iff anything changed.  If the upload itself fails,
@@ -290,9 +400,10 @@ export class SyncEngine {
   ): Promise<void> {
     switch (action.kind) {
       case "upload":
-        await this.uploadFile(path);
-        this.recordLocalStat(path, syncedLocalStats);
-        result.uploaded.push(path);
+        if (await this.uploadFile(path, result)) {
+          this.recordLocalStat(path, syncedLocalStats);
+          result.uploaded.push(path);
+        }
         return;
 
       case "download":
@@ -310,11 +421,16 @@ export class SyncEngine {
 
       case "delete-remote": {
         // Row 7: we deleted locally; propagate delete and record our own tombstone.
+        // The pendingShardWrites.set MUST be inside the `if (remote)` branch
+        // and gated on the delete actually succeeding — if `fs.delete` throws,
+        // we propagate the error to the caller (and skip the tombstone) so the
+        // path stays in `erroredPaths`. If `remote` is undefined the file is
+        // already gone on the NAS; nothing to tombstone.
         if (remote) {
           await this.fs.delete(remote.fullPath);
           result.deletedRemote.push(path);
+          pendingShardWrites.set(path, { deleted_at: Date.now() });
         }
-        pendingShardWrites.set(path, { deleted_at: Date.now() });
         return;
       }
 
@@ -339,9 +455,10 @@ export class SyncEngine {
         return;
 
       case "keep-local-purge-tombstone":
-        await this.uploadFile(path);
-        this.recordLocalStat(path, syncedLocalStats);
-        result.uploaded.push(path);
+        if (await this.uploadFile(path, result)) {
+          this.recordLocalStat(path, syncedLocalStats);
+          result.uploaded.push(path);
+        }
         pendingShardPurges.add(path);
         result.preservedLocal.push(path);
         return;
@@ -396,9 +513,10 @@ export class SyncEngine {
     switch (strategy) {
       case "newer-wins":
         if (local.mtime > remote.mtime) {
-          await this.uploadFile(path);
-          this.recordLocalStat(path, syncedLocalStats);
-          result.uploaded.push(path);
+          if (await this.uploadFile(path, result)) {
+            this.recordLocalStat(path, syncedLocalStats);
+            result.uploaded.push(path);
+          }
         } else if (remote.mtime > local.mtime) {
           if (await this.downloadFile(path, remote.fullPath, local, remote, strategy, result)) {
             this.recordLocalStat(path, syncedLocalStats);
@@ -407,9 +525,10 @@ export class SyncEngine {
         }
         return;
       case "local-wins":
-        await this.uploadFile(path);
-        this.recordLocalStat(path, syncedLocalStats);
-        result.uploaded.push(path);
+        if (await this.uploadFile(path, result)) {
+          this.recordLocalStat(path, syncedLocalStats);
+          result.uploaded.push(path);
+        }
         return;
       case "remote-wins":
         if (await this.downloadFile(path, remote.fullPath, local, remote, strategy, result)) {
@@ -437,9 +556,48 @@ export class SyncEngine {
     // Folders are not sync-tracked as entries; skip.
   }
 
-  private async uploadFile(relativePath: string): Promise<void> {
+  /**
+   * Walks each segment of `relDir` (a vault-relative dir path), creating any
+   * segments that aren't already in `knownRemoteDirs`. Each newly-created
+   * segment is added to the cache so subsequent uploads skip the round trip.
+   */
+  private async ensureRemoteDir(relDir: string): Promise<void> {
+    const parts = relDir.split("/").filter(Boolean);
+    let acc = this.remotePath;
+    for (const part of parts) {
+      const parent = acc;
+      acc = acc + "/" + part;
+      if (this.knownRemoteDirs.has(acc)) continue;
+      try {
+        await this.fs.createFolder(parent, part);
+      } catch {
+        // createFolder already swallows "already exists" — any other error
+        // here will surface on the upload itself with a clearer message.
+      }
+      this.knownRemoteDirs.add(acc);
+    }
+  }
+
+  private async uploadFile(
+    relativePath: string,
+    result: SyncResult,
+  ): Promise<boolean> {
     const file = this.vault.getAbstractFileByPath(relativePath);
-    if (!(file instanceof TFile)) return;
+    if (!(file instanceof TFile)) return false;
+
+    // Mobile devices can OOM when reading multi-hundred-MB files into an
+    // ArrayBuffer. The setting `maxFileSizeMb` (default 100) skips them with
+    // a clear error so the rest of the sync still completes.
+    const maxBytes = (this.maxFileSizeMb ?? 100) * 1024 * 1024;
+    if (maxBytes > 0 && file.stat.size > maxBytes) {
+      const mb = Math.round(file.stat.size / 1024 / 1024);
+      const limit = this.maxFileSizeMb ?? 100;
+      result.errors.push({
+        path: relativePath,
+        error: `skipped: file too large (${mb}MB > ${limit}MB limit)`,
+      });
+      return false;
+    }
 
     const content = await this.vault.readBinary(file);
     const parts = relativePath.split("/");
@@ -448,20 +606,14 @@ export class SyncEngine {
       ? `${this.remotePath}/${parts.join("/")}`
       : this.remotePath;
 
-    // Ensure remote directory exists (createFolder already ignores "exists" errors)
+    // Ensure remote directory exists (cached per-sync; only round trips for
+    // dirs we haven't already seen or just created).
     if (parts.length > 0) {
-      let current = this.remotePath;
-      for (const part of parts) {
-        try {
-          await this.fs.createFolder(current, part);
-        } catch {
-          // Folder may already exist -- safe to ignore
-        }
-        current += "/" + part;
-      }
+      await this.ensureRemoteDir(parts.join("/"));
     }
 
     await this.fs.upload(remoteDir, fileName, content, true, file.stat.mtime);
+    return true;
   }
 
   /**

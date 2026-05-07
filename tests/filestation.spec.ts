@@ -305,4 +305,103 @@ describe("FileStation", () => {
       ]);
     });
   });
+
+  describe("delete", () => {
+    function makeFs(): FileStation {
+      const fs = new FileStation({
+        baseUrl: "https://nas.local:5001",
+        username: "u",
+        password: "p",
+      });
+      (fs as unknown as { sid: string }).sid = "test-sid";
+      return fs;
+    }
+
+    it("succeeds (no throw) when data.success === true", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        text: JSON.stringify({ success: true }),
+      });
+      await expect(fs.delete("/foo/bar.md")).resolves.toBeUndefined();
+    });
+
+    it("throws on a non-408 error code (e.g. 500)", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        text: JSON.stringify({ success: false, error: { code: 500 } }),
+      });
+      await expect(fs.delete("/foo/bar.md")).rejects.toThrow(/delete failed/);
+    });
+
+    it("does NOT throw on error code 408 (already deleted)", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        text: JSON.stringify({ success: false, error: { code: 408 } }),
+      });
+      await expect(fs.delete("/foo/gone.md")).resolves.toBeUndefined();
+    });
+  });
+
+  describe("download", () => {
+    function makeFs(): FileStation {
+      const fs = new FileStation({
+        baseUrl: "https://nas.local:5001",
+        username: "u",
+        password: "p",
+      });
+      (fs as unknown as { sid: string }).sid = "test-sid";
+      return fs;
+    }
+
+    it("throws when status !== 200", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 500,
+        headers: { "content-type": "application/octet-stream" },
+        arrayBuffer: new ArrayBuffer(0),
+      });
+      await expect(fs.download("/foo/bar.md")).rejects.toThrow(/HTTP 500/);
+    });
+
+    it("throws when content-type is application/json (error response)", async () => {
+      const fs = makeFs();
+      const errBody = new TextEncoder().encode(
+        JSON.stringify({ success: false, error: { code: 408 } }),
+      ).buffer;
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        arrayBuffer: errBody,
+      });
+      await expect(fs.download("/foo/bar.md")).rejects.toThrow(/instead of file bytes/);
+    });
+
+    it("throws when content-type is text/html (session expired portal)", async () => {
+      const fs = makeFs();
+      const html = new TextEncoder().encode("<!DOCTYPE html><html></html>").buffer;
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        headers: { "content-type": "text/html; charset=UTF-8" },
+        arrayBuffer: html,
+      });
+      await expect(fs.download("/foo/bar.md")).rejects.toThrow(/instead of file bytes/);
+    });
+
+    it("returns the arrayBuffer when content-type is application/octet-stream", async () => {
+      const fs = makeFs();
+      const payload = new TextEncoder().encode("hello world").buffer;
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        headers: { "content-type": "application/octet-stream" },
+        arrayBuffer: payload,
+      });
+      const result = await fs.download("/foo/bar.md");
+      expect(result).toBe(payload);
+      const text = new TextDecoder().decode(new Uint8Array(result));
+      expect(text).toBe("hello world");
+    });
+  });
 });

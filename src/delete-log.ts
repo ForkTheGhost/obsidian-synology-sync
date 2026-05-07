@@ -107,22 +107,34 @@ export async function readAllShards(
   const docs: ShardDoc[] = [];
   let clearedDoc: ClearedDoc | null = null;
 
-  for (const file of files) {
-    const name = file.name ?? file.path.split("/").pop() ?? "";
-    if (!name.endsWith(".json")) {
-      continue;
-    }
+  // Filter to .json files first, then download in parallel.
+  // Sequential per-shard awaits add ~30ms × N latency on every sync; with a
+  // dozen devices that's nearly half a second of wall time before any
+  // decision can be made. Promise.allSettled keeps the "skip-corrupt-shard"
+  // resilience while parallelising the network round trips.
+  const jsonFiles = files.filter((f) => {
+    const name = f.name ?? f.path.split("/").pop() ?? "";
+    return name.endsWith(".json");
+  });
 
-    let buf: ArrayBuffer;
-    try {
-      buf = await fs.download(file.path);
-    } catch (err) {
+  const settled = await Promise.allSettled(
+    jsonFiles.map((file) => fs.download(file.path)),
+  );
+
+  for (let i = 0; i < settled.length; i++) {
+    const file = jsonFiles[i];
+    const name = file.name ?? file.path.split("/").pop() ?? "";
+    const r = settled[i];
+
+    if (r.status === "rejected") {
       console.warn(
         `[delete-log] Failed to download shard ${file.path}, skipping:`,
-        err,
+        (r as PromiseRejectedResult).reason,
       );
       continue;
     }
+
+    const buf = (r as PromiseFulfilledResult<ArrayBuffer>).value;
 
     let doc: unknown;
     try {
@@ -232,13 +244,17 @@ export async function updateOwnShard(
   };
 
   const encoded = new TextEncoder().encode(JSON.stringify(doc)).buffer;
-  await fs.upload(tombstonesDir, fileName, encoded, true);
 
-  // If any paths were purged, update the shared cleared marker so peer devices
-  // stop honoring stale tombstones for those paths.
+  // Write the shared cleared marker BEFORE the own shard.
+  // If the marker write fails, peers still see un-cleared tombstones and may
+  // ghost-delete kept files. If the shard write fails after the marker, that
+  // is safer: the shard simply retries next sync, but cleared intent is
+  // already advertised, so peers stop honoring stale tombstones.
   if (purges.size > 0) {
     await writeClearedMarker(fs, tombstonesDir, purges, now);
   }
+
+  await fs.upload(tombstonesDir, fileName, encoded, true);
 }
 
 /**

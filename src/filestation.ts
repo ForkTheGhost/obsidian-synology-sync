@@ -410,7 +410,17 @@ export class FileStation {
         mode: "download",
       }),
       method: "GET",
+      throw: false,
     });
+    if (resp.status !== 200) {
+      throw new Error(`download failed for ${filePath}: HTTP ${resp.status}`);
+    }
+    const headers = (resp as unknown as { headers?: Record<string, string> }).headers;
+    const ct = ((headers?.["content-type"] ?? headers?.["Content-Type"]) || "").toLowerCase();
+    if (ct.includes("application/json") || ct.includes("text/html")) {
+      const preview = new TextDecoder().decode(new Uint8Array(resp.arrayBuffer).slice(0, 200));
+      throw new Error(`download for ${filePath} returned ${ct} instead of file bytes: ${preview}`);
+    }
     return resp.arrayBuffer;
   }
 
@@ -487,7 +497,7 @@ export class FileStation {
   }
 
   async delete(path: string): Promise<void> {
-    await requestUrl({
+    const resp = await requestUrl({
       url: this.url("", {
         api: "SYNO.FileStation.Delete",
         version: "2",
@@ -496,7 +506,13 @@ export class FileStation {
         recursive: "true",
       }),
       method: "GET",
+      throw: false,
     });
+    const data = this.parseJson(resp, "delete");
+    if (!data.success) {
+      if (data.error?.code === 408) return; // 408 = no such file — already deleted
+      throw new Error(`delete failed for ${path}: ${JSON.stringify(data.error)}`);
+    }
   }
 
   isLoggedIn(): boolean {

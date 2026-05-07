@@ -42,6 +42,10 @@ export interface SynologySyncSettings {
   // Rows 3/10 staleness gate: upload local file if remote has been absent
   // for fewer than N sync cycles; beyond that, prefer delete-local.
   remoteAbsenceGraceCycles: number;
+
+  // Files larger than this (megabytes) are skipped during sync to prevent
+  // out-of-memory errors on mobile. 0 disables the limit. Default: 100.
+  maxFileSizeMb: number;
 }
 
 export const DEFAULT_SETTINGS: SynologySyncSettings = {
@@ -70,6 +74,7 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   // as a stale tombstone and silently deleted.
   tombstoneJitterMs: 5000,
   remoteAbsenceGraceCycles: 2,
+  maxFileSizeMb: 100,
 };
 
 // Legacy default that was shipped in releases prior to 2026.0505.1.
@@ -357,6 +362,21 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.excludePatterns)
           .onChange(async (value) => {
             this.plugin.settings.excludePatterns = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Max file size (MB)")
+      .setDesc("Files larger than this are skipped during sync to prevent out-of-memory errors on mobile (0 = no limit). Default: 100.")
+      .addText((text) =>
+        text
+          .setPlaceholder("100")
+          .setValue(String(this.plugin.settings.maxFileSizeMb))
+          .onChange(async (value) => {
+            const parsed = parseInt(value);
+            this.plugin.settings.maxFileSizeMb =
+              Number.isFinite(parsed) && parsed >= 0 ? parsed : 100;
             await this.plugin.saveSettings();
           })
       );
