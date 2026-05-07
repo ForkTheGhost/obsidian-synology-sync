@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+## 2026.0507.1
+
+### fix: Correctness hardening — delete validation, tombstone write ordering, download integrity
+
+- `delete()` now validates the DSM response via `parseJson` and throws on non-success codes; HTTP 408 is treated as idempotent (file already gone on the NAS). Failed deletes no longer write tombstone entries, preventing downstream ghost-deletes on peer devices.
+- `pendingShardWrites` is now set inside the `if (remote)` guard — tombstone entries are only written for confirmed remote deletes, not speculative ones.
+- `_cleared.json` cross-device purge marker is now written **before** the own-shard upload in `updateOwnShard`. Peers see the purge intent before the shard is updated, closing a race where a partial failure left peers with a stale tombstone and no cleared marker.
+- `download()` now validates HTTP status and content-type before writing to the vault. JSON or HTML responses (DSM error bodies on a 200 OK) are rejected with a body preview; the vault file is not written.
+
+### perf: Parallel shard downloads, remote-dir cache, concurrent file execution
+
+- `readAllShards` parallelized via `Promise.allSettled` — all tombstone shards fetched concurrently instead of sequentially.
+- `knownRemoteDirs` cache seeded from the remote BFS at the start of each sync cycle; `ensureRemoteDir()` skips `createFolder` for already-known directories. Eliminates redundant RTTs on large vaults (previously up to one `createFolder` per path segment per upload).
+- Upload, download, and delete actions now execute in concurrent worker pools (concurrency 5 each) after the sequential decision pass, instead of one file at a time.
+
+### perf: Startup sync timing
+
+- Startup sync now fires via `app.workspace.onLayoutReady` instead of a hardcoded `setTimeout(5000)`, starting as soon as the vault is ready rather than waiting a fixed delay.
+
+### feat: File size limit
+
+- New `maxFileSizeMb` setting (default 100 MB; set to 0 for unlimited) skips oversized files before `readBinary` to prevent OOM on mobile devices.
+
+### fix: Infrastructure error gate on lastSync
+
+- `lastSync` is no longer advanced when the sync cycle encountered infrastructure errors (shard read/write failures, prev-sync write failures). The next cycle will re-evaluate affected files rather than treating them as cleanly synced.
+
+120 tests passing.
+
+## 2026.0506.1
+
+### fix: HTML response hardening — prevent silent file corruption from DSM login errors
+
+- `parseLoginResponse()` now reads the response body as text before attempting JSON parse. An HTML body (DSM redirect or error page on a 200 OK) is detected, the stale `deviceToken` is cleared, and an actionable error is thrown instead of a cryptic JSON parse failure propagating to the user.
+- Auto-retry on DSM 403 device-token rejection: if the first login attempt returns 403, the client retries once without `device_id`, matching DSM's expected re-auth flow.
+- `parseJson(resp, label)` helper applied at all remaining `resp.json` call sites (listShares, listFolder, upload, createFolder) so HTML error bodies surface as actionable messages rather than silent parse failures throughout the sync flow.
+
+113 tests passing.
+
 ## 2026.0505.1
 
 ### fix: Tombstone correctness — prevent silent data loss from stale or hostile delete-log shards
