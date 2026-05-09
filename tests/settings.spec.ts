@@ -9,6 +9,10 @@ describe("DEFAULT_SETTINGS", () => {
     expect(DEFAULT_SETTINGS.syncIdentityId).toBe("");
   });
 
+  it("keeps File Station as the default sync backend", () => {
+    expect(DEFAULT_SETTINGS.syncBackend).toBe("filestation");
+  });
+
   it("has tombstone retention 0 (forever) by default", () => {
     expect(DEFAULT_SETTINGS.tombstoneRetentionDays).toBe(0);
   });
@@ -36,6 +40,13 @@ describe("DEFAULT_SETTINGS", () => {
     expect("syncIdentityId" in s).toBe(true);
     expect(s.deviceId).toBe("");
     expect(s.syncIdentityId).toBe("");
+  });
+
+  it("has safe defaults for experimental Git filesystem sync", () => {
+    expect(DEFAULT_SETTINGS.gitRemotePath).toBe("");
+    expect(DEFAULT_SETTINGS.gitBranch).toBe("main");
+    expect(DEFAULT_SETTINGS.gitAuthorName).toBe("Obsidian Synology Sync");
+    expect(DEFAULT_SETTINGS.gitAuthorEmail).toBe("synology-sync@local");
   });
 });
 

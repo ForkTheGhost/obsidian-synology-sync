@@ -2,6 +2,7 @@ import { Plugin, Notice, Modal, App } from "obsidian";
 import { FileStation, FileStationConfig, LoginResult } from "./filestation";
 import { resolveQuickConnect } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
+import { NativeGitSyncEngine } from "./git-sync";
 import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, migrateLoadedSettings } from "./settings";
 import { debugLog, getDebugLog } from "./debug";
 
@@ -73,7 +74,10 @@ export default class SynologySync extends Plugin {
 
     this.setupAutoSync();
 
-    if (this.settings.syncOnStartup && this.settings.remotePath) {
+    const hasStartupTarget = this.settings.syncBackend === "git-filesystem"
+      ? !!this.settings.gitRemotePath
+      : !!this.settings.remotePath;
+    if (this.settings.syncOnStartup && hasStartupTarget) {
       // Use onLayoutReady instead of a fixed 5s timeout so we sync as soon as
       // the workspace is ready (typically <1s) rather than always waiting 5s.
       // It also avoids racing with vault index population on slow startups.
@@ -187,6 +191,11 @@ export default class SynologySync extends Plugin {
       return;
     }
 
+    if (this.settings.syncBackend === "git-filesystem") {
+      await this.runGitSync();
+      return;
+    }
+
     if (!this.settings.remotePath) {
       new Notice("Configure remote folder path in Synology Sync settings first");
       return;
@@ -246,6 +255,39 @@ export default class SynologySync extends Plugin {
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
       }
+      this.syncing = false;
+    }
+  }
+
+  private async runGitSync(): Promise<void> {
+    if (!this.settings.gitRemotePath) {
+      new Notice("Configure Git bare repository path in Synology Sync settings first");
+      return;
+    }
+
+    this.syncing = true;
+    new Notice("Git-backed Synology Sync starting...");
+
+    try {
+      const engine = new NativeGitSyncEngine(this.app.vault, {
+        remotePath: this.settings.gitRemotePath,
+        branch: this.settings.gitBranch,
+        syncIdentityId: this.settings.syncIdentityId,
+        authorName: this.settings.gitAuthorName,
+        authorEmail: this.settings.gitAuthorEmail,
+      });
+
+      const result = await engine.sync();
+      const hasInfraError = result.errors.some((e) => e.path.startsWith("<"));
+      if (!hasInfraError) {
+        this.settings.lastSync = Date.now();
+        await this.saveSettings();
+      }
+      this.showResult(result);
+    } catch (e) {
+      new Notice(`Git sync failed: ${(e as Error).message}`);
+      console.error("Git-backed Synology Sync error:", e);
+    } finally {
       this.syncing = false;
     }
   }

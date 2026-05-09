@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### feat: Experimental Git filesystem backend
+
+- Add an experimental desktop-only sync backend that uses native Git against a bare filesystem remote, including UNC or mounted Synology paths.
+- Git setup now classifies first-run states so empty local vaults can pull existing history, local-only vaults can publish initial history, and local edits are checkpointed before merging an established destination.
+- Settings now expose backend selection, Git bare repo path, branch, and automatic commit author fields while keeping File Station as the default backend.
+
+### docs: Git-backed sync planning guidance
+
+- README now starts with a concise QuickStart and documents the experimental Git-backed sync shape from issue #31, including UNC filesystem remotes, `git init --bare`, `.git` naming conventions, first-run onboarding cases, and why shared UNC working trees should be treated as advanced/unsafe.
+
 ## 2026.0507.1
 
 ### fix: Correctness hardening — delete validation, tombstone write ordering, download integrity
