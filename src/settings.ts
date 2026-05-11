@@ -5,6 +5,7 @@ import { getDebugLog, clearDebugLog } from "./debug";
 import { FileStation, FileInfo } from "./filestation";
 
 export interface SynologySyncSettings {
+  syncBackend: "filestation" | "git-filesystem";
   connectionType: "quickconnect" | "direct";
   quickConnectId: string;
   host: string;
@@ -46,9 +47,17 @@ export interface SynologySyncSettings {
   // Files larger than this (megabytes) are skipped during sync to prevent
   // out-of-memory errors on mobile. 0 disables the limit. Default: 100.
   maxFileSizeMb: number;
+
+  // Experimental Git-backed filesystem remote mode. Each device uses a local
+  // vault clone and this path points at a bare repository, commonly a UNC path.
+  gitRemotePath: string;
+  gitBranch: string;
+  gitAuthorName: string;
+  gitAuthorEmail: string;
 }
 
 export const DEFAULT_SETTINGS: SynologySyncSettings = {
+  syncBackend: "filestation",
   connectionType: "quickconnect",
   quickConnectId: "",
   host: "",
@@ -75,6 +84,10 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   tombstoneJitterMs: 5000,
   remoteAbsenceGraceCycles: 2,
   maxFileSizeMb: 100,
+  gitRemotePath: "",
+  gitBranch: "main",
+  gitAuthorName: "Obsidian Synology Sync",
+  gitAuthorEmail: "synology-sync@local",
 };
 
 // Legacy default that was shipped in releases prior to 2026.0505.1.
@@ -109,8 +122,76 @@ export class SynologySyncSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h2", { text: "Synology Sync" });
 
-    // Connection type
     new Setting(containerEl)
+      .setName("Sync backend")
+      .setDesc("File Station is the current stable backend. Git filesystem remote is experimental and desktop-only.")
+      .addDropdown((dd) =>
+        dd
+          .addOption("filestation", "Synology File Station")
+          .addOption("git-filesystem", "Git filesystem remote (experimental)")
+          .setValue(this.plugin.settings.syncBackend)
+          .onChange(async (value: string) => {
+            this.plugin.settings.syncBackend = value as "filestation" | "git-filesystem";
+            await this.plugin.saveSettings();
+            this.display();
+          })
+      );
+
+    if (this.plugin.settings.syncBackend === "git-filesystem") {
+      containerEl.createEl("h3", { text: "Git Remote" });
+
+      new Setting(containerEl)
+        .setName("Bare repository path")
+        .setDesc("Filesystem path to a bare Git repo, such as \\\\Synology\\Obsidian\\MyVault.git. Empty paths are initialized as bare repos.")
+        .addText((text) =>
+          text
+            .setPlaceholder("\\\\Synology\\Obsidian\\MyVault.git")
+            .setValue(this.plugin.settings.gitRemotePath)
+            .onChange(async (value) => {
+              this.plugin.settings.gitRemotePath = value.trim();
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("Branch")
+        .setDesc("Branch to sync")
+        .addText((text) =>
+          text
+            .setPlaceholder("main")
+            .setValue(this.plugin.settings.gitBranch)
+            .onChange(async (value) => {
+              this.plugin.settings.gitBranch = value.trim() || "main";
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("Commit author")
+        .setDesc("Used for automatic sync commits if the local repo has no author configured")
+        .addText((text) =>
+          text
+            .setPlaceholder("Obsidian Synology Sync")
+            .setValue(this.plugin.settings.gitAuthorName)
+            .onChange(async (value) => {
+              this.plugin.settings.gitAuthorName = value.trim() || "Obsidian Synology Sync";
+              await this.plugin.saveSettings();
+            })
+        )
+        .addText((text) =>
+          text
+            .setPlaceholder("synology-sync@local")
+            .setValue(this.plugin.settings.gitAuthorEmail)
+            .onChange(async (value) => {
+              this.plugin.settings.gitAuthorEmail = value.trim() || "synology-sync@local";
+              await this.plugin.saveSettings();
+            })
+        );
+    }
+
+    // Connection type
+    if (this.plugin.settings.syncBackend === "filestation") {
+      new Setting(containerEl)
       .setName("Connection type")
       .setDesc("Use QuickConnect ID or direct IP/hostname")
       .addDropdown((dd) =>
@@ -125,7 +206,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           })
       );
 
-    if (this.plugin.settings.connectionType === "quickconnect") {
+      if (this.plugin.settings.connectionType === "quickconnect") {
       new Setting(containerEl)
         .setName("QuickConnect ID")
         .setDesc("Your Synology QuickConnect ID (e.g. 'mynas')")
@@ -155,7 +236,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             }
           })
         );
-    } else {
+      } else {
       new Setting(containerEl)
         .setName("Host")
         .setDesc("NAS IP address or hostname")
@@ -190,12 +271,12 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
         );
-    }
+      }
 
-    // Credentials
-    containerEl.createEl("h3", { text: "Authentication" });
+      // Credentials
+      containerEl.createEl("h3", { text: "Authentication" });
 
-    new Setting(containerEl)
+      new Setting(containerEl)
       .setName("Username")
       .addText((text) =>
         text
@@ -207,7 +288,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
+      new Setting(containerEl)
       .setName("Password")
       .addText((text) => {
         text.inputEl.type = "password";
@@ -220,8 +301,8 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           });
       });
 
-    // 2FA device trust
-    if (this.plugin.settings.deviceToken) {
+      // 2FA device trust
+      if (this.plugin.settings.deviceToken) {
       new Setting(containerEl)
         .setName("2FA device trust")
         .setDesc("This device is trusted - 2FA will be skipped on login")
@@ -234,7 +315,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             this.display();
           })
         );
-    } else {
+      } else {
       new Setting(containerEl)
         .setName("2FA setup")
         .setDesc("If your DSM account has 2FA enabled, enter your authenticator code to trust this device")
@@ -265,12 +346,12 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             }
           })
         );
-    }
+      }
 
-    // Sync target
-    containerEl.createEl("h3", { text: "Sync Target" });
+      // Sync target
+      containerEl.createEl("h3", { text: "Sync Target" });
 
-    new Setting(containerEl)
+      new Setting(containerEl)
       .setName("Remote folder path")
       .setDesc("Full path on the NAS (e.g. /homes/user/Obsidian/MyVault)")
       .addText((text) =>
@@ -283,7 +364,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
+      new Setting(containerEl)
       .setName("Browse folders")
       .setDesc("Connect to NAS and browse for the target folder")
       .addButton((btn) =>
@@ -300,6 +381,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           }
         })
       );
+    }
 
     // Sync settings
     containerEl.createEl("h3", { text: "Sync Behavior" });
@@ -327,59 +409,65 @@ export class SynologySyncSettingTab extends PluginSettingTab {
         })
       );
 
-    new Setting(containerEl)
-      .setName("Conflict resolution")
-      .setDesc("When a file differs on both sides")
-      .addDropdown((dd) =>
-        dd
-          .addOption("newer-wins", "Newer file wins")
-          .addOption("local-wins", "Local always wins")
-          .addOption("remote-wins", "Remote always wins")
-          .addOption("skip", "Skip conflicts")
-          .setValue(this.plugin.settings.conflictStrategy)
-          .onChange(async (value: string) => {
-            this.plugin.settings.conflictStrategy = value as any;
+    if (this.plugin.settings.syncBackend === "filestation") {
+      new Setting(containerEl)
+        .setName("Conflict resolution")
+        .setDesc("When a file differs on both sides")
+        .addDropdown((dd) =>
+          dd
+            .addOption("newer-wins", "Newer file wins")
+            .addOption("local-wins", "Local always wins")
+            .addOption("remote-wins", "Remote always wins")
+            .addOption("skip", "Skip conflicts")
+            .setValue(this.plugin.settings.conflictStrategy)
+            .onChange(async (value: string) => {
+              this.plugin.settings.conflictStrategy = value as any;
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("Delete remote orphans")
+        .setDesc("Remove files from NAS that no longer exist locally. Automatically disabled on first sync to prevent data loss.")
+        .addToggle((toggle) =>
+          toggle.setValue(this.plugin.settings.deleteOrphans).onChange(async (value) => {
+            this.plugin.settings.deleteOrphans = value;
             await this.plugin.saveSettings();
           })
-      );
+        );
 
-    new Setting(containerEl)
-      .setName("Delete remote orphans")
-      .setDesc("Remove files from NAS that no longer exist locally. Automatically disabled on first sync to prevent data loss.")
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.deleteOrphans).onChange(async (value) => {
-          this.plugin.settings.deleteOrphans = value;
-          await this.plugin.saveSettings();
-        })
-      );
+      new Setting(containerEl)
+        .setName("Exclude patterns")
+        .setDesc("Regex patterns to exclude, one per line")
+        .addTextArea((text) =>
+          text
+            .setPlaceholder("^\\.git/\n^node_modules/")
+            .setValue(this.plugin.settings.excludePatterns)
+            .onChange(async (value) => {
+              this.plugin.settings.excludePatterns = value;
+              await this.plugin.saveSettings();
+            })
+        );
 
-    new Setting(containerEl)
-      .setName("Exclude patterns")
-      .setDesc("Regex patterns to exclude, one per line")
-      .addTextArea((text) =>
-        text
-          .setPlaceholder("^\\.git/\n^node_modules/")
-          .setValue(this.plugin.settings.excludePatterns)
-          .onChange(async (value) => {
-            this.plugin.settings.excludePatterns = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("Max file size (MB)")
-      .setDesc("Files larger than this are skipped during sync to prevent out-of-memory errors on mobile (0 = no limit). Default: 100.")
-      .addText((text) =>
-        text
-          .setPlaceholder("100")
-          .setValue(String(this.plugin.settings.maxFileSizeMb))
-          .onChange(async (value) => {
-            const parsed = parseInt(value);
-            this.plugin.settings.maxFileSizeMb =
-              Number.isFinite(parsed) && parsed >= 0 ? parsed : 100;
-            await this.plugin.saveSettings();
-          })
-      );
+      new Setting(containerEl)
+        .setName("Max file size (MB)")
+        .setDesc("Files larger than this are skipped during sync to prevent out-of-memory errors on mobile (0 = no limit). Default: 100.")
+        .addText((text) =>
+          text
+            .setPlaceholder("100")
+            .setValue(String(this.plugin.settings.maxFileSizeMb))
+            .onChange(async (value) => {
+              const parsed = parseInt(value);
+              this.plugin.settings.maxFileSizeMb =
+                Number.isFinite(parsed) && parsed >= 0 ? parsed : 100;
+              await this.plugin.saveSettings();
+            })
+        );
+    } else {
+      new Setting(containerEl)
+        .setName("Git conflicts and excludes")
+        .setDesc("Git backend uses normal Git merge behavior plus .gitignore/.git/info/exclude. File Station conflict, orphan-delete, regex exclude, and file-size settings are ignored.");
+    }
 
     // Status
     containerEl.createEl("h3", { text: "Status" });
