@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## 2026.0512.1
+
 ### feat: Experimental Git filesystem backend
 
 - Add an experimental desktop-only sync backend that uses native Git against a bare filesystem remote, including UNC or mounted Synology paths.
