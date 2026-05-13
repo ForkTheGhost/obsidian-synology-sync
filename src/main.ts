@@ -74,9 +74,7 @@ export default class SynologySync extends Plugin {
 
     this.setupAutoSync();
 
-    const hasStartupTarget = this.settings.syncBackend === "git-filesystem"
-      ? !!this.settings.gitRemotePath
-      : !!this.settings.remotePath;
+    const hasStartupTarget = !!this.settings.remotePath || !!this.settings.gitRemotePath;
     if (this.settings.syncOnStartup && hasStartupTarget) {
       // Use onLayoutReady instead of a fixed 5s timeout so we sync as soon as
       // the workspace is ready (typically <1s) rather than always waiting 5s.

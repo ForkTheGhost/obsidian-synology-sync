@@ -86,8 +86,8 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   maxFileSizeMb: 100,
   gitRemotePath: "",
   gitBranch: "main",
-  gitAuthorName: "Obsidian Synology Sync",
-  gitAuthorEmail: "synology-sync@local",
+  gitAuthorName: "Ray Piller",
+  gitAuthorEmail: "ray@vertigion.com",
 };
 
 // Legacy default that was shipped in releases prior to 2026.0505.1.
@@ -123,22 +123,20 @@ export class SynologySyncSettingTab extends PluginSettingTab {
     containerEl.createEl("h2", { text: "Synology Sync" });
 
     new Setting(containerEl)
-      .setName("Sync backend")
-      .setDesc("File Station is the current stable backend. Git filesystem remote is experimental and desktop-only.")
-      .addDropdown((dd) =>
-        dd
-          .addOption("filestation", "Synology File Station")
-          .addOption("git-filesystem", "Git filesystem remote (experimental)")
-          .setValue(this.plugin.settings.syncBackend)
-          .onChange(async (value: string) => {
-            this.plugin.settings.syncBackend = value as "filestation" | "git-filesystem";
+      .setName("Git-backed sync behavior")
+      .setDesc("Optional desktop-only Git behavior layered under the Synology/File Station flow.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.syncBackend === "git-filesystem")
+          .onChange(async (value) => {
+            this.plugin.settings.syncBackend = value ? "git-filesystem" : "filestation";
             await this.plugin.saveSettings();
             this.display();
           })
       );
 
     if (this.plugin.settings.syncBackend === "git-filesystem") {
-      containerEl.createEl("h3", { text: "Git Remote" });
+      containerEl.createEl("h3", { text: "Git-backed sync" });
 
       new Setting(containerEl)
         .setName("Bare repository path")
@@ -171,27 +169,26 @@ export class SynologySyncSettingTab extends PluginSettingTab {
         .setDesc("Used for automatic sync commits if the local repo has no author configured")
         .addText((text) =>
           text
-            .setPlaceholder("Obsidian Synology Sync")
+            .setPlaceholder("Ray Piller")
             .setValue(this.plugin.settings.gitAuthorName)
             .onChange(async (value) => {
-              this.plugin.settings.gitAuthorName = value.trim() || "Obsidian Synology Sync";
+              this.plugin.settings.gitAuthorName = value.trim() || "Ray Piller";
               await this.plugin.saveSettings();
             })
         )
         .addText((text) =>
           text
-            .setPlaceholder("synology-sync@local")
+            .setPlaceholder("ray@vertigion.com")
             .setValue(this.plugin.settings.gitAuthorEmail)
             .onChange(async (value) => {
-              this.plugin.settings.gitAuthorEmail = value.trim() || "synology-sync@local";
+              this.plugin.settings.gitAuthorEmail = value.trim() || "ray@vertigion.com";
               await this.plugin.saveSettings();
             })
         );
     }
 
     // Connection type
-    if (this.plugin.settings.syncBackend === "filestation") {
-      new Setting(containerEl)
+    new Setting(containerEl)
       .setName("Connection type")
       .setDesc("Use QuickConnect ID or direct IP/hostname")
       .addDropdown((dd) =>
@@ -206,7 +203,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           })
       );
 
-      if (this.plugin.settings.connectionType === "quickconnect") {
+    if (this.plugin.settings.connectionType === "quickconnect") {
       new Setting(containerEl)
         .setName("QuickConnect ID")
         .setDesc("Your Synology QuickConnect ID (e.g. 'mynas')")
@@ -236,7 +233,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             }
           })
         );
-      } else {
+    } else {
       new Setting(containerEl)
         .setName("Host")
         .setDesc("NAS IP address or hostname")
@@ -271,12 +268,12 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
         );
-      }
+    }
 
-      // Credentials
-      containerEl.createEl("h3", { text: "Authentication" });
+    // Credentials
+    containerEl.createEl("h3", { text: "Authentication" });
 
-      new Setting(containerEl)
+    new Setting(containerEl)
       .setName("Username")
       .addText((text) =>
         text
@@ -288,7 +285,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           })
       );
 
-      new Setting(containerEl)
+    new Setting(containerEl)
       .setName("Password")
       .addText((text) => {
         text.inputEl.type = "password";
@@ -301,8 +298,8 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           });
       });
 
-      // 2FA device trust
-      if (this.plugin.settings.deviceToken) {
+    // 2FA device trust
+    if (this.plugin.settings.deviceToken) {
       new Setting(containerEl)
         .setName("2FA device trust")
         .setDesc("This device is trusted - 2FA will be skipped on login")
@@ -315,7 +312,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             this.display();
           })
         );
-      } else {
+    } else {
       new Setting(containerEl)
         .setName("2FA setup")
         .setDesc("If your DSM account has 2FA enabled, enter your authenticator code to trust this device")
@@ -346,12 +343,12 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             }
           })
         );
-      }
+    }
 
-      // Sync target
-      containerEl.createEl("h3", { text: "Sync Target" });
+    // Sync target
+    containerEl.createEl("h3", { text: "Sync Target" });
 
-      new Setting(containerEl)
+    new Setting(containerEl)
       .setName("Remote folder path")
       .setDesc("Full path on the NAS (e.g. /homes/user/Obsidian/MyVault)")
       .addText((text) =>
@@ -364,7 +361,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           })
       );
 
-      new Setting(containerEl)
+    new Setting(containerEl)
       .setName("Browse folders")
       .setDesc("Connect to NAS and browse for the target folder")
       .addButton((btn) =>
@@ -381,7 +378,6 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           }
         })
       );
-    }
 
     // Sync settings
     containerEl.createEl("h3", { text: "Sync Behavior" });
@@ -465,7 +461,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
         );
     } else {
       new Setting(containerEl)
-        .setName("Git conflicts and excludes")
+        .setName("Git notes")
         .setDesc("Git backend uses normal Git merge behavior plus .gitignore/.git/info/exclude. File Station conflict, orphan-delete, regex exclude, and file-size settings are ignored.");
     }
 

@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
-No unreleased changes.
+### docs/ui: Git behavior stays under Synology settings
+
+- Git-backed sync is now surfaced as an optional toggle within the existing Synology/File Station settings flow instead of a separate backend selector.
+- File Station/QuickConnect connection fields remain visible as the primary connection model, while Git repo/branch/author fields are revealed only when Git-backed sync is enabled.
+- Git author defaults now align with `Ray Piller <ray@vertigion.com>` where an identity is needed.
 
 ## 2026.0512.1
 
