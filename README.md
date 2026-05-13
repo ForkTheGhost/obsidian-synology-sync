@@ -18,7 +18,7 @@ Sync your Obsidian vault directly to a Synology NAS folder using the File Statio
 
 Works on desktop (Windows, Mac, Linux) and mobile (iOS, Android).
 
-> Note: the current default backend syncs files through Synology File Station. An experimental Git filesystem backend is available for desktop vaults with native Git installed; follow-up File Station / QuickConnect Git transport work is tracked in [issue #31](https://github.com/VertigoRay/obsidian-synology-sync/issues/31).
+> Note: File Station/QuickConnect remains the primary Synology sync path. A Git-backed sync behavior can be enabled under the same Synology settings for desktop vaults with native Git installed; follow-up File Station / QuickConnect Git transport work is tracked in [issue #31](https://github.com/VertigoRay/obsidian-synology-sync/issues/31).
 
 ## Features
 
@@ -29,7 +29,7 @@ Works on desktop (Windows, Mac, Linux) and mobile (iOS, Android).
 - **Auto-sync** - configurable interval (or manual-only)
 - **Sync on startup** - optionally sync when Obsidian opens
 - **Exclude patterns** - regex patterns to skip files/folders
-- **Experimental Git filesystem backend** - desktop-only sync against a bare Git repo on a local, mounted, or UNC path
+- **Optional Git-backed sync behavior** - desktop-only Git sync against a bare repo on a local, mounted, or UNC path, revealed inside the Synology settings flow
 - **No extra packages** - uses Synology's built-in File Station API (port 5000/5001), not WebDAV (which requires installing the WebDAV Server package)
 
 ## Why Not Remotely Save?
@@ -40,7 +40,7 @@ It also natively supports QuickConnect ID resolution, so you don't need to figur
 
 ## Git-Backed Sync
 
-Git-backed sync is experimental and currently supports a filesystem remote only. Use it when the NAS path is reachable as a local, mounted, or UNC path and the device has native Git installed. QuickConnect/File Station transport for Git remotes remains future work tracked in [issue #31](https://github.com/VertigoRay/obsidian-synology-sync/issues/31).
+Git-backed sync is experimental and currently supports a filesystem remote only. It is surfaced as an optional behavior inside the existing Synology/File Station settings flow, not as a replacement for the Synology connection fields. Use it when the NAS path is reachable as a local, mounted, or UNC path and the device has native Git installed. QuickConnect/File Station transport for Git remotes remains future work tracked in [issue #31](https://github.com/VertigoRay/obsidian-synology-sync/issues/31).
 
 The recommended shape is a normal local Obsidian vault on every device, with the Synology NAS storing a **bare** Git repository as the shared upstream.
 
@@ -71,6 +71,12 @@ First-run behavior:
 - If the local vault has files and the destination is empty, the plugin commits the local vault and pushes it as the initial history.
 - If both local and destination have files/history, the plugin checkpoints the local vault first, then merges the destination. It does not silently overwrite local edits.
 - If someone edited locally before enabling the plugin, those edits become a local bootstrap commit before any pull/merge happens.
+
+Settings shape:
+
+- File Station / QuickConnect fields stay visible as the primary Synology connection model.
+- Enable the Git-backed sync toggle to reveal the bare-repo, branch, and author fields.
+- Default Git author values are set to `Ray Piller <ray@vertigion.com>` where an identity is needed.
 
 Example initialization:
 
