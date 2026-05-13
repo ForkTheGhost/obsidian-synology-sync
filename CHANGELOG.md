@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 2026.0513.2
+
+### fix: Move Git-backed sync lower in settings
+
+- Move the Git-backed sync behavior toggle out of the top of the Synology Sync settings pane and into the Sync Behavior section, after the primary Synology connection/authentication/target setup.
+- Keep Git repo, branch, and author fields hidden until Git-backed sync is enabled.
+
 ## 2026.0513.1
 
 ### docs/ui: Git behavior stays under Synology settings

@@ -122,71 +122,6 @@ export class SynologySyncSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h2", { text: "Synology Sync" });
 
-    new Setting(containerEl)
-      .setName("Git-backed sync behavior")
-      .setDesc("Optional desktop-only Git behavior layered under the Synology/File Station flow.")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.syncBackend === "git-filesystem")
-          .onChange(async (value) => {
-            this.plugin.settings.syncBackend = value ? "git-filesystem" : "filestation";
-            await this.plugin.saveSettings();
-            this.display();
-          })
-      );
-
-    if (this.plugin.settings.syncBackend === "git-filesystem") {
-      containerEl.createEl("h3", { text: "Git-backed sync" });
-
-      new Setting(containerEl)
-        .setName("Bare repository path")
-        .setDesc("Filesystem path to a bare Git repo, such as \\\\Synology\\Obsidian\\MyVault.git. Empty paths are initialized as bare repos.")
-        .addText((text) =>
-          text
-            .setPlaceholder("\\\\Synology\\Obsidian\\MyVault.git")
-            .setValue(this.plugin.settings.gitRemotePath)
-            .onChange(async (value) => {
-              this.plugin.settings.gitRemotePath = value.trim();
-              await this.plugin.saveSettings();
-            })
-        );
-
-      new Setting(containerEl)
-        .setName("Branch")
-        .setDesc("Branch to sync")
-        .addText((text) =>
-          text
-            .setPlaceholder("main")
-            .setValue(this.plugin.settings.gitBranch)
-            .onChange(async (value) => {
-              this.plugin.settings.gitBranch = value.trim() || "main";
-              await this.plugin.saveSettings();
-            })
-        );
-
-      new Setting(containerEl)
-        .setName("Commit author")
-        .setDesc("Used for automatic sync commits if the local repo has no author configured")
-        .addText((text) =>
-          text
-            .setPlaceholder("Ray Piller")
-            .setValue(this.plugin.settings.gitAuthorName)
-            .onChange(async (value) => {
-              this.plugin.settings.gitAuthorName = value.trim() || "Ray Piller";
-              await this.plugin.saveSettings();
-            })
-        )
-        .addText((text) =>
-          text
-            .setPlaceholder("ray@vertigion.com")
-            .setValue(this.plugin.settings.gitAuthorEmail)
-            .onChange(async (value) => {
-              this.plugin.settings.gitAuthorEmail = value.trim() || "ray@vertigion.com";
-              await this.plugin.saveSettings();
-            })
-        );
-    }
-
     // Connection type
     new Setting(containerEl)
       .setName("Connection type")
@@ -381,6 +316,69 @@ export class SynologySyncSettingTab extends PluginSettingTab {
 
     // Sync settings
     containerEl.createEl("h3", { text: "Sync Behavior" });
+
+    new Setting(containerEl)
+      .setName("Git-backed sync behavior")
+      .setDesc("Optional desktop-only Git behavior layered under the Synology/File Station flow.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.syncBackend === "git-filesystem")
+          .onChange(async (value) => {
+            this.plugin.settings.syncBackend = value ? "git-filesystem" : "filestation";
+            await this.plugin.saveSettings();
+            this.display();
+          })
+      );
+
+    if (this.plugin.settings.syncBackend === "git-filesystem") {
+      new Setting(containerEl)
+        .setName("Bare repository path")
+        .setDesc("Filesystem path to a bare Git repo, such as \\\\Synology\\Obsidian\\MyVault.git. Empty paths are initialized as bare repos.")
+        .addText((text) =>
+          text
+            .setPlaceholder("\\\\Synology\\Obsidian\\MyVault.git")
+            .setValue(this.plugin.settings.gitRemotePath)
+            .onChange(async (value) => {
+              this.plugin.settings.gitRemotePath = value.trim();
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("Branch")
+        .setDesc("Branch to sync")
+        .addText((text) =>
+          text
+            .setPlaceholder("main")
+            .setValue(this.plugin.settings.gitBranch)
+            .onChange(async (value) => {
+              this.plugin.settings.gitBranch = value.trim() || "main";
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("Commit author")
+        .setDesc("Used for automatic sync commits if the local repo has no author configured")
+        .addText((text) =>
+          text
+            .setPlaceholder("Ray Piller")
+            .setValue(this.plugin.settings.gitAuthorName)
+            .onChange(async (value) => {
+              this.plugin.settings.gitAuthorName = value.trim() || "Ray Piller";
+              await this.plugin.saveSettings();
+            })
+        )
+        .addText((text) =>
+          text
+            .setPlaceholder("ray@vertigion.com")
+            .setValue(this.plugin.settings.gitAuthorEmail)
+            .onChange(async (value) => {
+              this.plugin.settings.gitAuthorEmail = value.trim() || "ray@vertigion.com";
+              await this.plugin.saveSettings();
+            })
+        );
+    }
 
     new Setting(containerEl)
       .setName("Auto-sync interval (minutes)")
