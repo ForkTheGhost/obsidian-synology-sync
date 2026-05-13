@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 2026.0513.1
+
 ### docs/ui: Git behavior stays under Synology settings
 
 - Git-backed sync is now surfaced as an optional toggle within the existing Synology/File Station settings flow instead of a separate backend selector.
