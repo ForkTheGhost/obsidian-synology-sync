@@ -306,12 +306,27 @@ export class GitFileStationSyncEngine {
   }
 
   private async uploadBareRepoMirror(): Promise<void> {
-    await this.fs.createFolder(parentRemotePath(this.opts.remotePath), basenameRemotePath(this.opts.remotePath));
+    await this.ensureRemoteDirectoryTree();
     const files = listLocalFiles(this.remoteCachePath);
     for (const file of files) {
       const rel = file.relativePath;
       if (shouldSkipRemoteGitFile(rel)) continue;
       await this.fs.upload(joinRemotePath(this.opts.remotePath, dirnameRemotePath(rel)), basenameRemotePath(rel), toArrayBuffer(file.bytes), true);
+    }
+  }
+
+  private async ensureRemoteDirectoryTree(): Promise<void> {
+    const parts = normalizeRemotePath(this.opts.remotePath).split("/").filter(Boolean);
+    let current = "";
+    for (const part of parts) {
+      const parent = current ? `/${current}` : "/";
+      try {
+        await this.fs.createFolder(parent, part);
+      } catch (e) {
+        debugLog(`[git-filestation] createFolder ${parent}/${part} failed: ${(e as Error).message}`);
+        throw e;
+      }
+      current = current ? `${current}/${part}` : part;
     }
   }
 

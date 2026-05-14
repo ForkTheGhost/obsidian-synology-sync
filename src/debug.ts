@@ -22,3 +22,21 @@ export function redact(s: string | undefined, showChars: number = 4): string {
   if (s.length <= showChars) return "***";
   return s.substring(0, showChars) + "***(" + s.length + " chars)";
 }
+
+
+export function formatErrorForDebug(error: unknown): string {
+  if (error instanceof Error) {
+    const parts = [`${error.name}: ${error.message}`];
+    const maybe = error as Error & { stderr?: unknown; stdout?: unknown; code?: unknown };
+    if (maybe.code !== undefined) parts.push(`code=${String(maybe.code)}`);
+    if (typeof maybe.stderr === "string" && maybe.stderr.trim()) parts.push(`stderr=${maybe.stderr.trim()}`);
+    if (typeof maybe.stdout === "string" && maybe.stdout.trim()) parts.push(`stdout=${maybe.stdout.trim()}`);
+    if (error.stack) parts.push(`stack=${error.stack}`);
+    return parts.join(" | ");
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}

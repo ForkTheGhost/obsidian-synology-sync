@@ -5,7 +5,7 @@ import { SyncEngine, SyncResult } from "./sync";
 import { NativeGitSyncEngine } from "./git-sync";
 import { GitFileStationSyncEngine } from "./git-filestation-sync";
 import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, migrateLoadedSettings } from "./settings";
-import { debugLog, getDebugLog } from "./debug";
+import { debugLog, formatErrorForDebug, getDebugLog } from "./debug";
 
 // UUID generator with fallbacks for older runtimes.
 // crypto.randomUUID requires iOS 15.4+ / Chromium 92+; we fall back through
@@ -253,6 +253,7 @@ export default class SynologySync extends Plugin {
 
       this.showResult(result);
     } catch (e) {
+      debugLog(`SYNC FAILED: ${formatErrorForDebug(e)}`);
       new Notice(`Sync failed: ${(e as Error).message}`);
       console.error("Synology Sync error:", e);
     } finally {
@@ -289,6 +290,7 @@ export default class SynologySync extends Plugin {
       }
       this.showResult(result);
     } catch (e) {
+      debugLog(`GIT SYNC FAILED: ${formatErrorForDebug(e)}`);
       new Notice(`Git sync failed: ${(e as Error).message}`);
       console.error("Git-backed Synology Sync error:", e);
     } finally {
@@ -324,6 +326,7 @@ export default class SynologySync extends Plugin {
       }
       this.showResult(result);
     } catch (e) {
+      debugLog(`GIT-OVER-FILE-STATION SYNC FAILED: ${formatErrorForDebug(e)}`);
       new Notice(`Git-over-File-Station sync failed: ${(e as Error).message}`);
       console.error("Git-over-File-Station Synology Sync error:", e);
     } finally {
