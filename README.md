@@ -148,3 +148,15 @@ All changes require a PR. Direct commits to the default branch are not permitted
 - Reference the issue in the PR description (`Closes #N` or `Ref #N`)
 - Include a `CHANGELOG.md` entry — one entry per issue, referencing the issue number for full context
 - All code review comments must be acknowledged and addressed before merge — no unresolved items at merge time
+
+## Git-over-File-Station sync
+
+Git-backed File Station sync uses a real bare Git repository on the NAS as the canonical sync store. Obsidian clients use File Station/QuickConnect as the transport to that bare repo; agents and desktops that can reach the NAS path can use normal Git clone/pull/commit/push workflows against the same repository.
+
+Example NAS layout:
+
+```text
+/path/to/MyVault.git/     # canonical bare Git repo
+```
+
+The normal Markdown file tree is materialized locally on each client from Git. A separate NAS-side folder of human-readable Markdown files is optional convenience, not the source of truth. If you want one, create it with a scheduled mirror task. See `examples/materialize-mirror.sh` for a generic Synology Task Scheduler example. Customize the paths before using it; the repository intentionally does not contain user-specific paths.

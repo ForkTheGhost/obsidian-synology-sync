@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add Git-over-File-Station sync mode that treats a Synology-hosted bare Git repo as the canonical store while keeping normal Git compatibility for agents/desktops.
+- Add a generic Synology Task Scheduler demo script for materializing an optional human-readable mirror from the bare repo.
+
 ## 2026.0513.2
 
 ### fix: Move Git-backed sync lower in settings

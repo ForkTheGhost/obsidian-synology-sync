@@ -42,11 +42,12 @@ describe("DEFAULT_SETTINGS", () => {
     expect(s.syncIdentityId).toBe("");
   });
 
-  it("has safe defaults for experimental Git filesystem sync", () => {
+  it("has safe generic defaults for Git-backed sync", () => {
     expect(DEFAULT_SETTINGS.gitRemotePath).toBe("");
+    expect(DEFAULT_SETTINGS.gitFileStationRepoPath).toBe("");
     expect(DEFAULT_SETTINGS.gitBranch).toBe("main");
-    expect(DEFAULT_SETTINGS.gitAuthorName).toBe("Ray Piller");
-    expect(DEFAULT_SETTINGS.gitAuthorEmail).toBe("ray@vertigion.com");
+    expect(DEFAULT_SETTINGS.gitAuthorName).toBe("Obsidian Synology Sync");
+    expect(DEFAULT_SETTINGS.gitAuthorEmail).toBe("synology-sync@local");
   });
 });
 

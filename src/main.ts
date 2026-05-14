@@ -3,6 +3,7 @@ import { FileStation, FileStationConfig, LoginResult } from "./filestation";
 import { resolveQuickConnect } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { NativeGitSyncEngine } from "./git-sync";
+import { GitFileStationSyncEngine } from "./git-filestation-sync";
 import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, migrateLoadedSettings } from "./settings";
 import { debugLog, getDebugLog } from "./debug";
 
@@ -74,7 +75,7 @@ export default class SynologySync extends Plugin {
 
     this.setupAutoSync();
 
-    const hasStartupTarget = !!this.settings.remotePath || !!this.settings.gitRemotePath;
+    const hasStartupTarget = !!this.settings.remotePath || !!this.settings.gitRemotePath || !!this.settings.gitFileStationRepoPath;
     if (this.settings.syncOnStartup && hasStartupTarget) {
       // Use onLayoutReady instead of a fixed 5s timeout so we sync as soon as
       // the workspace is ready (typically <1s) rather than always waiting 5s.
@@ -194,6 +195,11 @@ export default class SynologySync extends Plugin {
       return;
     }
 
+    if (this.settings.syncBackend === "git-filestation") {
+      await this.runGitFileStationSync();
+      return;
+    }
+
     if (!this.settings.remotePath) {
       new Notice("Configure remote folder path in Synology Sync settings first");
       return;
@@ -259,7 +265,7 @@ export default class SynologySync extends Plugin {
 
   private async runGitSync(): Promise<void> {
     if (!this.settings.gitRemotePath) {
-      new Notice("Configure Git bare repository path in Synology Sync settings first");
+      new Notice("Configure mounted Git bare repository path in Synology Sync settings first");
       return;
     }
 
@@ -286,6 +292,44 @@ export default class SynologySync extends Plugin {
       new Notice(`Git sync failed: ${(e as Error).message}`);
       console.error("Git-backed Synology Sync error:", e);
     } finally {
+      this.syncing = false;
+    }
+  }
+
+  private async runGitFileStationSync(): Promise<void> {
+    if (!this.settings.gitFileStationRepoPath) {
+      new Notice("Configure Git bare repository path on NAS in Synology Sync settings first");
+      return;
+    }
+
+    this.syncing = true;
+    new Notice("Git-over-File-Station sync starting...");
+
+    let fs: FileStation | null = null;
+    try {
+      fs = await this.getFileStation();
+      const engine = new GitFileStationSyncEngine(this.app.vault, fs, {
+        remotePath: this.settings.gitFileStationRepoPath,
+        branch: this.settings.gitBranch,
+        syncIdentityId: this.settings.syncIdentityId,
+        authorName: this.settings.gitAuthorName,
+        authorEmail: this.settings.gitAuthorEmail,
+      });
+
+      const result = await engine.sync();
+      const hasInfraError = result.errors.some((e) => e.path.startsWith("<"));
+      if (!hasInfraError) {
+        this.settings.lastSync = Date.now();
+        await this.saveSettings();
+      }
+      this.showResult(result);
+    } catch (e) {
+      new Notice(`Git-over-File-Station sync failed: ${(e as Error).message}`);
+      console.error("Git-over-File-Station Synology Sync error:", e);
+    } finally {
+      if (fs) {
+        try { await fs.logout(); } catch { /* ignore */ }
+      }
       this.syncing = false;
     }
   }
