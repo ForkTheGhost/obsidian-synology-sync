@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 2026.0514.2
+
+### Fixed
+
+- Log top-level sync failures into the plugin debug log so failure notices are diagnosable.
+- Create nested Git-over-File-Station remote repo folders one segment at a time.
+
 ## 2026.0514.1
 
 ### Added
