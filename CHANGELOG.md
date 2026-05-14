@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 2026.0514.1
+
 ### Added
 
 - Add Git-over-File-Station sync mode that treats a Synology-hosted bare Git repo as the canonical store while keeping normal Git compatibility for agents/desktops.
