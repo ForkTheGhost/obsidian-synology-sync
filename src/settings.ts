@@ -5,7 +5,7 @@ import { getDebugLog, clearDebugLog } from "./debug";
 import { FileStation, FileInfo } from "./filestation";
 
 export interface SynologySyncSettings {
-  syncBackend: "filestation" | "git-filesystem";
+  syncBackend: "filestation" | "git-filesystem" | "git-filestation";
   connectionType: "quickconnect" | "direct";
   quickConnectId: string;
   host: string;
@@ -48,9 +48,11 @@ export interface SynologySyncSettings {
   // out-of-memory errors on mobile. 0 disables the limit. Default: 100.
   maxFileSizeMb: number;
 
-  // Experimental Git-backed filesystem remote mode. Each device uses a local
-  // vault clone and this path points at a bare repository, commonly a UNC path.
+  // Git-backed sync modes. Filesystem mode points native Git at a mounted bare
+  // repo path. File Station mode stores a real bare repo on the NAS and uses
+  // File Station/QuickConnect as the transport.
   gitRemotePath: string;
+  gitFileStationRepoPath: string;
   gitBranch: string;
   gitAuthorName: string;
   gitAuthorEmail: string;
@@ -85,9 +87,10 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   remoteAbsenceGraceCycles: 2,
   maxFileSizeMb: 100,
   gitRemotePath: "",
+  gitFileStationRepoPath: "",
   gitBranch: "main",
-  gitAuthorName: "Ray Piller",
-  gitAuthorEmail: "ray@vertigion.com",
+  gitAuthorName: "Obsidian Synology Sync",
+  gitAuthorEmail: "synology-sync@local",
 };
 
 // Legacy default that was shipped in releases prior to 2026.0505.1.
@@ -322,27 +325,57 @@ export class SynologySyncSettingTab extends PluginSettingTab {
       .setDesc("Optional desktop-only Git behavior layered under the Synology/File Station flow.")
       .addToggle((toggle) =>
         toggle
-          .setValue(this.plugin.settings.syncBackend === "git-filesystem")
+          .setValue(this.plugin.settings.syncBackend !== "filestation")
           .onChange(async (value) => {
-            this.plugin.settings.syncBackend = value ? "git-filesystem" : "filestation";
+            this.plugin.settings.syncBackend = value ? "git-filestation" : "filestation";
             await this.plugin.saveSettings();
             this.display();
           })
       );
 
-    if (this.plugin.settings.syncBackend === "git-filesystem") {
+    if (this.plugin.settings.syncBackend !== "filestation") {
       new Setting(containerEl)
-        .setName("Bare repository path")
-        .setDesc("Filesystem path to a bare Git repo, such as \\\\Synology\\Obsidian\\MyVault.git. Empty paths are initialized as bare repos.")
-        .addText((text) =>
-          text
-            .setPlaceholder("\\\\Synology\\Obsidian\\MyVault.git")
-            .setValue(this.plugin.settings.gitRemotePath)
-            .onChange(async (value) => {
-              this.plugin.settings.gitRemotePath = value.trim();
+        .setName("Git transport")
+        .setDesc("Use File Station/QuickConnect for Obsidian plugin sync, or a mounted filesystem path for desktop-only native Git sync.")
+        .addDropdown((dd) =>
+          dd
+            .addOption("git-filestation", "File Station / QuickConnect bare repo")
+            .addOption("git-filesystem", "Mounted filesystem bare repo")
+            .setValue(this.plugin.settings.syncBackend)
+            .onChange(async (value: string) => {
+              this.plugin.settings.syncBackend = value as "git-filestation" | "git-filesystem";
               await this.plugin.saveSettings();
+              this.display();
             })
         );
+
+      if (this.plugin.settings.syncBackend === "git-filestation") {
+        new Setting(containerEl)
+          .setName("Bare repository path on NAS")
+          .setDesc("Full File Station path to a bare Git repo (for example /homes/username/Obsidian/MyVault.git). This is the canonical sync store; normal vault files are checked out locally from it.")
+          .addText((text) =>
+            text
+              .setPlaceholder("/homes/username/Obsidian/MyVault.git")
+              .setValue(this.plugin.settings.gitFileStationRepoPath)
+              .onChange(async (value) => {
+                this.plugin.settings.gitFileStationRepoPath = value.trim();
+                await this.plugin.saveSettings();
+              })
+          );
+      } else {
+        new Setting(containerEl)
+          .setName("Mounted bare repository path")
+          .setDesc("Filesystem path to a bare Git repo reachable by this desktop, such as \\\\NAS\\Share\\MyVault.git or /Volumes/Share/MyVault.git.")
+          .addText((text) =>
+            text
+              .setPlaceholder("\\\\NAS\\Share\\MyVault.git")
+              .setValue(this.plugin.settings.gitRemotePath)
+              .onChange(async (value) => {
+                this.plugin.settings.gitRemotePath = value.trim();
+                await this.plugin.saveSettings();
+              })
+          );
+      }
 
       new Setting(containerEl)
         .setName("Branch")
@@ -362,19 +395,19 @@ export class SynologySyncSettingTab extends PluginSettingTab {
         .setDesc("Used for automatic sync commits if the local repo has no author configured")
         .addText((text) =>
           text
-            .setPlaceholder("Ray Piller")
+            .setPlaceholder("Obsidian Synology Sync")
             .setValue(this.plugin.settings.gitAuthorName)
             .onChange(async (value) => {
-              this.plugin.settings.gitAuthorName = value.trim() || "Ray Piller";
+              this.plugin.settings.gitAuthorName = value.trim() || "Obsidian Synology Sync";
               await this.plugin.saveSettings();
             })
         )
         .addText((text) =>
           text
-            .setPlaceholder("ray@vertigion.com")
+            .setPlaceholder("synology-sync@local")
             .setValue(this.plugin.settings.gitAuthorEmail)
             .onChange(async (value) => {
-              this.plugin.settings.gitAuthorEmail = value.trim() || "ray@vertigion.com";
+              this.plugin.settings.gitAuthorEmail = value.trim() || "synology-sync@local";
               await this.plugin.saveSettings();
             })
         );
@@ -460,7 +493,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
     } else {
       new Setting(containerEl)
         .setName("Git notes")
-        .setDesc("Git backend uses normal Git merge behavior plus .gitignore/.git/info/exclude. File Station conflict, orphan-delete, regex exclude, and file-size settings are ignored.");
+        .setDesc("Git backend uses real Git commits and merge behavior. In File Station mode, the NAS path is a bare Git repo used as the canonical store; human-readable files are checked out locally or by an optional server-side mirror task.");
     }
 
     // Status
