@@ -214,6 +214,29 @@ describe("FileStation", () => {
     });
   });
 
+  describe("bare Git repo validation", () => {
+    it("detects a valid bare repository by HEAD, objects, and refs", async () => {
+      const fs = new FileStation({ baseUrl: "https://nas.local:5001", username: "u", password: "p" });
+      jest.spyOn(fs, "listFolder").mockResolvedValue([
+        { path: "/repo.git/HEAD", name: "HEAD", isdir: false },
+        { path: "/repo.git/objects", name: "objects", isdir: true },
+        { path: "/repo.git/refs", name: "refs", isdir: true },
+      ]);
+
+      await expect(fs.isBareGitRepo("/repo.git")).resolves.toBe(true);
+    });
+
+    it("rejects normal folders that are not bare repositories", async () => {
+      const fs = new FileStation({ baseUrl: "https://nas.local:5001", username: "u", password: "p" });
+      jest.spyOn(fs, "listFolder").mockResolvedValue([
+        { path: "/Vault/Note.md", name: "Note.md", isdir: false },
+        { path: "/Vault/.obsidian", name: ".obsidian", isdir: true },
+      ]);
+
+      await expect(fs.isBareGitRepo("/Vault")).resolves.toBe(false);
+    });
+  });
+
   describe("listAllFiles", () => {
     function makeListResp(files: Array<{ path: string; name: string; isdir: boolean }>) {
       return {
