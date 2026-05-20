@@ -352,7 +352,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
       if (this.plugin.settings.syncBackend === "git-filestation") {
         new Setting(containerEl)
           .setName("Bare repository path on NAS")
-          .setDesc("Full File Station path to a bare Git repo (for example /homes/username/Obsidian/MyVault.git). This is the canonical sync store; normal vault files are checked out locally from it.")
+          .setDesc("The NAS repo is the Git upstream; your readable notes remain in the local vault. Choose an existing bare repo such as /homes/username/Obsidian/MyVault.git.")
           .addText((text) =>
             text
               .setPlaceholder("/homes/username/Obsidian/MyVault.git")
@@ -361,6 +361,38 @@ export class SynologySyncSettingTab extends PluginSettingTab {
                 this.plugin.settings.gitFileStationRepoPath = value.trim();
                 await this.plugin.saveSettings();
               })
+          )
+          .addButton((btn) =>
+            btn.setButtonText("Browse").onClick(async () => {
+              try {
+                const fs = await this.plugin.getFileStation();
+                new FolderBrowserModal(this.app, fs, this.plugin.settings.gitFileStationRepoPath, async (path) => {
+                  this.plugin.settings.gitFileStationRepoPath = path;
+                  await this.plugin.saveSettings();
+                  this.display();
+                }, {
+                  title: "Select bare Git repo",
+                  selectLabel: (path) => `Use this repo: ${path}`,
+                  emptySelectionLabel: "Select a repo folder first",
+                  selectedNotice: (path) => `Bare repo path set to: ${path}`,
+                  validateSelection: async (fs, path) => {
+                    const bare = await fs.isBareGitRepo(path);
+                    if (bare) {
+                      return {
+                        ok: true,
+                        message: "Bare Git repo detected. This will be used as the shared upstream; do not open it as an Obsidian vault.",
+                      };
+                    }
+                    return {
+                      ok: false,
+                      message: "This looks like a normal folder, not a bare Git repo. Choose a repo folder such as MyVault.git or initialize one first.",
+                    };
+                  },
+                }).open();
+              } catch (e) {
+                new Notice(`Browse failed: ${(e as Error).message}`);
+              }
+            })
           );
       } else {
         new Setting(containerEl)
@@ -531,18 +563,39 @@ export class SynologySyncSettingTab extends PluginSettingTab {
   }
 }
 
+interface FolderBrowserValidationResult {
+  ok: boolean;
+  message: string;
+}
+
+interface FolderBrowserModalOptions {
+  title?: string;
+  selectLabel?: (path: string) => string;
+  emptySelectionLabel?: string;
+  selectedNotice?: (path: string) => string;
+  validateSelection?: (fs: FileStation, path: string) => Promise<FolderBrowserValidationResult>;
+}
+
 class FolderBrowserModal extends Modal {
   private fs: FileStation;
   private currentPath: string;
-  private pathHistory: string[];
   private onSelect: (path: string) => void;
+  private options: FolderBrowserModalOptions;
+  private validation: FolderBrowserValidationResult | null = null;
+  private validating = false;
 
-  constructor(app: App, fs: FileStation, initialPath: string, onSelect: (path: string) => void) {
+  constructor(
+    app: App,
+    fs: FileStation,
+    initialPath: string,
+    onSelect: (path: string) => void,
+    options: FolderBrowserModalOptions = {},
+  ) {
     super(app);
     this.fs = fs;
     this.currentPath = initialPath || "";
-    this.pathHistory = [];
     this.onSelect = onSelect;
+    this.options = options;
   }
 
   async onOpen() {
@@ -557,8 +610,10 @@ class FolderBrowserModal extends Modal {
   private async renderFolder() {
     const { contentEl } = this;
     contentEl.empty();
+    this.validation = null;
+    this.validating = !!(this.currentPath && this.options.validateSelection);
 
-    contentEl.createEl("h2", { text: "Select Folder" });
+    contentEl.createEl("h2", { text: this.options.title || "Select Folder" });
 
     // Current path display
     const pathBar = contentEl.createDiv({ cls: "synology-path-bar" });
@@ -570,6 +625,10 @@ class FolderBrowserModal extends Modal {
     pathBar.style.fontSize = "13px";
     pathBar.style.wordBreak = "break-all";
     pathBar.setText(this.currentPath || "/");
+
+    const validationEl = contentEl.createDiv({ cls: "setting-item-description" });
+    validationEl.style.marginBottom = "12px";
+    if (this.validating) validationEl.setText("Validating selection...");
 
     // Action buttons row
     const actions = contentEl.createDiv();
@@ -588,17 +647,34 @@ class FolderBrowserModal extends Modal {
     }
 
     const selectBtn = actions.createEl("button", {
-      text: this.currentPath ? `Select "${this.currentPath}"` : "Select a folder first",
+      text: this.currentPath
+        ? (this.options.selectLabel ? this.options.selectLabel(this.currentPath) : `Select "${this.currentPath}"`)
+        : (this.options.emptySelectionLabel || "Select a folder first"),
       cls: this.currentPath ? "mod-cta" : "",
     });
-    if (this.currentPath) {
-      selectBtn.addEventListener("click", () => {
-        this.onSelect(this.currentPath);
-        new Notice(`Remote path set to: ${this.currentPath}`);
-        this.close();
-      });
-    } else {
-      selectBtn.disabled = true;
+    selectBtn.disabled = !this.currentPath || this.validating;
+    selectBtn.addEventListener("click", () => {
+      if (!this.currentPath) return;
+      if (this.options.validateSelection && !this.validation?.ok) {
+        new Notice(this.validation?.message || "Selection is not valid");
+        return;
+      }
+      this.onSelect(this.currentPath);
+      new Notice(this.options.selectedNotice ? this.options.selectedNotice(this.currentPath) : `Remote path set to: ${this.currentPath}`);
+      this.close();
+    });
+
+    if (this.currentPath && this.options.validateSelection) {
+      try {
+        this.validation = await this.options.validateSelection(this.fs, this.currentPath);
+      } catch (e) {
+        this.validation = {
+          ok: false,
+          message: `Could not validate this path. Permission may be limited or File Station could not list the required Git directories. ${(e as Error).message}`,
+        };
+      }
+      validationEl.setText(this.validation.message);
+      selectBtn.disabled = !this.validation.ok;
     }
 
     // Loading indicator
@@ -634,7 +710,7 @@ class FolderBrowserModal extends Modal {
         row.style.alignItems = "center";
         row.style.gap = "8px";
 
-        row.createSpan({ text: "\uD83D\uDCC1" }); // folder emoji
+        row.createSpan({ text: "📁" }); // folder emoji
         row.createSpan({ text: folder.name || folder.path.split("/").pop() });
 
         row.addEventListener("mouseenter", () => {

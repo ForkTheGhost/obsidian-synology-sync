@@ -361,6 +361,17 @@ export class FileStation {
     return data.data.files;
   }
 
+  async isBareGitRepo(folderPath: string): Promise<boolean> {
+    try {
+      const files = await this.listFolder(folderPath);
+      const names = new Set(files.map((f) => f.name));
+      const hasDir = (name: string) => files.some((f) => f.name === name && f.isdir);
+      return names.has("HEAD") && hasDir("objects") && hasDir("refs");
+    } catch (e) {
+      throw new Error(`Could not validate bare Git repo: ${(e as Error).message}`);
+    }
+  }
+
   async listAllFiles(basePath: string): Promise<FileInfo[]> {
     const all: FileInfo[] = [];
     let frontier: string[] = [basePath];
