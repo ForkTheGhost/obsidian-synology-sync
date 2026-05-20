@@ -265,8 +265,8 @@ export default class SynologySync extends Plugin {
   }
 
   private async runGitSync(): Promise<void> {
-    if (!this.settings.gitRemotePath) {
-      new Notice("Configure mounted Git bare repository path in Synology Sync settings first");
+    if (!this.settings.gitUseExistingLocalRepo && !this.settings.gitRemotePath) {
+      new Notice("Configure mounted Git bare repository path, or enable existing local Git repo mode, in Synology Sync settings first");
       return;
     }
 
@@ -275,11 +275,15 @@ export default class SynologySync extends Plugin {
 
     try {
       const engine = new NativeGitSyncEngine(this.app.vault, {
-        remotePath: this.settings.gitRemotePath,
+        remotePath: this.settings.gitUseExistingLocalRepo ? "" : this.settings.gitRemotePath,
         branch: this.settings.gitBranch,
         syncIdentityId: this.settings.syncIdentityId,
         authorName: this.settings.gitAuthorName,
         authorEmail: this.settings.gitAuthorEmail,
+        excludePatterns: this.settings.excludePatterns
+          .split("\n")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0),
       });
 
       const result = await engine.sync();

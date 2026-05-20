@@ -45,6 +45,7 @@ describe("DEFAULT_SETTINGS", () => {
   it("has safe generic defaults for Git-backed sync", () => {
     expect(DEFAULT_SETTINGS.gitRemotePath).toBe("");
     expect(DEFAULT_SETTINGS.gitFileStationRepoPath).toBe("");
+    expect(DEFAULT_SETTINGS.gitUseExistingLocalRepo).toBe(false);
     expect(DEFAULT_SETTINGS.gitBranch).toBe("main");
     expect(DEFAULT_SETTINGS.gitAuthorName).toBe("Obsidian Synology Sync");
     expect(DEFAULT_SETTINGS.gitAuthorEmail).toBe("synology-sync@local");
