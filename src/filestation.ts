@@ -33,6 +33,30 @@ export interface LoginResult {
   deviceToken?: string; // returned on first OTP login; save this for future logins
 }
 
+export type AuthPhase = "resolve_candidates" | "select_endpoint" | "start_login" | "classify_response" | "retry_without_token" | "prompt_otp" | "persist_replacement_token" | "repair_relay_session" | "fail";
+export type AuthEndpointKind = "direct" | "relay" | "manual" | "unknown";
+export type AuthResponseKind = "dsm_json_success" | "dsm_json_error" | "timeout" | "html_portal" | "network_error" | "unexpected_response";
+export type PersistedTokenAction = "keep" | "clear_for_retry" | "replace" | "none";
+export type AuthNextAction = "try_relay" | "retry_without_token" | "prompt_for_otp" | "save_token" | "repair_relay_or_choose_endpoint" | "fail_actionable" | "authenticated";
+
+export interface AuthState {
+  phase: AuthPhase;
+  endpointKind: AuthEndpointKind;
+  responseKind: AuthResponseKind;
+  persistedTokenAction: PersistedTokenAction;
+  message: string;
+  nextAction: AuthNextAction;
+}
+
+class AuthStateError extends Error {
+  state: AuthState;
+  constructor(state: AuthState) {
+    super(state.message);
+    this.name = "AuthStateError";
+    this.state = state;
+  }
+}
+
 const LOGIN_TIMEOUT_MS = 10000;
 
 function isLikelyHtmlResponse(error: unknown): boolean {
@@ -57,9 +81,24 @@ async function requestUrlWithTimeout(options: Parameters<typeof requestUrl>[0], 
 export class FileStation {
   private config: FileStationConfig;
   private sid: string | null = null;
+  private lastAuthState: AuthState | null = null;
 
   constructor(config: FileStationConfig) {
     this.config = config;
+  }
+
+  getLastAuthState(): AuthState | null {
+    return this.lastAuthState;
+  }
+
+  private endpointKind(): AuthEndpointKind {
+    return this.config.quickConnectRelay ? "relay" : "direct";
+  }
+
+  private setAuthState(state: AuthState): AuthState {
+    this.lastAuthState = state;
+    debugLog(`AUTH STATE: phase=${state.phase} endpoint=${state.endpointKind} response=${state.responseKind} token=${state.persistedTokenAction} next=${state.nextAction} message=${state.message}`);
+    return state;
   }
 
   private url(api: string, params: Record<string, string>): string {
@@ -146,9 +185,17 @@ export class FileStation {
     if (looksHtml) {
       const preview = text.slice(0, 120).replace(/\s+/g, " ");
       debugLog(`AUTH: NAS returned HTML on login (status=${resp.status}, content-type=${ct || "(unset)"}, body[0..120]=${preview})`);
-      // Clear the saved device token so the next attempt tries a fresh credential login.
-      this.config.deviceToken = undefined;
-      throw new Error("Synology login failed: NAS returned an HTML page instead of JSON. Your saved device token may have expired — open plugin settings and re-save to re-authenticate.");
+      const state = this.setAuthState({
+        phase: this.config.quickConnectRelay ? "repair_relay_session" : "fail",
+        endpointKind: this.endpointKind(),
+        responseKind: "html_portal",
+        persistedTokenAction: "keep",
+        message: this.config.quickConnectRelay
+          ? "QuickConnect relay responded with a browser page instead of File Station API JSON. The relay/API session needs repair or a different endpoint."
+          : "Synology login failed: endpoint returned a browser page instead of File Station API JSON. Choose a File Station API endpoint.",
+        nextAction: this.config.quickConnectRelay ? "repair_relay_or_choose_endpoint" : "fail_actionable",
+      });
+      throw new AuthStateError(state);
     }
     try {
       return JSON.parse(text);
@@ -158,7 +205,8 @@ export class FileStation {
       // may only set one). If that also fails, throw a clear error.
       const j = (resp as any).json;
       if (j && typeof j === "object") return j;
-      throw new Error("Synology login failed: response was not valid JSON");
+      const state = this.setAuthState({ phase: "classify_response", endpointKind: this.endpointKind(), responseKind: "unexpected_response", persistedTokenAction: "none", message: "Synology login failed: response was not valid JSON", nextAction: "fail_actionable" });
+      throw new AuthStateError(state);
     }
   }
 
@@ -181,11 +229,16 @@ export class FileStation {
     try {
       resp = await this.requestLogin(params);
     } catch (e) {
-      if (isLikelyHtmlResponse(e)) {
-        debugLog("AUTH: login endpoint returned HTML/non-JSON; selected baseUrl is not a File Station API endpoint");
-        throw new Error("Synology login failed: selected QuickConnect endpoint returned HTML instead of File Station API JSON");
+      const msg = (e as Error).message;
+      if (/timed out/i.test(msg)) {
+        this.setAuthState({ phase: "fail", endpointKind: this.endpointKind(), responseKind: "timeout", persistedTokenAction: "none", message: "Login timed out before DSM returned an auth response.", nextAction: this.config.quickConnectRelay ? "fail_actionable" : "try_relay" });
+      } else if (isLikelyHtmlResponse(e)) {
+        this.setAuthState({ phase: "repair_relay_session", endpointKind: this.endpointKind(), responseKind: "html_portal", persistedTokenAction: "keep", message: "QuickConnect relay responded with a browser page instead of File Station API JSON. The relay/API session needs repair or a different endpoint.", nextAction: "repair_relay_or_choose_endpoint" });
+        throw new AuthStateError(this.lastAuthState!);
+      } else {
+        this.setAuthState({ phase: "fail", endpointKind: this.endpointKind(), responseKind: "network_error", persistedTokenAction: "none", message: `Network error during Synology login: ${msg}`, nextAction: "fail_actionable" });
       }
-      debugLog(`AUTH: request failed: ${(e as Error).message}`);
+      debugLog(`AUTH: request failed: ${msg}`);
       throw e;
     }
 
@@ -195,11 +248,20 @@ export class FileStation {
       throw new Error("Synology login failed: File Station API returned a non-JSON response");
     }
     debugLog(`AUTH: response success=${data.success}`);
+    this.setAuthState({
+      phase: "classify_response",
+      endpointKind: this.endpointKind(),
+      responseKind: data.success ? "dsm_json_success" : "dsm_json_error",
+      persistedTokenAction: "keep",
+      message: data.success ? "DSM File Station authentication succeeded." : `DSM returned auth error code ${data.error?.code ?? "unknown"}.`,
+      nextAction: data.success ? "authenticated" : (data.error?.code === 403 ? "prompt_for_otp" : "fail_actionable"),
+    });
 
     // Fix B: one-shot retry when DSM rejects a saved device token (code 403 with
     // device_id present in the request). Without this we surface a confusing
     // "2FA code required" error to a user who expected their device to be trusted.
     if (!data.success && data.error?.code === 403 && this.config.deviceToken) {
+      this.setAuthState({ phase: "retry_without_token", endpointKind: this.endpointKind(), responseKind: "dsm_json_error", persistedTokenAction: "clear_for_retry", message: "DSM rejected the saved device token. Re-enter OTP to trust this device again.", nextAction: "retry_without_token" });
       debugLog("AUTH: device token rejected (code 403); retrying without device token");
       this.config.deviceToken = undefined;
       params = this.buildLoginParams();
@@ -278,6 +340,9 @@ export class FileStation {
     // Note: data.data.device_id is the DEVICE TOKEN for re-login, not our UUID.
     const deviceToken = data.data.did || data.data.device_id || data.data.device_token;
     debugLog(`AUTH: extracted deviceToken=${redact(deviceToken)} from response`);
+    if (deviceToken && deviceToken !== this.config.deviceToken) {
+      this.setAuthState({ phase: "persist_replacement_token", endpointKind: this.endpointKind(), responseKind: "dsm_json_success", persistedTokenAction: "replace", message: this.config.otpCode ? "OTP accepted and a replacement device token was saved." : "DSM returned a replacement device token to save.", nextAction: "save_token" });
+    }
 
     return {
       sid: data.data.sid,
