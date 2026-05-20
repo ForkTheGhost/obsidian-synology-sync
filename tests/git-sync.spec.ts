@@ -1,4 +1,4 @@
-import { classifyGitSetup, GitSetupState } from "../src/git-sync";
+import { buildGitExcludes, classifyGitConflict, classifyGitSetup, GitSetupState } from "../src/git-sync";
 
 const baseState: GitSetupState = {
   localRepoExists: false,
@@ -84,5 +84,28 @@ describe("classifyGitSetup", () => {
     });
 
     expect(result.action).toBe("invalid-remote");
+  });
+});
+
+
+describe("Obsidian config sync policy", () => {
+  it("defaults to notes-only by excluding volatile/device-local Obsidian config", () => {
+    const excludes = buildGitExcludes("notes-only");
+    expect(excludes).toContain(".obsidian/app.json");
+    expect(excludes).toContain(".obsidian/plugins/*/data.json");
+  });
+
+  it("allows selected settings opt-ins without blindly syncing plugin data", () => {
+    const excludes = buildGitExcludes("selected-settings", { pluginLists: true, hotkeys: true });
+    expect(excludes).not.toContain(".obsidian/community-plugins.json");
+    expect(excludes).not.toContain(".obsidian/hotkeys.json");
+    expect(excludes).toContain(".obsidian/plugins/*/data.json");
+  });
+
+  it("labels note conflicts and settings conflicts separately", () => {
+    expect(classifyGitConflict("Daily/today.md").kind).toBe("note");
+    const settingsConflict = classifyGitConflict(".obsidian/app.json");
+    expect(settingsConflict.kind).toBe("settings");
+    expect(settingsConflict.message).toContain("Your notes are safe");
   });
 });

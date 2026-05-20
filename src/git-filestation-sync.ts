@@ -2,6 +2,7 @@ import { TFile, Vault } from "obsidian";
 import { FileStation } from "./filestation";
 import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
+import { buildGitExcludes, classifyGitConflict } from "./git-sync";
 
 declare const require: ((id: string) => unknown) | undefined;
 
@@ -32,13 +33,7 @@ class GitCommandError extends Error {
   }
 }
 
-const DEFAULT_GIT_EXCLUDES = [
-  ".obsidian/plugins/synology-sync/",
-  ".obsidian/workspace-*",
-  ".trash/",
-  ".sync-tombstones/",
-  "node_modules/",
-];
+const DEFAULT_GIT_EXCLUDES = buildGitExcludes();
 
 /**
  * Syncs a local Obsidian vault using real Git commits and a bare repository
@@ -110,7 +105,9 @@ export class GitFileStationSyncEngine {
         result.conflicts.push(...conflicts);
         result.errors.push({
           path: "<git-merge>",
-          error: "Merge conflicts need to be resolved before Git sync can push.",
+          error: conflicts.some((p) => p.startsWith(".obsidian/"))
+          ? classifyGitConflict(conflicts.find((p) => p.startsWith(".obsidian/")) || conflicts[0]).message
+          : "Merge conflicts need to be resolved before Git sync can push.",
         });
         return result;
       }

@@ -103,11 +103,15 @@ describe("FileStation", () => {
         () => { throw new Error("expected login() to reject"); },
         (e: Error) => e,
       );
-      expect(err.message).toMatch(/HTML page/);
-      expect(err.message).toMatch(/device token/);
+      expect(err.message).toMatch(/browser page/);
+      expect(err.message).toMatch(/File Station API JSON/);
+      expect(fs.getLastAuthState()).toMatchObject({
+        responseKind: "html_portal",
+        persistedTokenAction: "keep",
+      });
     });
 
-    it("clears the saved device token after detecting an HTML login response", async () => {
+    it("keeps the saved device token after an HTML endpoint/relay-shape response", async () => {
       mockedRequestUrl.mockResolvedValueOnce({
         status: 200,
         headers: { "content-type": "text/html" },
@@ -122,9 +126,13 @@ describe("FileStation", () => {
       };
       const fs = new FileStation(cfg);
 
-      await expect(fs.login()).rejects.toThrow(/HTML page/);
-      // The constructor stored a reference; verify the internal config was cleared.
-      expect((fs as unknown as { config: { deviceToken?: string } }).config.deviceToken).toBeUndefined();
+      await expect(fs.login()).rejects.toThrow(/browser page/);
+      // HTML/browser portal is not proof of stale-token rejection. Keep it until DSM returns JSON 403.
+      expect((fs as unknown as { config: { deviceToken?: string } }).config.deviceToken).toBe("old-token");
+      expect(fs.getLastAuthState()).toMatchObject({
+        responseKind: "html_portal",
+        persistedTokenAction: "keep",
+      });
     });
 
     it("retries without the device token when DSM rejects it with code 403", async () => {
@@ -191,6 +199,60 @@ describe("FileStation", () => {
       });
 
       await expect(fs.login()).rejects.toThrow(/rejected/);
+    });
+
+
+    it("classifies relay HTML as relay repair without clearing token", async () => {
+      mockedRequestUrl
+        .mockResolvedValueOnce({ status: 200, text: "ok" })
+        .mockResolvedValueOnce({
+          status: 200,
+          headers: { "content-type": "text/html" },
+          text: "<!DOCTYPE html><html>Portal</html>",
+        });
+
+      const cfg = {
+        baseUrl: "https://example-nas.us5.quickconnect.to:443",
+        username: "user",
+        password: "pass",
+        deviceToken: "still-valid-until-json-403",
+        quickConnectRelay: true,
+      };
+      const fs = new FileStation(cfg);
+
+      await expect(fs.login()).rejects.toThrow(/browser page/);
+      expect(cfg.deviceToken).toBe("still-valid-until-json-403");
+      expect(fs.getLastAuthState()).toMatchObject({
+        phase: "repair_relay_session",
+        endpointKind: "relay",
+        responseKind: "html_portal",
+        persistedTokenAction: "keep",
+        nextAction: "repair_relay_or_choose_endpoint",
+      });
+    });
+
+    it("records replacement-token persistence state after OTP success", async () => {
+      mockedRequestUrl
+        .mockResolvedValueOnce({
+          status: 200,
+          text: JSON.stringify({ success: true, data: { sid: "sid-otp", device_id: "replacement-token" } }),
+        })
+        .mockResolvedValueOnce({ status: 200, json: { success: true, data: { model: "DS" } } });
+
+      const fs = new FileStation({
+        baseUrl: "https://nas.local:5001",
+        username: "user",
+        password: "pass",
+        otpCode: "123456",
+      });
+
+      await expect(fs.login()).resolves.toMatchObject({ deviceToken: "replacement-token" });
+      expect(fs.getLastAuthState()).toMatchObject({
+        phase: "persist_replacement_token",
+        responseKind: "dsm_json_success",
+        persistedTokenAction: "replace",
+        nextAction: "save_token",
+      });
     });
 
     it("parseJson helper surfaces a clear error when listFolder receives an HTML body", async () => {

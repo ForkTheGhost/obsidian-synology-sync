@@ -79,6 +79,61 @@ export const OBSIDIAN_CONFIG_SYNC_POLICY = [
   { category: "hotkeys/snippets", pattern: ".obsidian/hotkeys.json and .obsidian/snippets/", defaultBehavior: "opt-in shared setting" },
 ];
 
+export type ObsidianConfigSyncPolicy = "notes-only" | "selected-settings" | "full-config";
+
+export interface ObsidianConfigOptIns {
+  appearance?: boolean;
+  pluginLists?: boolean;
+  hotkeys?: boolean;
+  snippets?: boolean;
+  reviewedPluginConfig?: boolean;
+}
+
+export function buildGitExcludes(policy: ObsidianConfigSyncPolicy = "notes-only", optIns: ObsidianConfigOptIns = {}): string[] {
+  if (policy === "full-config") {
+    return [
+      ".obsidian/plugins/synology-sync/",
+      ".trash/",
+      ".sync-tombstones/",
+      "node_modules/",
+    ];
+  }
+
+  const excludes = [...DEFAULT_GIT_EXCLUDES];
+  if (policy === "selected-settings") {
+    if (optIns.appearance) removeAll(excludes, [".obsidian/app.json", ".obsidian/appearance.json", ".obsidian/graph.json"]);
+    if (optIns.pluginLists) removeAll(excludes, [".obsidian/community-plugins.json", ".obsidian/core-plugins.json", ".obsidian/core-plugins-migration.json"]);
+    if (optIns.hotkeys) removeAll(excludes, [".obsidian/hotkeys.json"]);
+    if (optIns.snippets) removeAll(excludes, [".obsidian/snippets/"]);
+    if (optIns.reviewedPluginConfig) removeAll(excludes, [".obsidian/plugins/*/data.json"]);
+  }
+  return excludes;
+}
+
+function removeAll(values: string[], remove: string[]): void {
+  for (const item of remove) {
+    const idx = values.indexOf(item);
+    if (idx >= 0) values.splice(idx, 1);
+  }
+}
+
+export function describeObsidianConfigPolicy(policy: ObsidianConfigSyncPolicy): string {
+  if (policy === "full-config") return "Advanced full config: most Obsidian config is synced; review secrets/device-path risk before enabling.";
+  if (policy === "selected-settings") return "Notes + selected settings: only checked categories are synced; plugin data remains excluded unless reviewed.";
+  return "Notes only: Markdown/assets sync by default; volatile/device-local Obsidian settings are excluded to avoid settings conflicts.";
+}
+
+export function classifyGitConflict(path: string): { kind: "settings" | "note" | "asset"; message: string } {
+  if (path.startsWith(".obsidian/")) {
+    return {
+      kind: "settings",
+      message: "Settings conflict: Obsidian configuration changed differently on two devices. Your notes are safe; choose whether to keep this device's settings, use the remote settings, or save both copies.",
+    };
+  }
+  if (/\.md$/i.test(path)) return { kind: "note", message: "Note conflict: this Markdown note changed differently on two devices." };
+  return { kind: "asset", message: "Asset conflict: this non-note file changed differently on two devices." };
+}
+
 export function classifyGitSetup(state: GitSetupState): GitSetupClassification {
   if (state.remoteExists && !state.remoteIsBareRepo && !state.remoteIsEmptyDirectory) {
     return {
@@ -239,7 +294,9 @@ export class NativeGitSyncEngine {
         result.conflicts.push(...conflicts);
         result.errors.push({
           path: "<git-merge>",
-          error: "Merge conflicts need to be resolved before Git sync can push.",
+          error: conflicts.some((p) => p.startsWith(".obsidian/"))
+          ? classifyGitConflict(conflicts.find((p) => p.startsWith(".obsidian/")) || conflicts[0]).message
+          : "Merge conflicts need to be resolved before Git sync can push.",
         });
         return result;
       }
@@ -309,7 +366,7 @@ export class NativeGitSyncEngine {
     return this.vault.getFiles().some((file) => {
       if (!(file instanceof TFile)) return false;
       if (isSetupOnlyPath(file.path)) return false;
-      const allExcludes = [...DEFAULT_GIT_EXCLUDES, ...(this.opts.excludePatterns || [])];
+      const allExcludes = [...buildGitExcludes(), ...(this.opts.excludePatterns || [])];
       if (allExcludes.some((pattern) => matchesSimpleExclude(file.path, pattern))) return false;
       return true;
     });
@@ -446,7 +503,7 @@ export class NativeGitSyncEngine {
     const path = getNodeModule("path") as { join: (...parts: string[]) => string; relative: (from: string, to: string) => string };
     const fs = getNodeModule("fs") as { existsSync: (p: string) => boolean; readdirSync: (p: string, opts?: { withFileTypes?: boolean }) => Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> };
     const found: string[] = [];
-    const allExcludes = [...DEFAULT_GIT_EXCLUDES, ...(this.opts.excludePatterns || [])];
+    const allExcludes = [...buildGitExcludes(), ...(this.opts.excludePatterns || [])];
 
     const walk = (dir: string): void => {
       let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
@@ -483,7 +540,7 @@ export class NativeGitSyncEngine {
     const excludePath = path.join(this.cwd, ".git", "info", "exclude");
     fs.mkdirSync(path.dirname(excludePath), { recursive: true });
     const prior = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf8") : "";
-    const allExcludes = [...DEFAULT_GIT_EXCLUDES, ...(this.opts.excludePatterns || [])];
+    const allExcludes = [...buildGitExcludes(), ...(this.opts.excludePatterns || [])];
     const missing = allExcludes.filter((line) => !prior.split(/\r?\n/).includes(line));
     if (missing.length > 0) {
       fs.appendFileSync(excludePath, `${prior.endsWith("\n") || prior.length === 0 ? "" : "\n"}${missing.join("\n")}\n`, "utf8");
