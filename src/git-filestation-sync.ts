@@ -2,7 +2,7 @@ import { TFile, Vault } from "obsidian";
 import { FileStation } from "./filestation";
 import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
-import { buildGitExcludes, classifyGitConflict } from "./git-sync";
+import { buildGitExcludes, classifyGitConflict, nestedGitRepoError } from "./git-sync";
 
 declare const require: ((id: string) => unknown) | undefined;
 
@@ -78,6 +78,13 @@ export class GitFileStationSyncEngine {
 
     const remoteHadCommits = await this.remoteHasCommits();
     const localHadCommits = await this.localHasCommits();
+
+    const nestedRepos = this.findNestedGitRepositories();
+    if (nestedRepos.length > 0) {
+      result.errors.push(nestedGitRepoError(nestedRepos));
+      return result;
+    }
+
     const localChanged = await this.changedFiles();
 
     if (!localHadCommits && remoteHadCommits && !this.localHasUserFiles()) {
@@ -325,6 +332,32 @@ export class GitFileStationSyncEngine {
       }
       current = current ? `${current}/${part}` : part;
     }
+  }
+
+  private findNestedGitRepositories(): string[] {
+    const path = getNodeModule("path") as { join: (...parts: string[]) => string; relative: (from: string, to: string) => string };
+    const fs = getNodeModule("fs") as { readdirSync: (p: string, opts?: { withFileTypes?: boolean }) => Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> };
+    const found: string[] = [];
+    const allExcludes = DEFAULT_GIT_EXCLUDES;
+
+    const walk = (dir: string): void => {
+      let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (entry.name === ".git" && dir === this.cwd) continue;
+        const full = path.join(dir, entry.name);
+        const rel = path.relative(this.cwd, full).replace(/\\/g, "/");
+        if (!rel || allExcludes.some((pattern) => matchesSimpleExclude(rel, pattern))) continue;
+        if (entry.name === ".git" && (entry.isDirectory() || entry.isFile())) {
+          found.push(path.relative(this.cwd, dir).replace(/\\/g, "/") || ".");
+          continue;
+        }
+        if (entry.isDirectory()) walk(full);
+      }
+    };
+
+    walk(this.cwd);
+    return Array.from(new Set(found)).sort();
   }
 
   private async writeInfoExclude(): Promise<void> {
