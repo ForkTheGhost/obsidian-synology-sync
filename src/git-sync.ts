@@ -134,6 +134,13 @@ export function classifyGitConflict(path: string): { kind: "settings" | "note" |
   return { kind: "asset", message: "Asset conflict: this non-note file changed differently on two devices." };
 }
 
+export function nestedGitRepoError(nestedRepos: string[]): { path: string; error: string } {
+  return {
+    path: "<nested-git-repositories>",
+    error: `Nested Git repositories found before staging: ${nestedRepos.join(", ")}. These folders are separate repositories and will not sync as normal vault files. Safest remediation: exclude these folders from sync. Only remove nested .git metadata if they are archived copies and you have a backup; submodules are advanced/manual.`,
+  };
+}
+
 export function classifyGitSetup(state: GitSetupState): GitSetupClassification {
   if (state.remoteExists && !state.remoteIsBareRepo && !state.remoteIsEmptyDirectory) {
     return {
@@ -242,21 +249,18 @@ export class NativeGitSyncEngine {
       await this.fetchOrigin();
     }
 
+    const nestedRepos = this.findNestedGitRepositories();
+    if (nestedRepos.length > 0) {
+      result.errors.push(nestedGitRepoError(nestedRepos));
+      return result;
+    }
+
     const localChanged = await this.changedFiles();
     const checkoutNeedsLocalCheckpoint =
       classification.action === "checkout-remote" && localChanged.length > 0;
 
     if (classification.action === "checkout-remote" && !checkoutNeedsLocalCheckpoint) {
       await this.checkoutRemote(result);
-      return result;
-    }
-
-    const nestedRepos = this.findNestedGitRepositories();
-    if (nestedRepos.length > 0) {
-      result.errors.push({
-        path: "<nested-git-repositories>",
-        error: `Nested Git repositories found before staging: ${nestedRepos.join(", ")}. These folders are separate repositories and will not sync as normal vault files. Safest remediation: exclude these folders from sync. Only remove nested .git metadata if they are archived copies and you have a backup; submodules are advanced/manual.`,
-      });
       return result;
     }
 

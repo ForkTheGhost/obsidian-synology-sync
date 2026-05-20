@@ -1,4 +1,4 @@
-import { buildGitExcludes, classifyGitConflict, classifyGitSetup, GitSetupState } from "../src/git-sync";
+import { buildGitExcludes, classifyGitConflict, classifyGitSetup, GitSetupState, nestedGitRepoError } from "../src/git-sync";
 
 const baseState: GitSetupState = {
   localRepoExists: false,
@@ -107,5 +107,16 @@ describe("Obsidian config sync policy", () => {
     const settingsConflict = classifyGitConflict(".obsidian/app.json");
     expect(settingsConflict.kind).toBe("settings");
     expect(settingsConflict.message).toContain("Your notes are safe");
+  });
+});
+
+
+describe("nested Git repository diagnostics", () => {
+  it("surfaces a safe remediation message before git status can recurse into a corrupt submodule", () => {
+    const error = nestedGitRepoError([".archive/vaultBSWH"]);
+    expect(error.path).toBe("<nested-git-repositories>");
+    expect(error.error).toContain(".archive/vaultBSWH");
+    expect(error.error).toContain("before staging");
+    expect(error.error).toContain("exclude these folders");
   });
 });
