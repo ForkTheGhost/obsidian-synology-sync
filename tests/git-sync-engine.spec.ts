@@ -85,6 +85,17 @@ async function syncVault(localPath: string, remotePath: string): Promise<void> {
   expect(result.errors).toEqual([]);
 }
 
+async function syncExistingLocalRepo(localPath: string): Promise<ReturnType<NativeGitSyncEngine["sync"]>> {
+  const engine = new NativeGitSyncEngine(new FakeVault(localPath), {
+    remotePath: "",
+    branch: "main",
+    syncIdentityId: "test-device",
+    authorName: "Test Sync",
+    authorEmail: "test@example.invalid",
+  });
+  return engine.sync();
+}
+
 const describeIfGit = hasNativeGit() ? describe : describe.skip;
 
 describeIfGit("NativeGitSyncEngine", () => {
@@ -159,5 +170,65 @@ describeIfGit("NativeGitSyncEngine", () => {
     execFileSync("git", ["clone", remote, clone], { stdio: "ignore" });
     expect(readText(clone, "local.md")).toBe("# Local\n");
     expect(readText(clone, "remote.md")).toBe("# Remote\n");
+  });
+
+  it("creates local checkpoints for an existing .git vault without requiring a File Station target", async () => {
+    const local = join(root, "local");
+    mkdirSync(local);
+    git(local, ["init", "-b", "main"]);
+    git(local, ["config", "user.name", "Existing User"]);
+    git(local, ["config", "user.email", "existing@example.invalid"]);
+    writeFile(local, "note.md", "# Local checkpoint only\n");
+
+    const result = await syncExistingLocalRepo(local);
+
+    expect(result.uploaded).toContain("note.md");
+    expect(result.errors[0].path).toBe("<git-publish>");
+    execFileSync("git", ["rev-parse", "--verify", "HEAD"], { cwd: local, stdio: "ignore" });
+  });
+
+  it("blocks nested Git repositories before staging", async () => {
+    const local = join(root, "local");
+    const remote = join(root, "remote.git");
+    mkdirSync(local);
+    writeFile(local, "note.md", "# Local\n");
+    mkdirSync(join(local, "archive", "old-vault"), { recursive: true });
+    git(join(local, "archive", "old-vault"), ["init", "-b", "main"]);
+
+    const engine = new NativeGitSyncEngine(new FakeVault(local), {
+      remotePath: remote,
+      branch: "main",
+      syncIdentityId: "test-device",
+      authorName: "Test Sync",
+      authorEmail: "test@example.invalid",
+    });
+    const result = await engine.sync();
+
+    expect(result.errors[0].path).toBe("<nested-git-repositories>");
+    expect(result.errors[0].error).toContain("archive/old-vault");
+  });
+
+  it("respects excludes before warning about nested Git repositories", async () => {
+    const local = join(root, "local");
+    const remote = join(root, "remote.git");
+    const clone = join(root, "clone");
+    mkdirSync(local);
+    writeFile(local, "note.md", "# Local\n");
+    mkdirSync(join(local, "archive", "old-vault"), { recursive: true });
+    git(join(local, "archive", "old-vault"), ["init", "-b", "main"]);
+
+    const engine = new NativeGitSyncEngine(new FakeVault(local), {
+      remotePath: remote,
+      branch: "main",
+      syncIdentityId: "test-device",
+      authorName: "Test Sync",
+      authorEmail: "test@example.invalid",
+      excludePatterns: ["archive/"],
+    });
+    const result = await engine.sync();
+
+    expect(result.errors).toEqual([]);
+    execFileSync("git", ["clone", remote, clone], { stdio: "ignore" });
+    expect(readText(clone, "note.md")).toBe("# Local\n");
   });
 });

@@ -8,6 +8,7 @@ const baseState: GitSetupState = {
   remoteIsBareRepo: false,
   remoteIsEmptyDirectory: false,
   remoteHasCommits: false,
+  hasConfiguredBareRemote: false,
 };
 
 describe("classifyGitSetup", () => {

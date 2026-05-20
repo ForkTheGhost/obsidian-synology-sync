@@ -10,6 +10,7 @@ export interface GitSyncOptions {
   syncIdentityId: string;
   authorName: string;
   authorEmail: string;
+  excludePatterns?: string[];
 }
 
 export interface GitSetupState {
@@ -20,6 +21,8 @@ export interface GitSetupState {
   remoteIsBareRepo: boolean;
   remoteIsEmptyDirectory: boolean;
   remoteHasCommits: boolean;
+  hasConfiguredBareRemote: boolean;
+  originUrl?: string;
 }
 
 export type GitSetupAction =
@@ -28,6 +31,7 @@ export type GitSetupAction =
   | "publish-local"
   | "merge-existing"
   | "sync-existing"
+  | "local-checkpoint-only"
   | "invalid-remote";
 
 export interface GitSetupClassification {
@@ -54,12 +58,25 @@ class GitCommandError extends Error {
   }
 }
 
-const DEFAULT_GIT_EXCLUDES = [
+export const DEFAULT_GIT_EXCLUDES = [
+  // Notes-first default: avoid common volatile/device-local Obsidian settings conflicts.
+  ".obsidian/app.json",
+  ".obsidian/appearance.json",
+  ".obsidian/graph.json",
+  ".obsidian/workspace*",
+  ".obsidian/plugins/*/data.json",
   ".obsidian/plugins/synology-sync/",
-  ".obsidian/workspace-*",
   ".trash/",
   ".sync-tombstones/",
   "node_modules/",
+];
+
+export const OBSIDIAN_CONFIG_SYNC_POLICY = [
+  { category: "workspace/UI layout", pattern: ".obsidian/workspace*", defaultBehavior: "device-local" },
+  { category: "app/appearance/graph state", pattern: ".obsidian/{app,appearance,graph}.json", defaultBehavior: "device-local" },
+  { category: "plugin data", pattern: ".obsidian/plugins/*/data.json", defaultBehavior: "excluded unless explicitly reviewed" },
+  { category: "plugin list/core plugin list", pattern: ".obsidian/{community-plugins,core-plugins}.json", defaultBehavior: "opt-in shared setting" },
+  { category: "hotkeys/snippets", pattern: ".obsidian/hotkeys.json and .obsidian/snippets/", defaultBehavior: "opt-in shared setting" },
 ];
 
 export function classifyGitSetup(state: GitSetupState): GitSetupClassification {
@@ -74,6 +91,20 @@ export function classifyGitSetup(state: GitSetupState): GitSetupClassification {
     return {
       action: "sync-existing",
       reason: "Local and destination both have Git history.",
+    };
+  }
+
+  if (state.localRepoExists && !state.hasConfiguredBareRemote && !state.remoteExists && state.originUrl) {
+    return {
+      action: "sync-existing",
+      reason: "Existing local Git repo has a configured remote; use it without a File Station folder target.",
+    };
+  }
+
+  if (state.localRepoExists && !state.hasConfiguredBareRemote && !state.remoteExists && !state.originUrl) {
+    return {
+      action: "local-checkpoint-only",
+      reason: "Existing local Git repo has no configured remote; local checkpoints can work, but publishing needs a remote.",
     };
   }
 
@@ -122,6 +153,7 @@ export class NativeGitSyncEngine {
       branch: opts.branch.trim() || "main",
       authorName: opts.authorName.trim() || "Obsidian Synology Sync",
       authorEmail: opts.authorEmail.trim() || "synology-sync@local",
+      excludePatterns: opts.excludePatterns || [],
     };
     this.cwd = getVaultBasePath(vault);
   }
@@ -143,11 +175,17 @@ export class NativeGitSyncEngine {
       );
     }
 
-    if (!state.remoteExists || state.remoteIsEmptyDirectory) {
-      await this.ensureRemoteBareRepo();
+    const usesConfiguredBareRemote = !!this.opts.remotePath;
+    if (usesConfiguredBareRemote) {
+      if (!state.remoteExists || state.remoteIsEmptyDirectory) {
+        await this.ensureRemoteBareRepo();
+      }
+      await this.ensureRemoteConfigured();
     }
 
-    await this.ensureRemoteConfigured();
+    if (!usesConfiguredBareRemote && state.originUrl) {
+      await this.fetchOrigin();
+    }
 
     const localChanged = await this.changedFiles();
     const checkoutNeedsLocalCheckpoint =
@@ -155,6 +193,15 @@ export class NativeGitSyncEngine {
 
     if (classification.action === "checkout-remote" && !checkoutNeedsLocalCheckpoint) {
       await this.checkoutRemote(result);
+      return result;
+    }
+
+    const nestedRepos = this.findNestedGitRepositories();
+    if (nestedRepos.length > 0) {
+      result.errors.push({
+        path: "<nested-git-repositories>",
+        error: `Nested Git repositories found before staging: ${nestedRepos.join(", ")}. These folders are separate repositories and will not sync as normal vault files. Safest remediation: exclude these folders from sync. Only remove nested .git metadata if they are archived copies and you have a backup; submodules are advanced/manual.`,
+      });
       return result;
     }
 
@@ -171,6 +218,14 @@ export class NativeGitSyncEngine {
         needsBootstrapCommit,
       );
       result.uploaded.push(...localChanged);
+    }
+
+    if (classification.action === "local-checkpoint-only") {
+      result.errors.push({
+        path: "<git-publish>",
+        error: "Local Git checkpoint created. No remote is configured, so changes were not published. Add an origin remote or configure a mounted bare repository path to publish.",
+      });
+      return result;
     }
 
     const remoteHasCommits = await this.remoteHasCommits();
@@ -216,7 +271,7 @@ export class NativeGitSyncEngine {
   }
 
   private async inspectSetupState(): Promise<GitSetupState> {
-    const remoteExists = pathExists(this.opts.remotePath);
+    const remoteExists = !!this.opts.remotePath && pathExists(this.opts.remotePath);
     const remoteIsBareRepo = remoteExists ? await this.remoteIsBareRepo() : false;
     const remoteIsEmptyDirectory = remoteExists && !remoteIsBareRepo ? isEmptyDirectory(this.opts.remotePath) : false;
     return {
@@ -226,7 +281,9 @@ export class NativeGitSyncEngine {
       remoteExists,
       remoteIsBareRepo,
       remoteIsEmptyDirectory,
-      remoteHasCommits: remoteIsBareRepo ? await this.remoteHasCommits() : false,
+      remoteHasCommits: remoteIsBareRepo || !this.opts.remotePath ? await this.remoteHasCommits() : false,
+      hasConfiguredBareRemote: !!this.opts.remotePath,
+      originUrl: await this.originUrl(),
     };
   }
 
@@ -252,12 +309,14 @@ export class NativeGitSyncEngine {
     return this.vault.getFiles().some((file) => {
       if (!(file instanceof TFile)) return false;
       if (isSetupOnlyPath(file.path)) return false;
-      if (DEFAULT_GIT_EXCLUDES.some((pattern) => matchesSimpleExclude(file.path, pattern))) return false;
+      const allExcludes = [...DEFAULT_GIT_EXCLUDES, ...(this.opts.excludePatterns || [])];
+      if (allExcludes.some((pattern) => matchesSimpleExclude(file.path, pattern))) return false;
       return true;
     });
   }
 
   private async remoteIsBareRepo(): Promise<boolean> {
+    if (!this.opts.remotePath) return false;
     try {
       const r = await git(["--git-dir", this.opts.remotePath, "rev-parse", "--is-bare-repository"], undefined);
       return r.stdout.trim() === "true";
@@ -267,8 +326,9 @@ export class NativeGitSyncEngine {
   }
 
   private async remoteHasCommits(): Promise<boolean> {
+    const remote = this.opts.remotePath || "origin";
     try {
-      const r = await git(["ls-remote", "--heads", this.opts.remotePath, this.opts.branch], this.cwd);
+      const r = await git(["ls-remote", "--heads", remote, this.opts.branch], this.cwd);
       return r.stdout.trim().length > 0;
     } catch {
       return false;
@@ -278,6 +338,19 @@ export class NativeGitSyncEngine {
   private async ensureRemoteBareRepo(): Promise<void> {
     ensureParentDirectory(this.opts.remotePath);
     await git(["init", "--bare", "-b", this.opts.branch, this.opts.remotePath], undefined);
+  }
+
+  private async originUrl(): Promise<string | undefined> {
+    try {
+      const r = await git(["remote", "get-url", "origin"], this.cwd);
+      return r.stdout.trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async fetchOrigin(): Promise<void> {
+    await git(["fetch", "origin", this.opts.branch], this.cwd);
   }
 
   private async ensureRemoteConfigured(): Promise<void> {
@@ -302,7 +375,15 @@ export class NativeGitSyncEngine {
   }
 
   private async commitLocalChanges(message: string, allowEmpty: boolean): Promise<void> {
-    await git(["add", "-A", "--", "."], this.cwd);
+    try {
+      await git(["add", "-A", "--", "."], this.cwd);
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (/LF will be replaced by CRLF|CRLF will be replaced by LF/i.test(msg)) {
+        debugLog(`[git-sync] additional Git warning during staging: ${msg}`);
+      }
+      throw e;
+    }
     const args = ["commit", "-m", message];
     if (allowEmpty) args.push("--allow-empty");
     await git(args, this.cwd);
@@ -361,6 +442,32 @@ export class NativeGitSyncEngine {
     }
   }
 
+  private findNestedGitRepositories(): string[] {
+    const path = getNodeModule("path") as { join: (...parts: string[]) => string; relative: (from: string, to: string) => string };
+    const fs = getNodeModule("fs") as { existsSync: (p: string) => boolean; readdirSync: (p: string, opts?: { withFileTypes?: boolean }) => Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> };
+    const found: string[] = [];
+    const allExcludes = [...DEFAULT_GIT_EXCLUDES, ...(this.opts.excludePatterns || [])];
+
+    const walk = (dir: string): void => {
+      let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (entry.name === ".git" && dir === this.cwd) continue;
+        const full = path.join(dir, entry.name);
+        const rel = path.relative(this.cwd, full).replace(/\\/g, "/");
+        if (!rel || allExcludes.some((pattern) => matchesSimpleExclude(rel, pattern))) continue;
+        if (entry.name === ".git" && (entry.isDirectory() || entry.isFile())) {
+          found.push(path.relative(this.cwd, dir).replace(/\\/g, "/") || ".");
+          continue;
+        }
+        if (entry.isDirectory()) walk(full);
+      }
+    };
+
+    walk(this.cwd);
+    return Array.from(new Set(found)).sort();
+  }
+
   private async writeInfoExclude(): Promise<void> {
     const path = getNodeModule("path") as {
       join: (...parts: string[]) => string;
@@ -376,7 +483,8 @@ export class NativeGitSyncEngine {
     const excludePath = path.join(this.cwd, ".git", "info", "exclude");
     fs.mkdirSync(path.dirname(excludePath), { recursive: true });
     const prior = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf8") : "";
-    const missing = DEFAULT_GIT_EXCLUDES.filter((line) => !prior.split(/\r?\n/).includes(line));
+    const allExcludes = [...DEFAULT_GIT_EXCLUDES, ...(this.opts.excludePatterns || [])];
+    const missing = allExcludes.filter((line) => !prior.split(/\r?\n/).includes(line));
     if (missing.length > 0) {
       fs.appendFileSync(excludePath, `${prior.endsWith("\n") || prior.length === 0 ? "" : "\n"}${missing.join("\n")}\n`, "utf8");
     }

@@ -53,6 +53,7 @@ export interface SynologySyncSettings {
   // File Station/QuickConnect as the transport.
   gitRemotePath: string;
   gitFileStationRepoPath: string;
+  gitUseExistingLocalRepo: boolean;
   gitBranch: string;
   gitAuthorName: string;
   gitAuthorEmail: string;
@@ -88,6 +89,7 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   maxFileSizeMb: 100,
   gitRemotePath: "",
   gitFileStationRepoPath: "",
+  gitUseExistingLocalRepo: false,
   gitBranch: "main",
   gitAuthorName: "Obsidian Synology Sync",
   gitAuthorEmail: "synology-sync@local",
@@ -349,6 +351,21 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             })
         );
 
+      if (this.plugin.settings.syncBackend === "git-filesystem") {
+        new Setting(containerEl)
+          .setName("Use this vault's existing Git repo")
+          .setDesc("Desktop-only mode for vaults that already contain .git. No File Station folder target is required. If origin exists, sync uses it; otherwise the plugin creates local checkpoints only until you add a remote.")
+          .addToggle((toggle) =>
+            toggle
+              .setValue(this.plugin.settings.gitUseExistingLocalRepo)
+              .onChange(async (value) => {
+                this.plugin.settings.gitUseExistingLocalRepo = value;
+                await this.plugin.saveSettings();
+                this.display();
+              })
+          );
+      }
+
       if (this.plugin.settings.syncBackend === "git-filestation") {
         new Setting(containerEl)
           .setName("Bare repository path on NAS")
@@ -394,7 +411,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
               }
             })
           );
-      } else {
+      } else if (!this.plugin.settings.gitUseExistingLocalRepo) {
         new Setting(containerEl)
           .setName("Mounted bare repository path")
           .setDesc("Filesystem path to a bare Git repo reachable by this desktop, such as \\\\NAS\\Share\\MyVault.git or /Volumes/Share/MyVault.git.")
