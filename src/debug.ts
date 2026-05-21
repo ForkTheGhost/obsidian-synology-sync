@@ -40,3 +40,40 @@ export function formatErrorForDebug(error: unknown): string {
     return String(error);
   }
 }
+
+let runtimeLogged = false;
+
+export interface RuntimeDiagnostics {
+  platform: string;
+  isDesktop: boolean | string;
+  isMobile: boolean | string;
+  isIosApp: boolean | string;
+  isMobileApp: boolean | string;
+  userAgent: string;
+  hasVaultBasePath: boolean;
+}
+
+export function getRuntimeDiagnostics(app?: unknown): RuntimeDiagnostics {
+  const nav = typeof navigator !== "undefined" ? navigator : undefined;
+  const obsidianPlatform = (globalThis as unknown as { Platform?: Record<string, unknown> }).Platform;
+  const adapter = (app as { vault?: { adapter?: { getBasePath?: unknown } } } | undefined)?.vault?.adapter;
+  return {
+    platform: nav?.platform || "unknown",
+    isDesktop: obsidianPlatform?.isDesktop ?? "unknown",
+    isMobile: obsidianPlatform?.isMobile ?? "unknown",
+    isIosApp: obsidianPlatform?.isIosApp ?? "unknown",
+    isMobileApp: obsidianPlatform?.isMobileApp ?? "unknown",
+    userAgent: nav?.userAgent || "unknown",
+    hasVaultBasePath: typeof adapter?.getBasePath === "function",
+  };
+}
+
+export function formatRuntimeDiagnostics(d: RuntimeDiagnostics): string {
+  return `platform=${d.platform} obsidianDesktop=${d.isDesktop} obsidianMobile=${d.isMobile} iosApp=${d.isIosApp} mobileApp=${d.isMobileApp} hasVaultBasePath=${d.hasVaultBasePath} userAgent=${d.userAgent}`;
+}
+
+export function logRuntimeDiagnostics(app?: unknown, force = false): void {
+  if (runtimeLogged && !force) return;
+  runtimeLogged = true;
+  debugLog(`RUNTIME: ${formatRuntimeDiagnostics(getRuntimeDiagnostics(app))}`);
+}
