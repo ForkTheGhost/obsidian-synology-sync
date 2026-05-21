@@ -301,73 +301,66 @@ export class SynologySyncSettingTab extends PluginSettingTab {
     // Sync target
     containerEl.createEl("h3", { text: "Sync Target" });
 
-    new Setting(containerEl)
-      .setName("Remote folder path")
-      .setDesc("Full path on the NAS (e.g. /homes/user/Obsidian/MyVault)")
-      .addText((text) =>
-        text
-          .setPlaceholder("/homes/username/Obsidian/MyVault")
-          .setValue(this.plugin.settings.remotePath)
-          .onChange(async (value) => {
-            this.plugin.settings.remotePath = value;
-            await this.plugin.saveSettings();
-          })
-      )
-      .addButton((btn) =>
-        btn.setButtonText("Browse").onClick(async () => {
-          try {
-            const fs = await this.plugin.getFileStation();
-            new FolderBrowserModal(this.app, fs, this.plugin.settings.remotePath, async (path) => {
-              this.plugin.settings.remotePath = path;
-              await this.plugin.saveSettings();
-              this.display();
-            }).open();
-          } catch (e) {
-            new Notice(`Browse failed: ${(e as Error).message}`);
-          }
-        })
-      );
-
-    // Sync settings
-    containerEl.createEl("h3", { text: "Sync Behavior" });
-
     const desktopGitAvailable = isDesktopVaultAdapter(this.app.vault.adapter);
     const effectiveSyncBackend = sanitizeSyncBackendForRuntime(this.plugin.settings, this.app.vault.adapter);
+
+    new Setting(containerEl)
+      .setName("Sync mode")
+      .setDesc("Choose simple single-user folder sync, or Git-backed multi-user sync. Git modes do not require a remote folder path.")
+      .addDropdown((dd) =>
+        dd
+          .addOption("filestation", "Simple file sync (single user)")
+          .addOption("git-filestation", "Git-backed sync over File Station / QuickConnect")
+          .addOption("git-filesystem", "Git-backed sync over mounted filesystem")
+          .setValue(effectiveSyncBackend)
+          .onChange(async (value: string) => {
+            if (value !== "filestation" && !desktopGitAvailable) {
+              new Notice("Git-backed sync requires Obsidian desktop/local filesystem access.");
+              this.plugin.settings.syncBackend = "filestation";
+            } else {
+              this.plugin.settings.syncBackend = value as SynologySyncSettings["syncBackend"];
+            }
+            await this.plugin.saveSettings();
+            this.display();
+          })
+      );
+
     if (!desktopGitAvailable && this.plugin.settings.syncBackend !== "filestation") {
       new Setting(containerEl)
         .setName("Git-backed sync unavailable")
         .setDesc("This Obsidian runtime does not expose a local filesystem path, so Git-backed sync cannot run here. File Station folder sync will be used instead.");
     }
 
-    new Setting(containerEl)
-      .setName("Git-backed sync behavior")
-      .setDesc("Optional desktop-only Git behavior layered under the Synology/File Station flow.")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(effectiveSyncBackend !== "filestation")
-          .onChange(async (value) => {
-            this.plugin.settings.syncBackend = value && desktopGitAvailable ? "git-filestation" : "filestation";
-            await this.plugin.saveSettings();
-            this.display();
+    if (effectiveSyncBackend === "filestation") {
+      new Setting(containerEl)
+        .setName("Remote folder path")
+        .setDesc("Required for simple single-user File Station folder sync. Git-backed modes use a bare Git repo path instead.")
+        .addText((text) =>
+          text
+            .setPlaceholder("/homes/username/Obsidian/MyVault")
+            .setValue(this.plugin.settings.remotePath)
+            .onChange(async (value) => {
+              this.plugin.settings.remotePath = value;
+              await this.plugin.saveSettings();
+            })
+        )
+        .addButton((btn) =>
+          btn.setButtonText("Browse").onClick(async () => {
+            try {
+              const fs = await this.plugin.getFileStation();
+              new FolderBrowserModal(this.app, fs, this.plugin.settings.remotePath, async (path) => {
+                this.plugin.settings.remotePath = path;
+                await this.plugin.saveSettings();
+                this.display();
+              }).open();
+            } catch (e) {
+              new Notice(`Browse failed: ${(e as Error).message}`);
+            }
           })
-      );
+        );
+    }
 
     if (effectiveSyncBackend !== "filestation") {
-      new Setting(containerEl)
-        .setName("Git transport")
-        .setDesc("Use File Station/QuickConnect for Obsidian plugin sync, or a mounted filesystem path for desktop-only native Git sync.")
-        .addDropdown((dd) =>
-          dd
-            .addOption("git-filestation", "File Station / QuickConnect bare repo")
-            .addOption("git-filesystem", "Mounted filesystem bare repo")
-            .setValue(effectiveSyncBackend)
-            .onChange(async (value: string) => {
-              this.plugin.settings.syncBackend = value as "git-filestation" | "git-filesystem";
-              await this.plugin.saveSettings();
-              this.display();
-            })
-        );
-
       if (effectiveSyncBackend === "git-filesystem") {
         new Setting(containerEl)
           .setName("Use this vault's existing Git repo")
@@ -386,7 +379,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
       if (effectiveSyncBackend === "git-filestation") {
         new Setting(containerEl)
           .setName("Bare repository path on NAS")
-          .setDesc("The NAS repo is the Git upstream; your readable notes remain in the local vault. Choose an existing bare repo such as /homes/username/Obsidian/MyVault.git.")
+          .setDesc("Required for Git-backed File Station/QuickConnect sync. This replaces the simple remote folder path for multi-user sync.")
           .addText((text) =>
             text
               .setPlaceholder("/homes/username/Obsidian/MyVault.git")
@@ -431,7 +424,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
       } else if (!this.plugin.settings.gitUseExistingLocalRepo) {
         new Setting(containerEl)
           .setName("Mounted bare repository path")
-          .setDesc("Filesystem path to a bare Git repo reachable by this desktop, such as \\\\NAS\\Share\\MyVault.git or /Volumes/Share/MyVault.git.")
+          .setDesc("Required unless using this vault's existing Git repo. Filesystem path to a bare Git repo reachable by this desktop, such as \\NAS\Share\MyVault.git or /Volumes/Share/MyVault.git.")
           .addText((text) =>
             text
               .setPlaceholder("\\\\NAS\\Share\\MyVault.git")
@@ -478,6 +471,9 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             })
         );
     }
+
+    // Sync behavior
+    containerEl.createEl("h3", { text: "Sync Behavior" });
 
     new Setting(containerEl)
       .setName("Auto-sync interval (minutes)")
