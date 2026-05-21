@@ -258,20 +258,24 @@ export async function probeQuickConnectCandidates(candidates: QCCandidate[], tim
   let settled = 0;
 
   return new Promise((resolve) => {
+    let done = false;
+    const finish = (candidate: QCCandidate | null) => {
+      if (done) return true;
+      done = true;
+      resolve(candidate);
+      return true;
+    };
     const tryResolve = () => {
+      if (done) return true;
       for (let i = 0; i < candidates.length; i++) {
         if (results[i] === true) {
           const candidate = candidates[i];
           debugLog(`QC: selected first reachable candidate [${i}] ${candidate.https ? "https" : "http"}://${candidate.host}:${candidate.port}`);
-          resolve(candidate);
-          return true;
+          return finish(candidate);
         }
         if (results[i] === undefined) return false;
       }
-      if (settled === candidates.length) {
-        resolve(null);
-        return true;
-      }
+      if (settled === candidates.length) return finish(null);
       return false;
     };
 
