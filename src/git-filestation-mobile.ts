@@ -239,12 +239,106 @@ export class MobileGitFileStationSyncEngine {
   }
 
   private async changedFiles(): Promise<string[]> {
-    const matrix = await git.statusMatrix({ fs: this.memfs.client, dir: WORKDIR, ignored: false, cache: this.cache });
-    return matrix
-      .filter(([, head, workdir, stage]) => head !== workdir || workdir !== stage)
-      .map(([filepath]) => filepath)
-      .filter((path) => !this.isExcluded(path))
-      .sort();
+    try {
+      const matrix = await git.statusMatrix({ fs: this.memfs.client, dir: WORKDIR, ignored: false, cache: this.cache });
+      return matrix
+        .filter(([, head, workdir, stage]) => head !== workdir || workdir !== stage)
+        .map(([filepath]) => filepath)
+        .filter((path) => !this.isExcluded(path))
+        .sort();
+    } catch (e) {
+      const message = (e as Error).message || String(e);
+      if (!/too many length or distance symbols/i.test(message)) throw e;
+      debugLog(`[git-filestation-mobile] statusMatrix failed with inflate error; using direct pako status fallback: ${message}`);
+      return this.changedFilesByPako();
+    }
+  }
+
+  private async changedFilesByPako(): Promise<string[]> {
+    const [headOid, indexEntries, workdirFiles] = await Promise.all([
+      this.resolveHeadOid().catch(() => undefined),
+      this.readIndexEntries().catch(() => new Map<string, string>()),
+      this.listWorkdirFiles(),
+    ]);
+    const headEntries = headOid ? await this.readTreeBlobEntries(headOid).catch(() => new Map<string, string>()) : new Map<string, string>();
+    const paths = Array.from(new Set([...headEntries.keys(), ...indexEntries.keys(), ...workdirFiles])).filter((path) => !this.isExcluded(path)).sort();
+    const changed: string[] = [];
+    for (const path of paths) {
+      const head = headEntries.get(path);
+      const stage = indexEntries.get(path);
+      const workdir = await this.pathExists(`${WORKDIR}/${path}`) ? await this.workdirBlobOid(path) : undefined;
+      if (head !== workdir || workdir !== stage) changed.push(path);
+    }
+    return changed;
+  }
+
+  private async resolveHeadOid(): Promise<string | undefined> {
+    return git.resolveRef({ fs: this.memfs.client, dir: WORKDIR, ref: "HEAD" });
+  }
+
+  private async workdirBlobOid(path: string): Promise<string> {
+    const data = await this.memfs.promises.readFile(`${WORKDIR}/${path}`);
+    const wrapped = wrapGitObject("blob", data);
+    return sha1Hex(wrapped);
+  }
+
+  private async readTreeBlobEntries(commitOid: string): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const commit = await this.readLooseObjectContent(commitOid);
+    const treeLine = textDecoder.decode(commit.object).split(/\n/, 1)[0];
+    const match = /^tree ([0-9a-f]{40})$/i.exec(treeLine);
+    if (!match) return out;
+    await this.collectTreeBlobEntries(match[1], "", out);
+    return out;
+  }
+
+  private async collectTreeBlobEntries(treeOid: string, prefix: string, out: Map<string, string>): Promise<void> {
+    const tree = await this.readLooseObjectContent(treeOid);
+    let offset = 0;
+    while (offset < tree.object.byteLength) {
+      const modeStart = offset;
+      while (tree.object[offset] !== 32) offset++;
+      const mode = textDecoder.decode(tree.object.slice(modeStart, offset));
+      offset++;
+      const pathStart = offset;
+      while (tree.object[offset] !== 0) offset++;
+      const name = textDecoder.decode(tree.object.slice(pathStart, offset));
+      offset++;
+      const oid = hexPrefix(tree.object.slice(offset, offset + 20), 20);
+      offset += 20;
+      const path = prefix ? `${prefix}/${name}` : name;
+      if (mode === "40000") await this.collectTreeBlobEntries(oid, path, out);
+      else out.set(path, oid);
+    }
+  }
+
+  private async readLooseObjectContent(oid: string): Promise<{ type: string; object: Uint8Array }> {
+    const rel = `objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
+    const bytes = await this.memfs.promises.readFile(`${GITDIR}/${rel}`);
+    return unwrapGitLooseObjectBytes(bytes instanceof Uint8Array ? bytes : textEncoder.encode(String(bytes)), oid, rel);
+  }
+
+  private async readIndexEntries(): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const bytes = await this.memfs.promises.readFile(`${GITDIR}/index`).catch(() => undefined);
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength < 12 || textDecoder.decode(bytes.slice(0, 4)) !== "DIRC") return out;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const entries = view.getUint32(8, false);
+    let offset = 12;
+    for (let i = 0; i < entries && offset + 62 <= bytes.byteLength; i++) {
+      const entryStart = offset;
+      const oid = hexPrefix(bytes.slice(offset + 40, offset + 60), 20);
+      const flags = view.getUint16(offset + 60, false);
+      offset += 62;
+      const pathStart = offset;
+      const pathLength = flags & 0x0fff;
+      if (pathLength < 0x0fff) offset += pathLength;
+      else while (offset < bytes.byteLength && bytes[offset] !== 0) offset++;
+      const path = textDecoder.decode(bytes.slice(pathStart, offset));
+      out.set(path, oid);
+      offset = entryStart + Math.ceil((offset + 1 - entryStart) / 8) * 8;
+    }
+    return out;
   }
 
   private async commitLocalChanges(message: string, allowEmpty: boolean): Promise<void> {
@@ -579,6 +673,10 @@ class MemoryFs {
 }
 
 function verifyGitLooseObjectBytes(bytes: Uint8Array, oid: string, rel: string): void {
+  unwrapGitLooseObjectBytes(bytes, oid, rel);
+}
+
+function unwrapGitLooseObjectBytes(bytes: Uint8Array, oid: string, rel: string): { type: string; object: Uint8Array } {
   const inflated = pako.inflate(bytes);
   const nul = inflated.indexOf(0);
   if (nul <= 0) throw new Error(`inflated object missing header oid=${oid} path=${rel}`);
@@ -591,6 +689,20 @@ function verifyGitLooseObjectBytes(bytes: Uint8Array, oid: string, rel: string):
   if (expectedLength !== actualLength) {
     throw new Error(`inflated object length mismatch oid=${oid} path=${rel} expected=${expectedLength} actual=${actualLength}`);
   }
+  return { type: header.slice(0, header.indexOf(" ")), object: inflated.slice(nul + 1) };
+}
+
+function wrapGitObject(type: string, object: Uint8Array): Uint8Array {
+  const header = textEncoder.encode(`${type} ${object.byteLength}\0`);
+  const wrapped = new Uint8Array(header.byteLength + object.byteLength);
+  wrapped.set(header, 0);
+  wrapped.set(object, header.byteLength);
+  return wrapped;
+}
+
+async function sha1Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-1", bytes);
+  return hexPrefix(new Uint8Array(digest), 20);
 }
 
 function hexPrefix(bytes: Uint8Array, max: number): string {
