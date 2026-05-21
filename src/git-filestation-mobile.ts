@@ -94,6 +94,22 @@ export class MobileGitFileStationSyncEngine {
       return result;
     }
 
+    // Important: after downloading the remote bare repo into .git, HEAD may be
+    // resolvable even though the mobile workdir has not been populated yet.
+    // Treat an empty Obsidian/workdir + existing remote as a pure first pull and
+    // materialize the remote tree before status/merge logic can mistake missing
+    // workdir files for local deletes.
+    if (remoteHadCommits && !this.localHasUserFiles() && (await this.listWorkdirFiles()).length === 0) {
+      const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
+      const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
+      await this.runPhase("checkout remote", () => this.checkoutRemote());
+      await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
+      for (const path of remoteFiles) {
+        if (!this.isExcluded(path) && !result.downloaded.includes(path)) result.downloaded.push(path);
+      }
+      return result;
+    }
+
     const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
     const localChanged = await this.runPhase("detect local changes", () => this.changedFiles());
     const preserveInitialLocalFiles = !localHadCommits && remoteHadCommits && this.localHasUserFiles();
@@ -106,7 +122,6 @@ export class MobileGitFileStationSyncEngine {
       for (const path of remoteFiles) {
         if (!this.isExcluded(path) && !result.downloaded.includes(path)) result.downloaded.push(path);
       }
-      await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
       return result;
     }
 
