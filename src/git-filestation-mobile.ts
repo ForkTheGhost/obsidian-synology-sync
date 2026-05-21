@@ -583,7 +583,7 @@ class MemoryFs {
     readFile: async (path: string, encoding?: string): Promise<Uint8Array | string> => {
       const node = this.getNode(path);
       if (node.type !== "file") throw Object.assign(new Error(`EISDIR: ${path}`), { code: "EISDIR" });
-      return encoding ? textDecoder.decode(node.data) : new Uint8Array(node.data);
+      return encoding ? textDecoder.decode(node.data) : Buffer.from(node.data);
     },
     writeFile: async (path: string, data: Uint8Array | string): Promise<void> => {
       const parent = this.getParent(path, true);
