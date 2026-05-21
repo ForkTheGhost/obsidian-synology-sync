@@ -71,16 +71,17 @@ export class MobileGitFileStationSyncEngine {
     const result = emptyResult();
     debugLog("[git-filestation-mobile] starting pure JS Git sync over File Station");
 
-    await this.loadVaultIntoMemory();
-    await this.ensureLocalRepo();
-    await this.configureLocalRepo();
-    await this.downloadRemoteBareRepoIfPresent();
-    await this.ensureRemoteConfigured();
+    await this.runPhase("load vault", () => this.loadVaultIntoMemory());
+    await this.runPhase("ensure local repo", () => this.ensureLocalRepo());
+    await this.runPhase("configure local repo", () => this.configureLocalRepo());
+    await this.runPhase("download remote bare repo", () => this.downloadRemoteBareRepoIfPresent());
+    await this.runPhase("verify remote objects", () => this.verifyDownloadedRemoteObjects());
+    await this.runPhase("ensure remote configured", () => this.ensureRemoteConfigured());
 
     const remoteHadCommits = await this.remoteHasCommits();
     const localHadCommits = await this.localHasCommits();
 
-    const invalidRemotePaths = await this.invalidRemotePathsForLocalCheckout();
+    const invalidRemotePaths = await this.runPhase("inspect remote tree", () => this.invalidRemotePathsForLocalCheckout());
     if (invalidRemotePaths.length > 0) {
       result.errors.push(invalidLocalFilesystemPathError(invalidRemotePaths));
       return result;
@@ -92,28 +93,28 @@ export class MobileGitFileStationSyncEngine {
       return result;
     }
 
-    const beforeSnapshot = await this.snapshotWorkdirFiles();
-    const localChanged = await this.changedFiles();
+    const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
+    const localChanged = await this.runPhase("detect local changes", () => this.changedFiles());
 
     if (!localHadCommits && remoteHadCommits && !this.localHasUserFiles()) {
-      await this.checkoutRemote();
-      await this.applyCheckoutChanges(beforeSnapshot, result);
-      await this.uploadBareRepoMirror();
+      await this.runPhase("checkout remote", () => this.checkoutRemote());
+      await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
+      await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
       return result;
     }
 
     const needsBootstrapCommit = !localHadCommits && !remoteHadCommits;
     if (localChanged.length > 0 || needsBootstrapCommit) {
-      await this.commitLocalChanges(
+      await this.runPhase("commit local changes", () => this.commitLocalChanges(
         needsBootstrapCommit ? "Initialize Obsidian vault sync" : `Sync from ${this.opts.syncIdentityId}`,
         needsBootstrapCommit,
-      );
+      ));
       result.uploaded.push(...localChanged);
     }
 
     if (remoteHadCommits) {
-      const remoteChanged = await this.remoteChangedFiles();
-      await this.mergeRemote(!localHadCommits && this.localHasUserFiles());
+      const remoteChanged = await this.runPhase("detect remote changes", () => this.remoteChangedFiles());
+      await this.runPhase("merge remote", () => this.mergeRemote(!localHadCommits && this.localHasUserFiles()));
       result.downloaded.push(...remoteChanged);
 
       const conflicts = await this.unmergedFiles();
@@ -125,15 +126,44 @@ export class MobileGitFileStationSyncEngine {
             ? classifyGitConflict(conflicts.find((p) => p.startsWith(".obsidian/")) || conflicts[0]).message
             : "Merge conflicts need to be resolved before Git sync can push.",
         });
-        await this.applyCheckoutChanges(beforeSnapshot, result);
+        await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
         return result;
       }
     }
 
-    await this.pushWithRetry();
-    await this.applyCheckoutChanges(beforeSnapshot, result);
-    await this.uploadBareRepoMirror();
+    await this.runPhase("push local branch", () => this.pushWithRetry());
+    await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
+    await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
     return result;
+  }
+
+
+  private async runPhase<T>(phase: string, fn: () => Promise<T>): Promise<T> {
+    debugLog(`[git-filestation-mobile] phase: ${phase}`);
+    try {
+      return await fn();
+    } catch (e) {
+      debugLog(`[git-filestation-mobile] phase failed: ${phase}: ${(e as Error).message}`);
+      throw e;
+    }
+  }
+
+  private async verifyDownloadedRemoteObjects(): Promise<void> {
+    const objectRoot = `${GITDIR}/objects`;
+    const files = await this.listMemFiles(objectRoot).catch(() => [] as string[]);
+    const looseObjects = files
+      .map((abs) => abs.slice(GITDIR.length + 1))
+      .filter((rel) => /^objects\/[0-9a-f]{2}\/[0-9a-f]{38}$/i.test(rel));
+    debugLog(`[git-filestation-mobile] downloaded remote loose objects=${looseObjects.length}`);
+    for (const rel of looseObjects) {
+      const oid = rel.slice("objects/".length).replace("/", "");
+      try {
+        await git.readObject({ fs: this.memfs.client, gitdir: GITDIR, oid, format: "wrapped", cache: this.cache });
+      } catch (e) {
+        const bytes = await this.memfs.promises.readFile(`${GITDIR}/${rel}`).catch(() => new Uint8Array());
+        throw new Error(`remote Git object failed to inflate oid=${oid} path=${rel} bytes=${bytes.byteLength}: ${(e as Error).message}. The remote bare repo likely contains a corrupt loose object from an earlier mobile sync; repair/reinitialize the remote Git folder or replace this object from a healthy clone.`);
+      }
+    }
   }
 
   private async ensureLocalRepo(): Promise<void> {
