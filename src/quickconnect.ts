@@ -42,7 +42,7 @@ interface ResolvedNAS {
 }
 
 interface QCCandidate extends ResolvedNAS {
-  kind: "portal" | "api";
+  kind: "portal" | "api" | "relay-api";
 }
 
 const LOOKUP_TIMEOUT_MS = 10000;
@@ -177,9 +177,9 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
     // portal host. Remote clients often cannot reach any direct endpoint, but
     // File Station APIs can still work through the relay_ip/relay_port tunnel.
     if (svc.relay_port) {
-      if (svc.relay_dualstack) addCandidate(candidates, { host: svc.relay_dualstack, port: svc.relay_port, https: true, kind: "api" });
-      if (svc.relay_dn) addCandidate(candidates, { host: svc.relay_dn, port: svc.relay_port, https: true, kind: "api" });
-      if (svc.relay_ip) addCandidate(candidates, { host: svc.relay_ip, port: svc.relay_port, https: true, kind: "api" });
+      if (svc.relay_dualstack) addCandidate(candidates, { host: svc.relay_dualstack, port: svc.relay_port, https: true, kind: "relay-api" });
+      if (svc.relay_dn) addCandidate(candidates, { host: svc.relay_dn, port: svc.relay_port, https: true, kind: "relay-api" });
+      if (svc.relay_ip) addCandidate(candidates, { host: svc.relay_ip, port: svc.relay_port, https: true, kind: "relay-api" });
     }
 
     // 6. HTTPS relay / portal-provided API tunnel fallback.
@@ -243,6 +243,12 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
     } catch {
       debugLog(`QC: not reachable (timeout/error): ${c.host}`);
     }
+  }
+
+  const relayApi = candidates.find((c) => c.kind === "relay-api");
+  if (relayApi) {
+    debugLog(`QC: no candidate passed ping-pong; trying QuickConnect relay API tunnel anyway: ${relayApi.https ? "https" : "http"}://${relayApi.host}:${relayApi.port}`);
+    return toResolvedNAS(relayApi);
   }
 
   const relay = candidates.find((c) => c.kind === "portal");
