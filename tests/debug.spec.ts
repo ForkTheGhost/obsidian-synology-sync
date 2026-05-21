@@ -1,4 +1,4 @@
-import { clearDebugLog, debugLog, formatErrorForDebug, getDebugLog } from "../src/debug";
+import { clearDebugLog, debugLog, formatErrorForDebug, formatRuntimeDiagnostics, getDebugLog, getRuntimeDiagnostics } from "../src/debug";
 
 describe("debug logging", () => {
   beforeEach(() => clearDebugLog());
@@ -21,5 +21,20 @@ describe("debug logging", () => {
     debugLog(`SYNC FAILED: ${formatErrorForDebug(new Error("boom"))}`);
 
     expect(getDebugLog()).toContain("SYNC FAILED: Error: boom");
+  });
+});
+
+
+describe("runtime diagnostics", () => {
+  it("reports whether the vault exposes a desktop filesystem path", () => {
+    const d = getRuntimeDiagnostics({ vault: { adapter: { getBasePath: () => "/vault" } } });
+    expect(d.hasVaultBasePath).toBe(true);
+    expect(formatRuntimeDiagnostics(d)).toContain("hasVaultBasePath=true");
+  });
+
+  it("reports missing filesystem path for mobile-like adapters", () => {
+    const d = getRuntimeDiagnostics({ vault: { adapter: {} } });
+    expect(d.hasVaultBasePath).toBe(false);
+    expect(formatRuntimeDiagnostics(d)).toContain("platform=");
   });
 });

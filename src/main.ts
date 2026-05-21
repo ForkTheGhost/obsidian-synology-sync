@@ -4,8 +4,8 @@ import { resolveQuickConnect } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { NativeGitSyncEngine } from "./git-sync";
 import { GitFileStationSyncEngine } from "./git-filestation-sync";
-import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, migrateLoadedSettings } from "./settings";
-import { debugLog, formatErrorForDebug, getDebugLog } from "./debug";
+import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
+import { debugLog, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics } from "./debug";
 
 // UUID generator with fallbacks for older runtimes.
 // crypto.randomUUID requires iOS 15.4+ / Chromium 92+; we fall back through
@@ -43,6 +43,7 @@ export default class SynologySync extends Plugin {
 
   async onload() {
     await this.loadSettings();
+    logRuntimeDiagnostics(this.app);
     this.addSettingTab(new SynologySyncSettingTab(this.app, this));
 
     this.addRibbonIcon("refresh-cw", "Synology Sync", async () => {
@@ -190,6 +191,7 @@ export default class SynologySync extends Plugin {
       return;
     }
 
+    logRuntimeDiagnostics(this.app);
     const effectiveSyncBackend = sanitizeSyncBackendForRuntime(this.settings, this.app.vault.adapter);
     if (this.settings.syncBackend !== "filestation" && effectiveSyncBackend === "filestation") {
       debugLog("Git-backed sync requested, but this Obsidian runtime has no local filesystem path; falling back to File Station sync.");
