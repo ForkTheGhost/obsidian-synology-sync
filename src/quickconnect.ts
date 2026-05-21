@@ -46,7 +46,8 @@ export interface QCCandidate extends ResolvedNAS {
 }
 
 const LOOKUP_TIMEOUT_MS = 10000;
-const PING_TIMEOUT_MS = 3000;
+const PING_FAST_TIMEOUT_MS = 5000;
+const PING_SLOW_TIMEOUT_MS = 30000;
 
 function normalizeQuickConnectId(quickConnectId: string): string {
   return quickConnectId.trim().toLowerCase();
@@ -225,29 +226,43 @@ export async function resolveQuickConnectCandidates(quickConnectId: string): Pro
   return candidates;
 }
 
+async function pingCandidate(candidate: QCCandidate, timeoutMs: number): Promise<boolean> {
+  const proto = candidate.https ? "https" : "http";
+  const url = `${proto}://${candidate.host}:${candidate.port}/webman/pingpong.cgi?action=cors&quickconnect=true`;
+  try {
+    const r = await requestUrlWithTimeout({
+      url,
+      method: "GET",
+      throw: false,
+    }, timeoutMs, "QuickConnect ping timed out");
+    const ok = r.status === 200 && r.json?.success;
+    debugLog(`QC: ${ok ? "reachable" : `not reachable (status ${r.status})`}: ${proto}://${candidate.host}:${candidate.port}`);
+    return ok;
+  } catch {
+    debugLog(`QC: not reachable (timeout/error): ${candidate.host}`);
+    return false;
+  }
+}
+
+export async function probeQuickConnectCandidates(candidates: QCCandidate[], timeoutMs = PING_FAST_TIMEOUT_MS): Promise<QCCandidate | null> {
+  debugLog(`QC: parallel ping-pong testing ${candidates.length} candidates with ${timeoutMs}ms timeout...`);
+  const results = await Promise.all(candidates.map((candidate) => pingCandidate(candidate, timeoutMs)));
+  const index = results.findIndex(Boolean);
+  if (index < 0) return null;
+  const candidate = candidates[index];
+  debugLog(`QC: selected first reachable candidate [${index}] ${candidate.https ? "https" : "http"}://${candidate.host}:${candidate.port}`);
+  return candidate;
+}
+
 export async function resolveQuickConnect(quickConnectId: string): Promise<ResolvedNAS> {
   const candidates = await resolveQuickConnectCandidates(quickConnectId);
 
-  debugLog(`QC: ping-pong testing ${candidates.length} candidates...`);
-
-  for (const c of candidates) {
-    const proto = c.https ? "https" : "http";
-    const url = `${proto}://${c.host}:${c.port}/webman/pingpong.cgi?action=cors&quickconnect=true`;
-    try {
-      const r = await requestUrlWithTimeout({
-        url,
-        method: "GET",
-        throw: false,
-      }, PING_TIMEOUT_MS, "QuickConnect ping timed out");
-      if (r.status === 200 && r.json?.success) {
-        debugLog(`QC: reachable: ${proto}://${c.host}:${c.port}`);
-        return toResolvedNAS(c);
-      }
-      debugLog(`QC: not reachable (status ${r.status}): ${c.host}`);
-    } catch {
-      debugLog(`QC: not reachable (timeout/error): ${c.host}`);
-    }
+  let candidate = await probeQuickConnectCandidates(candidates, PING_FAST_TIMEOUT_MS);
+  if (!candidate) {
+    debugLog(`QC: no candidate passed fast ping-pong; retrying all candidates with ${PING_SLOW_TIMEOUT_MS}ms timeout...`);
+    candidate = await probeQuickConnectCandidates(candidates, PING_SLOW_TIMEOUT_MS);
   }
+  if (candidate) return toResolvedNAS(candidate);
 
   const relayApi = candidates.find((c) => c.kind === "relay-api");
   if (relayApi) {
