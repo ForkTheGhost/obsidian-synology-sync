@@ -96,6 +96,8 @@ export class MobileGitFileStationSyncEngine {
 
     const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
     const localChanged = await this.runPhase("detect local changes", () => this.changedFiles());
+    const preserveInitialLocalFiles = !localHadCommits && remoteHadCommits && this.localHasUserFiles();
+    const preMergeLocalChanged = preserveInitialLocalFiles ? new Set(localChanged) : new Set<string>();
 
     if (!localHadCommits && remoteHadCommits && !this.localHasUserFiles()) {
       await this.runPhase("checkout remote", () => this.checkoutRemote());
@@ -120,6 +122,7 @@ export class MobileGitFileStationSyncEngine {
 
       const conflicts = await this.unmergedFiles();
       if (conflicts.length > 0) {
+        await this.runPhase("materialize conflict copies", () => this.materializeConflictCopies(conflicts, result));
         result.conflicts.push(...conflicts);
         result.errors.push({
           path: "<git-merge>",
@@ -132,6 +135,10 @@ export class MobileGitFileStationSyncEngine {
       }
     }
 
+    if (preserveInitialLocalFiles) {
+      await this.runPhase("materialize pre-merge local copies", () => this.materializePreMergeLocalCopies(preMergeLocalChanged, beforeSnapshot, result));
+      if (preMergeLocalChanged.size > 0) await this.runPhase("commit conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
+    }
     await this.runPhase("push local branch", () => this.pushWithRetry());
     await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
     await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
@@ -533,6 +540,33 @@ export class MobileGitFileStationSyncEngine {
     await this.writeMemText(`${GITDIR}/refs/heads/${this.opts.branch}`, `${oid}\n`);
   }
 
+  private async materializePreMergeLocalCopies(localChanged: Set<string>, before: Map<string, string>, result: SyncResult): Promise<void> {
+    if (localChanged.size === 0) return;
+    for (const path of await this.listWorkdirFiles()) {
+      if (!localChanged.has(path) || this.isExcluded(path)) continue;
+      const currentHash = await this.fileHash(`${WORKDIR}/${path}`);
+      if (before.has(path) && before.get(path) !== currentHash) continue;
+      const copyPath = conflictCopyPath(path, this.opts.syncIdentityId);
+      if (await this.pathExists(`${WORKDIR}/${copyPath}`)) continue;
+      await this.writeMemFile(`${WORKDIR}/${copyPath}`, await this.readMemBytes(`${WORKDIR}/${path}`));
+      await git.add({ fs: this.memfs.client, dir: WORKDIR, filepath: copyPath, cache: this.cache });
+      result.conflicts.push(path);
+      debugLog(`[git-filestation-mobile] preserved local pre-merge copy ${path} -> ${copyPath}`);
+    }
+  }
+
+  private async materializeConflictCopies(conflicts: string[], result: SyncResult): Promise<void> {
+    for (const path of conflicts) {
+      if (this.isExcluded(path)) continue;
+      const copyPath = conflictCopyPath(path, this.opts.syncIdentityId);
+      if (!(await this.pathExists(`${WORKDIR}/${path}`)) || await this.pathExists(`${WORKDIR}/${copyPath}`)) continue;
+      await this.writeMemFile(`${WORKDIR}/${copyPath}`, await this.readMemBytes(`${WORKDIR}/${path}`));
+      await git.add({ fs: this.memfs.client, dir: WORKDIR, filepath: copyPath, cache: this.cache });
+      debugLog(`[git-filestation-mobile] preserved conflicted local copy ${path} -> ${copyPath}`);
+    }
+    if (conflicts.length > 0) result.conflicts.push(...conflicts.filter((p) => !result.conflicts.includes(p)));
+  }
+
   private async uploadBareRepoMirror(): Promise<void> {
     await this.ensureRemoteDirectoryTree();
     const files = await this.listMemFiles(GITDIR);
@@ -920,6 +954,16 @@ function basename(path: string): string {
   return parts[parts.length - 1] || "";
 }
 
+
+function conflictCopyPath(path: string, syncIdentityId: string): string {
+  const dir = dirnameVaultPath(path);
+  const base = basename(path);
+  const dot = base.lastIndexOf(".");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const safeId = syncIdentityId.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "local";
+  const copyBase = dot > 0 ? `${base.slice(0, dot)} (conflict ${safeId} ${stamp})${base.slice(dot)}` : `${base} (conflict ${safeId} ${stamp})`;
+  return dir ? `${dir}/${copyBase}` : copyBase;
+}
 
 function dirnameVaultPath(path: string): string {
   const parts = splitPath(path);
