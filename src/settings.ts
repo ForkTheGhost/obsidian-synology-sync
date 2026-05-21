@@ -1,7 +1,7 @@
 import { App, PluginSettingTab, Setting, Notice, Modal } from "obsidian";
 import type SynologySync from "./main";
 import { resolveQuickConnect } from "./quickconnect";
-import { getDebugLog, clearDebugLog } from "./debug";
+import { getDebugLog, clearDebugLog, subscribeDebugLog } from "./debug";
 import { FileStation, FileInfo } from "./filestation";
 
 export interface SynologySyncSettings {
@@ -582,7 +582,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
       .setDesc("View detailed connection and auth logs (credentials are redacted)")
       .addButton((btn) =>
         btn.setButtonText("Show log").onClick(() => {
-          new DebugLogModal(this.app, getDebugLog()).open();
+          new DebugLogModal(this.app).open();
         })
       )
       .addButton((btn) =>
@@ -772,39 +772,41 @@ class FolderBrowserModal extends Modal {
 }
 
 class DebugLogModal extends Modal {
-  private logContent: string;
+  private preEl: HTMLPreElement | null = null;
+  private unsubscribe: (() => void) | null = null;
 
-  constructor(app: App, logContent: string) {
+  constructor(app: App) {
     super(app);
-    this.logContent = logContent || "(no log entries yet - try Browse or Sync first)";
   }
 
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h2", { text: "Synology Sync - Debug Log" });
+    contentEl.createEl("h2", { text: "Synology Sync - Live Debug Log" });
     contentEl.createEl("p", {
-      text: "Copy this log and share it for troubleshooting. Passwords and tokens are redacted.",
+      text: "Live feed. Leave this open while syncing; final success/failure is printed as an obvious SYNC FINISHED line. Passwords and tokens are redacted.",
       cls: "setting-item-description",
     });
 
-    const pre = contentEl.createEl("pre", {
-      text: this.logContent,
-    });
-    pre.style.fontSize = "11px";
-    pre.style.lineHeight = "1.4";
-    pre.style.whiteSpace = "pre-wrap";
-    pre.style.wordBreak = "break-all";
-    pre.style.maxHeight = "400px";
-    pre.style.overflow = "auto";
-    pre.style.padding = "8px";
-    pre.style.borderRadius = "4px";
-    pre.style.backgroundColor = "var(--background-secondary)";
+    this.preEl = contentEl.createEl("pre");
+    this.preEl.style.fontSize = "11px";
+    this.preEl.style.lineHeight = "1.4";
+    this.preEl.style.whiteSpace = "pre-wrap";
+    this.preEl.style.wordBreak = "break-all";
+    this.preEl.style.maxHeight = "400px";
+    this.preEl.style.overflow = "auto";
+    this.preEl.style.padding = "8px";
+    this.preEl.style.borderRadius = "4px";
+    this.preEl.style.backgroundColor = "var(--background-secondary)";
+
+    const render = () => this.renderLog();
+    this.unsubscribe = subscribeDebugLog(render);
+    render();
 
     new Setting(contentEl)
       .addButton((btn) =>
         btn.setButtonText("Copy to clipboard").setCta().onClick(async () => {
-          await navigator.clipboard.writeText(this.logContent);
+          await navigator.clipboard.writeText(getDebugLog());
           new Notice("Debug log copied to clipboard");
         })
       )
@@ -813,7 +815,16 @@ class DebugLogModal extends Modal {
       );
   }
 
+  private renderLog() {
+    if (!this.preEl) return;
+    const nearBottom = this.preEl.scrollTop + this.preEl.clientHeight >= this.preEl.scrollHeight - 24;
+    this.preEl.setText(getDebugLog() || "(no log entries yet - try Browse or Sync first)");
+    if (nearBottom) this.preEl.scrollTop = this.preEl.scrollHeight;
+  }
+
   onClose() {
+    if (this.unsubscribe) this.unsubscribe();
+    this.unsubscribe = null;
     this.contentEl.empty();
   }
 }

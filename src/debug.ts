@@ -2,6 +2,7 @@ import manifest from "../manifest.json";
 
 const MAX_ENTRIES = 200;
 const entries: string[] = [];
+const listeners = new Set<() => void>();
 
 export function debugLog(msg: string): void {
   const ts = new Date().toISOString().substring(11, 23);
@@ -9,6 +10,9 @@ export function debugLog(msg: string): void {
   entries.push(entry);
   if (entries.length > MAX_ENTRIES) entries.shift();
   console.log(`[SynologySync] ${msg}`);
+  listeners.forEach((listener) => {
+    try { listener(); } catch { /* ignore listener errors */ }
+  });
 }
 
 export function getDebugLog(): string {
@@ -17,6 +21,14 @@ export function getDebugLog(): string {
 
 export function clearDebugLog(): void {
   entries.length = 0;
+  listeners.forEach((listener) => {
+    try { listener(); } catch { /* ignore listener errors */ }
+  });
+}
+
+export function subscribeDebugLog(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
 }
 
 export function redact(s: string | undefined, showChars: number = 4): string {
