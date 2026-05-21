@@ -682,9 +682,10 @@ class MemoryFs {
   private root: FsNode = { type: "dir", children: new Map(), mtimeMs: Date.now(), ctimeMs: Date.now(), mode: 0o040777 };
 
   promises = {
-    readFile: async (path: string, encoding?: string): Promise<Uint8Array | string> => {
+    readFile: async (path: string, options?: string | { encoding?: string | null }): Promise<Uint8Array | string> => {
       const node = this.getNode(path);
       if (node.type !== "file") throw Object.assign(new Error(`EISDIR: ${path}`), { code: "EISDIR" });
+      const encoding = typeof options === "string" ? options : options?.encoding;
       return encoding ? textDecoder.decode(node.data) : Buffer.from(node.data);
     },
     writeFile: async (path: string, data: Uint8Array | string): Promise<void> => {

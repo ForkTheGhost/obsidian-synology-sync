@@ -74,4 +74,30 @@ describe("MobileGitFileStationSyncEngine", () => {
     await expect(engine.sync()).rejects.toThrow(/pack trailer SHA mismatch/);
   });
 
+  it("returns Buffer for binary reads when isomorphic-git passes an options object", async () => {
+    const vault = {
+      adapter: {},
+      getFiles: jest.fn(() => []),
+      getAbstractFileByPath: jest.fn(() => null),
+    };
+    const fs = {
+      listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }),
+      createFolder: jest.fn(async () => undefined),
+      upload: jest.fn(async () => undefined),
+    };
+
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+    const memfs = (engine as unknown as { memfs: { promises: { writeFile: (path: string, data: Uint8Array) => Promise<void>; readFile: (path: string, options?: { encoding?: string | null }) => Promise<unknown> } } }).memfs;
+    await memfs.promises.writeFile("/tmp/binary.bin", new Uint8Array([0, 255, 65]));
+    const data = await memfs.promises.readFile("/tmp/binary.bin", { encoding: null });
+    expect(Buffer.isBuffer(data)).toBe(true);
+    expect(Array.from(data as Buffer)).toEqual([0, 255, 65]);
+  });
+
 });
