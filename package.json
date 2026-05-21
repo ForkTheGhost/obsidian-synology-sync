@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@isomorphic-git/lightning-fs": "^4.6.2",
-    "isomorphic-git": "^1.38.1"
+    "isomorphic-git": "^1.38.1",
+    "tslib": "^2.8.1"
   }
 }
