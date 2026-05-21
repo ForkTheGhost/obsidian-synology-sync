@@ -171,12 +171,19 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
       addCandidate(candidates, { host: dns.host, port: svc.port, https: true, kind: "api" });
     }
 
-    // 5. HTTPS relay (tunnel through Synology's relay servers)
+    // 5. QuickConnect relay API tunnel. This is different from the browser
+    // portal host. Remote clients often cannot reach any direct endpoint, but
+    // File Station APIs can still work through the relay_ip/relay_port tunnel.
+    if (svc.relay_ip && svc.relay_port) {
+      addCandidate(candidates, { host: svc.relay_ip, port: svc.relay_port, https: true, kind: "api" });
+    }
+
+    // 6. HTTPS relay / portal-provided API tunnel fallback.
     if (svc.https_ip && svc.https_port) {
       addCandidate(candidates, { host: svc.https_ip, port: svc.https_port, https: true, kind: "api" });
     }
 
-    // 6. FQDN / DDNS
+    // 7. FQDN / DDNS
     if (srv.fqdn && srv.fqdn !== "NULL") {
       const port = svc.ext_port || svc.port;
       addCandidate(candidates, { host: srv.fqdn, port, https: true, kind: "api" });
@@ -186,7 +193,7 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
       addCandidate(candidates, { host: srv.ddns, port, https: true, kind: "api" });
     }
 
-    // 7. Raw LAN IPs over HTTP (no cert needed, but unencrypted)
+    // 8. Raw LAN IPs over HTTP (no cert needed, but unencrypted)
     if (srv.interface) {
       for (const iface of srv.interface) {
         if (iface.ip) {
@@ -195,7 +202,7 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
       }
     }
 
-    // 8. Raw external IP (last resort)
+    // 9. Raw external IP (last resort)
     if (srv.external?.ip && srv.external.ip !== "0.0.0.0") {
       const port = svc.ext_port || svc.port;
       if (port) {
