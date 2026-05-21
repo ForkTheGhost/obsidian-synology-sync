@@ -161,7 +161,10 @@ export class MobileGitFileStationSyncEngine {
         await git.readObject({ fs: this.memfs.client, gitdir: GITDIR, oid, format: "wrapped", cache: this.cache });
       } catch (e) {
         const bytes = await this.memfs.promises.readFile(`${GITDIR}/${rel}`).catch(() => new Uint8Array());
-        throw new Error(`remote Git object failed to inflate oid=${oid} path=${rel} bytes=${bytes.byteLength}: ${(e as Error).message}. The remote bare repo likely contains a corrupt loose object from an earlier mobile sync; repair/reinitialize the remote Git folder or replace this object from a healthy clone.`);
+        const byteArray = bytes instanceof Uint8Array ? bytes : textEncoder.encode(String(bytes));
+        const prefix = hexPrefix(byteArray, 32);
+        const hash = fnv1a32(byteArray);
+        throw new Error(`remote Git object failed to inflate oid=${oid} path=${rel} bytes=${byteArray.byteLength} prefix32=${prefix} fnv1a=${hash}: ${(e as Error).message}. The NAS object may be valid; this indicates the mobile-downloaded bytes differ from the repo bytes or the runtime inflate path is still corrupting them.`);
       }
     }
   }
@@ -570,6 +573,19 @@ class MemoryFs {
       mode: node.mode,
     };
   }
+}
+
+function hexPrefix(bytes: Uint8Array, max: number): string {
+  return Array.from(bytes.slice(0, max), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function fnv1a32(bytes: Uint8Array): string {
+  let hash = 2166136261;
+  for (const byte of bytes) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function emptyResult(): SyncResult {
