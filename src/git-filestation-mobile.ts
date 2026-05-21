@@ -76,7 +76,7 @@ export class MobileGitFileStationSyncEngine {
     await this.runPhase("ensure local repo", () => this.ensureLocalRepo());
     await this.runPhase("configure local repo", () => this.configureLocalRepo());
     await this.runPhase("download remote bare repo", () => this.downloadRemoteBareRepoIfPresent());
-    await this.runPhase("verify remote objects", () => this.verifyDownloadedRemoteObjects());
+    await this.runPhase("verify downloaded Git store", () => this.verifyDownloadedGitStore());
     await this.runPhase("ensure remote configured", () => this.ensureRemoteConfigured());
 
     const remoteHadCommits = await this.remoteHasCommits();
@@ -149,27 +149,53 @@ export class MobileGitFileStationSyncEngine {
     }
   }
 
-  private async verifyDownloadedRemoteObjects(): Promise<void> {
+  private async verifyDownloadedGitStore(): Promise<void> {
     const objectRoot = `${GITDIR}/objects`;
     const files = await this.listMemFiles(objectRoot).catch(() => [] as string[]);
-    const looseObjects = files
-      .map((abs) => abs.slice(GITDIR.length + 1))
-      .filter((rel) => /^objects\/[0-9a-f]{2}\/[0-9a-f]{38}$/i.test(rel));
-    debugLog(`[git-filestation-mobile] downloaded remote loose objects=${looseObjects.length}`);
+    const rels = files.map((abs) => abs.slice(GITDIR.length + 1)).sort();
+    if (rels.length === 0) {
+      debugLog("[git-filestation-mobile] downloaded Git store is empty; remote will initialize if no refs are present");
+      return;
+    }
+    const looseObjects = rels.filter((rel) => /^objects\/[0-9a-f]{2}\/[0-9a-f]{38}$/i.test(rel));
+    const packFiles = rels.filter((rel) => /^objects\/pack\/pack-[0-9a-f]{40}\.pack$/i.test(rel));
+    const idxFiles = rels.filter((rel) => /^objects\/pack\/pack-[0-9a-f]{40}\.idx$/i.test(rel));
+    const otherPackEntries = rels.filter((rel) => rel.startsWith("objects/pack/") && !packFiles.includes(rel) && !idxFiles.includes(rel));
+    debugLog(`[git-filestation-mobile] downloaded Git store loose=${looseObjects.length} pack=${packFiles.length} idx=${idxFiles.length} otherPack=${otherPackEntries.length}`);
+
     for (const rel of looseObjects) {
       const oid = rel.slice("objects/".length).replace("/", "");
       try {
-        const bytes = await this.memfs.promises.readFile(`${GITDIR}/${rel}`);
-        const byteArray = bytes instanceof Uint8Array ? bytes : textEncoder.encode(String(bytes));
-        verifyGitLooseObjectBytes(byteArray, oid, rel);
+        const bytes = await this.readMemBytes(`${GITDIR}/${rel}`);
+        verifyGitLooseObjectBytes(bytes, oid, rel);
       } catch (e) {
-        const bytes = await this.memfs.promises.readFile(`${GITDIR}/${rel}`).catch(() => new Uint8Array());
-        const byteArray = bytes instanceof Uint8Array ? bytes : textEncoder.encode(String(bytes));
-        const prefix = hexPrefix(byteArray, 32);
-        const hash = fnv1a32(byteArray);
-        throw new Error(`remote Git object failed to inflate oid=${oid} path=${rel} bytes=${byteArray.byteLength} prefix32=${prefix} fnv1a=${hash}: ${(e as Error).message}. The mobile-downloaded bytes match/mismatch can be compared with the NAS object fingerprint; direct pako verification was used instead of isomorphic-git readObject.`);
+        const bytes = await this.readMemBytes(`${GITDIR}/${rel}`).catch(() => new Uint8Array());
+        const prefix = hexPrefix(bytes, 32);
+        const hash = fnv1a32(bytes);
+        throw new Error(`remote Git loose object failed oid=${oid} path=${rel} bytes=${bytes.byteLength} prefix32=${prefix} fnv1a=${hash}: ${(e as Error).message}`);
       }
     }
+
+    for (const packRel of packFiles) {
+      const packBytes = await this.readMemBytes(`${GITDIR}/${packRel}`);
+      const packInfo = await verifyGitPackBytes(packBytes, packRel);
+      const base = packRel.slice(0, -".pack".length);
+      const idxRel = `${base}.idx`;
+      if (!idxFiles.includes(idxRel)) throw new Error(`remote Git pack missing idx pack=${packRel} expected=${idxRel}`);
+      const idxBytes = await this.readMemBytes(`${GITDIR}/${idxRel}`);
+      const idxInfo = await verifyGitPackIndexBytes(idxBytes, idxRel, packInfo.packSha);
+      if (idxInfo.objectCount !== packInfo.objectCount) {
+        throw new Error(`remote Git pack/idx object count mismatch pack=${packRel} packCount=${packInfo.objectCount} idx=${idxRel} idxCount=${idxInfo.objectCount}`);
+      }
+      debugLog(`[git-filestation-mobile] verified pack ${packRel} bytes=${packBytes.byteLength} objects=${packInfo.objectCount} packSha=${packInfo.packSha} idx=${idxRel} idxBytes=${idxBytes.byteLength}`);
+    }
+
+    for (const idxRel of idxFiles) {
+      const packRel = `${idxRel.slice(0, -".idx".length)}.pack`;
+      if (!packFiles.includes(packRel)) throw new Error(`remote Git idx missing pack idx=${idxRel} expected=${packRel}`);
+    }
+
+    await this.probeDownloadedGitStore();
   }
 
   private async ensureLocalRepo(): Promise<void> {
@@ -192,9 +218,11 @@ export class MobileGitFileStationSyncEngine {
   private async downloadRemoteBareRepoIfPresent(): Promise<void> {
     let files;
     try {
-      files = await this.fs.listAllFiles(this.opts.remotePath);
+      files = await this.listAllRemoteGitFilesStrict(this.opts.remotePath);
     } catch (e) {
-      debugLog(`[git-filestation-mobile] remote bare repo not found or unreadable; will initialize: ${(e as Error).message}`);
+      const message = (e as Error).message;
+      if (!message.startsWith(`Could not list remote Git folder ${this.opts.remotePath}:`)) throw e;
+      debugLog(`[git-filestation-mobile] remote bare repo not found or unreadable; will initialize: ${message}`);
       return;
     }
 
@@ -204,6 +232,45 @@ export class MobileGitFileStationSyncEngine {
       if (!rel || shouldSkipRemoteGitFile(rel)) continue;
       await this.writeMemFile(`${GITDIR}/${rel}`, new Uint8Array(await this.fs.download(file.path)));
     }
+  }
+
+  private async listAllRemoteGitFilesStrict(basePath: string): Promise<Array<{ path: string; isdir: boolean }>> {
+    const station = this.fs as unknown as { listFolder?: (path: string) => Promise<Array<{ path: string; isdir: boolean }>>; listAllFiles?: (path: string) => Promise<Array<{ path: string; isdir: boolean }>> };
+    if (typeof station.listFolder !== "function") {
+      try {
+        return station.listAllFiles ? await station.listAllFiles(basePath) : [];
+      } catch (e) {
+        throw new Error(`Could not list remote Git folder ${basePath}: ${(e as Error).message}`);
+      }
+    }
+
+    const all: Array<{ path: string; isdir: boolean }> = [];
+    let frontier = [basePath];
+    const batch = 5;
+    while (frontier.length > 0) {
+      const next: string[] = [];
+      for (let i = 0; i < frontier.length; i += batch) {
+        const slice = frontier.slice(i, i + batch);
+        const settled = await Promise.allSettled(slice.map((folder) => station.listFolder!(folder)));
+        for (let j = 0; j < settled.length; j++) {
+          const folder = slice[j];
+          const r = settled[j];
+          if (r.status === "rejected") throw new Error(`Could not list remote Git folder ${folder}: ${(r.reason as Error).message}`);
+          for (const f of r.value) {
+            if (f.isdir) next.push(f.path);
+            else all.push(f);
+          }
+        }
+      }
+      frontier = next;
+    }
+    return all;
+  }
+
+  private async probeDownloadedGitStore(): Promise<void> {
+    const head = await git.resolveRef({ fs: this.memfs.client, gitdir: GITDIR, ref: `refs/heads/${this.opts.branch}` });
+    const files = await git.listFiles({ fs: this.memfs.client, gitdir: GITDIR, ref: `refs/heads/${this.opts.branch}`, cache: this.cache });
+    debugLog(`[git-filestation-mobile] Git store probe ref=${this.opts.branch} oid=${head.slice(0, 12)} files=${files.length}`);
   }
 
   private async remoteHasCommits(): Promise<boolean> {
@@ -249,18 +316,23 @@ export class MobileGitFileStationSyncEngine {
     } catch (e) {
       const message = (e as Error).message || String(e);
       if (!/too many length or distance symbols/i.test(message)) throw e;
-      debugLog(`[git-filestation-mobile] statusMatrix failed with inflate error; using direct pako status fallback: ${message}`);
+      debugLog(`[git-filestation-mobile] statusMatrix failed with inflate error after Git store verification; using strict direct-pako status fallback: ${message}`);
       return this.changedFilesByPako();
     }
   }
 
   private async changedFilesByPako(): Promise<string[]> {
     const [headOid, indexEntries, workdirFiles] = await Promise.all([
-      this.resolveHeadOid().catch(() => undefined),
-      this.readIndexEntries().catch(() => new Map<string, string>()),
+      this.resolveHeadOid(),
+      this.readIndexEntries(),
       this.listWorkdirFiles(),
     ]);
-    const headEntries = headOid ? await this.readTreeBlobEntries(headOid).catch(() => new Map<string, string>()) : new Map<string, string>();
+    let headEntries: Map<string, string>;
+    try {
+      headEntries = headOid ? await this.readTreeBlobEntries(headOid) : new Map<string, string>();
+    } catch (e) {
+      throw new Error(`strict pako status fallback cannot read HEAD tree oid=${headOid || "none"}; refusing to continue with an unreadable/partial Git tree: ${(e as Error).message}`);
+    }
     const paths = Array.from(new Set([...headEntries.keys(), ...indexEntries.keys(), ...workdirFiles])).filter((path) => !this.isExcluded(path)).sort();
     const changed: string[] = [];
     for (const path of paths) {
@@ -314,13 +386,13 @@ export class MobileGitFileStationSyncEngine {
 
   private async readLooseObjectContent(oid: string): Promise<{ type: string; object: Uint8Array }> {
     const rel = `objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
-    const bytes = await this.memfs.promises.readFile(`${GITDIR}/${rel}`);
-    return unwrapGitLooseObjectBytes(bytes instanceof Uint8Array ? bytes : textEncoder.encode(String(bytes)), oid, rel);
+    const bytes = await this.readMemBytes(`${GITDIR}/${rel}`);
+    return unwrapGitLooseObjectBytes(bytes, oid, rel);
   }
 
   private async readIndexEntries(): Promise<Map<string, string>> {
     const out = new Map<string, string>();
-    const bytes = await this.memfs.promises.readFile(`${GITDIR}/index`).catch(() => undefined);
+    const bytes = await this.readMemBytes(`${GITDIR}/index`).catch(() => undefined);
     if (!(bytes instanceof Uint8Array) || bytes.byteLength < 12 || textDecoder.decode(bytes.slice(0, 4)) !== "DIRC") return out;
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const entries = view.getUint32(8, false);
@@ -557,7 +629,12 @@ export class MobileGitFileStationSyncEngine {
   }
 
   private async readMemText(path: string): Promise<string> {
-    return textDecoder.decode(await this.memfs.promises.readFile(path));
+    return textDecoder.decode(await this.readMemBytes(path));
+  }
+
+  private async readMemBytes(path: string): Promise<Uint8Array> {
+    const data = await this.memfs.promises.readFile(path);
+    return data instanceof Uint8Array ? data : textEncoder.encode(String(data));
   }
 
   private async writeMemFile(path: string, data: Uint8Array): Promise<void> {
@@ -670,6 +747,44 @@ class MemoryFs {
       mode: node.mode,
     };
   }
+}
+
+async function verifyGitPackBytes(bytes: Uint8Array, rel: string): Promise<{ objectCount: number; packSha: string }> {
+  if (bytes.byteLength < 32) throw new Error(`pack too short path=${rel} bytes=${bytes.byteLength}`);
+  if (textDecoder.decode(bytes.slice(0, 4)) !== "PACK") throw new Error(`pack missing PACK header path=${rel} prefix32=${hexPrefix(bytes, 32)}`);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const version = view.getUint32(4, false);
+  if (version !== 2 && version !== 3) throw new Error(`unsupported pack version path=${rel} version=${version}`);
+  const objectCount = view.getUint32(8, false);
+  const computed = await sha1Hex(bytes.slice(0, -20));
+  const claimed = hexPrefix(bytes.slice(-20), 20);
+  if (computed !== claimed) throw new Error(`pack trailer SHA mismatch path=${rel} bytes=${bytes.byteLength} expected=${claimed} actual=${computed}`);
+  return { objectCount, packSha: claimed };
+}
+
+async function verifyGitPackIndexBytes(bytes: Uint8Array, rel: string, expectedPackSha: string): Promise<{ objectCount: number }> {
+  if (bytes.byteLength < 8 + 256 * 4 + 40) throw new Error(`idx too short path=${rel} bytes=${bytes.byteLength}`);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const magic = view.getUint32(0, false);
+  if (magic !== 0xff744f63) throw new Error(`idx missing v2 magic path=${rel} prefix32=${hexPrefix(bytes, 32)}`);
+  const version = view.getUint32(4, false);
+  if (version !== 2) throw new Error(`unsupported idx version path=${rel} version=${version}`);
+  let prev = 0;
+  for (let i = 0; i < 256; i++) {
+    const count = view.getUint32(8 + i * 4, false);
+    if (count < prev) throw new Error(`idx fanout not monotonic path=${rel} bucket=${i}`);
+    prev = count;
+  }
+  const objectCount = prev;
+  const expectedLength = 8 + 256 * 4 + objectCount * 20 + objectCount * 4 + objectCount * 4 + 40;
+  if (bytes.byteLength < expectedLength) throw new Error(`idx truncated path=${rel} bytes=${bytes.byteLength} minExpected=${expectedLength}`);
+  const packShaOffset = bytes.byteLength - 40;
+  const idxPackSha = hexPrefix(bytes.slice(packShaOffset, packShaOffset + 20), 20);
+  if (idxPackSha !== expectedPackSha) throw new Error(`idx pack SHA mismatch path=${rel} expected=${expectedPackSha} actual=${idxPackSha}`);
+  const computed = await sha1Hex(bytes.slice(0, -20));
+  const claimed = hexPrefix(bytes.slice(-20), 20);
+  if (computed !== claimed) throw new Error(`idx trailer SHA mismatch path=${rel} expected=${claimed} actual=${computed}`);
+  return { objectCount };
 }
 
 function verifyGitLooseObjectBytes(bytes: Uint8Array, oid: string, rel: string): void {

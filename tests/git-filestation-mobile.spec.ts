@@ -35,4 +35,43 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(uploads.some((u) => u.fileName === "HEAD")).toBe(true);
     expect(uploads.some((u) => u.destFolder.endsWith("refs/heads") && u.fileName === "main")).toBe(true);
   });
+  it("fails before status fallback when a downloaded pack has a bad trailer checksum", async () => {
+    const vault = {
+      adapter: {},
+      getFiles: jest.fn(() => []),
+      getAbstractFileByPath: jest.fn(() => null),
+    };
+    const pack = new Uint8Array(32);
+    pack.set([0x50, 0x41, 0x43, 0x4b]);
+    pack[7] = 2;
+    const idx = new Uint8Array(8 + 256 * 4 + 40);
+    idx.set([0xff, 0x74, 0x4f, 0x63]);
+    idx[7] = 2;
+    const fs = {
+      listFolder: jest.fn(async (path: string) => {
+        if (path.endsWith("Test.git")) return [{ path: `${path}/objects`, name: "objects", isdir: true }];
+        if (path.endsWith("objects")) return [{ path: `${path}/pack`, name: "pack", isdir: true }];
+        if (path.endsWith("objects/pack")) return [
+          { path: `${path}/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pack`, name: "pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pack", isdir: false },
+          { path: `${path}/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx`, name: "pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx", isdir: false },
+        ];
+        return [];
+      }),
+      listAllFiles: jest.fn(async () => []),
+      download: jest.fn(async (path: string) => path.endsWith(".pack") ? pack.buffer : idx.buffer),
+      createFolder: jest.fn(async () => undefined),
+      upload: jest.fn(async () => undefined),
+    };
+
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    await expect(engine.sync()).rejects.toThrow(/pack trailer SHA mismatch/);
+  });
+
 });
