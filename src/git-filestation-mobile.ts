@@ -4,7 +4,11 @@ import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
 import { buildGitExcludes, classifyGitConflict, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError } from "./git-sync";
 
+import { Buffer } from "buffer";
 import * as git from "isomorphic-git";
+
+const globalScope = globalThis as typeof globalThis & { Buffer?: typeof Buffer };
+if (!globalScope.Buffer) globalScope.Buffer = Buffer;
 
 export interface MobileGitFileStationSyncOptions {
   remotePath: string;

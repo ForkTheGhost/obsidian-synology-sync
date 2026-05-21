@@ -1,6 +1,6 @@
 {
   "name": "obsidian-synology-sync",
-  "version": "2026.0521.3",
+  "version": "2026.0521.4",
   "description": "Sync Obsidian vault to Synology NAS via File Station API",
   "main": "main.js",
   "scripts": {
@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@isomorphic-git/lightning-fs": "^4.6.2",
+    "buffer": "^6.0.3",
     "isomorphic-git": "^1.38.1",
     "tslib": "^2.8.1"
   }
