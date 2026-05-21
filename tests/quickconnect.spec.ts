@@ -64,7 +64,7 @@ describe("resolveQuickConnect", () => {
     });
   });
 
-  it("uses the regional relay portal when no direct candidate passes ping-pong", async () => {
+  it("uses the relay API tunnel instead of browser portal when no candidate passes ping-pong", async () => {
     mockedRequestUrl
       .mockResolvedValueOnce(quickConnectResponse())
       .mockResolvedValue({
@@ -73,10 +73,10 @@ describe("resolveQuickConnect", () => {
       });
 
     await expect(resolveQuickConnect("Example-NAS")).resolves.toEqual({
-      host: "example-nas.us5.quickconnect.to",
+      host: "relay-api.example.quickconnect.to",
       port: 443,
       https: true,
-      relay: true,
+      relay: undefined,
     });
   });
 
