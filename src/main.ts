@@ -4,6 +4,7 @@ import { resolveQuickConnect } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { NativeGitSyncEngine } from "./git-sync";
 import { GitFileStationSyncEngine } from "./git-filestation-sync";
+import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
 import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
 import { debugLog, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics } from "./debug";
 
@@ -193,9 +194,9 @@ export default class SynologySync extends Plugin {
 
     logRuntimeDiagnostics(this.app);
     const effectiveSyncBackend = sanitizeSyncBackendForRuntime(this.settings, this.app.vault.adapter);
-    if (this.settings.syncBackend !== "filestation" && effectiveSyncBackend === "filestation") {
-      debugLog("Git-backed sync requested, but this Obsidian runtime has no local filesystem path; falling back to File Station sync.");
-      new Notice("Git-backed sync requires Obsidian desktop. Using File Station folder sync here.");
+    if (this.settings.syncBackend === "git-filesystem" && effectiveSyncBackend === "filestation") {
+      debugLog("Mounted filesystem Git sync requested, but this Obsidian runtime has no local filesystem path; falling back to File Station sync.");
+      new Notice("Mounted filesystem Git sync requires Obsidian desktop. Using File Station folder sync here.");
     }
 
     if (effectiveSyncBackend === "git-filesystem") {
@@ -322,7 +323,9 @@ export default class SynologySync extends Plugin {
     let fs: FileStation | null = null;
     try {
       fs = await this.getFileStation();
-      const engine = new GitFileStationSyncEngine(this.app.vault, fs, {
+      const hasDesktopBasePath = typeof (this.app.vault.adapter as unknown as { getBasePath?: unknown }).getBasePath === "function";
+      const Engine = hasDesktopBasePath ? GitFileStationSyncEngine : MobileGitFileStationSyncEngine;
+      const engine = new Engine(this.app.vault, fs, {
         remotePath: this.settings.gitFileStationRepoPath,
         branch: this.settings.gitBranch,
         syncIdentityId: this.settings.syncIdentityId,

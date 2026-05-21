@@ -78,13 +78,18 @@ describe("migrateLoadedSettings", () => {
 
 
 describe("sanitizeSyncBackendForRuntime", () => {
-  it("falls back to File Station when Git-backed sync is selected without a desktop filesystem adapter", () => {
+  it("keeps Git-over-File-Station available without a desktop filesystem adapter", () => {
     const s: SynologySyncSettings = { ...DEFAULT_SETTINGS, syncBackend: "git-filestation" };
-    expect(sanitizeSyncBackendForRuntime(s, {})).toBe("filestation");
+    expect(sanitizeSyncBackendForRuntime(s, {})).toBe("git-filestation");
   });
 
-  it("keeps Git-backed sync on desktop adapters with getBasePath", () => {
+  it("keeps Git-backed File Station sync on desktop adapters with getBasePath", () => {
     const s: SynologySyncSettings = { ...DEFAULT_SETTINGS, syncBackend: "git-filestation" };
     expect(sanitizeSyncBackendForRuntime(s, { getBasePath: () => "/vault" })).toBe("git-filestation");
+  });
+
+  it("falls back to File Station for mounted filesystem Git sync without a desktop filesystem adapter", () => {
+    const s: SynologySyncSettings = { ...DEFAULT_SETTINGS, syncBackend: "git-filesystem" };
+    expect(sanitizeSyncBackendForRuntime(s, {})).toBe("filestation");
   });
 });
