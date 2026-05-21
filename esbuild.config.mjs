@@ -11,7 +11,7 @@ const prod = process.argv[2] === "production";
 const forceIsomorphicGitPakoPlugin = {
   name: "force-isomorphic-git-pako",
   setup(build) {
-    build.onLoad({ filter: /node_modules\/isomorphic-git\/index\.(cjs|js)$/ }, async (args) => {
+    build.onLoad({ filter: /node_modules[\\/]isomorphic-git[\\/]index\.(cjs|js)$/ }, async (args) => {
       const fs = await import("fs/promises");
       let text = await fs.readFile(args.path, "utf8");
       text = text
