@@ -20,6 +20,8 @@ interface QCServerInfo {
     ext_port: number;
     relay_ip?: string;
     relay_port?: number;
+    relay_dualstack?: string;
+    relay_dn?: string;
     https_ip?: string;
     https_port?: number;
   };
@@ -174,8 +176,10 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
     // 5. QuickConnect relay API tunnel. This is different from the browser
     // portal host. Remote clients often cannot reach any direct endpoint, but
     // File Station APIs can still work through the relay_ip/relay_port tunnel.
-    if (svc.relay_ip && svc.relay_port) {
-      addCandidate(candidates, { host: svc.relay_ip, port: svc.relay_port, https: true, kind: "api" });
+    if (svc.relay_port) {
+      if (svc.relay_dualstack) addCandidate(candidates, { host: svc.relay_dualstack, port: svc.relay_port, https: true, kind: "api" });
+      if (svc.relay_dn) addCandidate(candidates, { host: svc.relay_dn, port: svc.relay_port, https: true, kind: "api" });
+      if (svc.relay_ip) addCandidate(candidates, { host: svc.relay_ip, port: svc.relay_port, https: true, kind: "api" });
     }
 
     // 6. HTTPS relay / portal-provided API tunnel fallback.

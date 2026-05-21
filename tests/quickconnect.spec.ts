@@ -21,7 +21,9 @@ function quickConnectResponse() {
         service: {
           port: 5001,
           ext_port: 5001,
-          relay_ip: "relay-api.example.quickconnect.to",
+          relay_ip: "198.51.100.30",
+          relay_dualstack: "relay-api.example.quickconnect.to",
+          relay_dn: "relay-api.example.quickconnect.to",
           relay_port: 443,
         },
         smartdns: {
