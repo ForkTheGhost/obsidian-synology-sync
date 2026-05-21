@@ -2,6 +2,7 @@ import {
   DEFAULT_SETTINGS,
   SynologySyncSettings,
   migrateLoadedSettings,
+  sanitizeSyncBackendForRuntime,
 } from "../src/settings";
 
 describe("DEFAULT_SETTINGS", () => {
@@ -72,5 +73,18 @@ describe("migrateLoadedSettings", () => {
     const changed = migrateLoadedSettings(s);
     expect(changed).toBe(false);
     expect(s.tombstoneJitterMs).toBe(5000);
+  });
+});
+
+
+describe("sanitizeSyncBackendForRuntime", () => {
+  it("falls back to File Station when Git-backed sync is selected without a desktop filesystem adapter", () => {
+    const s: SynologySyncSettings = { ...DEFAULT_SETTINGS, syncBackend: "git-filestation" };
+    expect(sanitizeSyncBackendForRuntime(s, {})).toBe("filestation");
+  });
+
+  it("keeps Git-backed sync on desktop adapters with getBasePath", () => {
+    const s: SynologySyncSettings = { ...DEFAULT_SETTINGS, syncBackend: "git-filestation" };
+    expect(sanitizeSyncBackendForRuntime(s, { getBasePath: () => "/vault" })).toBe("git-filestation");
   });
 });

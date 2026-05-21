@@ -59,6 +59,19 @@ export interface SynologySyncSettings {
   gitAuthorEmail: string;
 }
 
+
+export function isDesktopVaultAdapter(adapter: unknown): boolean {
+  return !!adapter && typeof (adapter as { getBasePath?: unknown }).getBasePath === "function";
+}
+
+export function sanitizeSyncBackendForRuntime(
+  settings: SynologySyncSettings,
+  adapter: unknown,
+): "filestation" | "git-filesystem" | "git-filestation" {
+  if (settings.syncBackend === "filestation") return "filestation";
+  return isDesktopVaultAdapter(adapter) ? settings.syncBackend : "filestation";
+}
+
 export const DEFAULT_SETTINGS: SynologySyncSettings = {
   syncBackend: "filestation",
   connectionType: "quickconnect",
@@ -318,20 +331,28 @@ export class SynologySyncSettingTab extends PluginSettingTab {
     // Sync settings
     containerEl.createEl("h3", { text: "Sync Behavior" });
 
+    const desktopGitAvailable = isDesktopVaultAdapter(this.app.vault.adapter);
+    const effectiveSyncBackend = sanitizeSyncBackendForRuntime(this.plugin.settings, this.app.vault.adapter);
+    if (!desktopGitAvailable && this.plugin.settings.syncBackend !== "filestation") {
+      new Setting(containerEl)
+        .setName("Git-backed sync unavailable")
+        .setDesc("This Obsidian runtime does not expose a local filesystem path, so Git-backed sync cannot run here. File Station folder sync will be used instead.");
+    }
+
     new Setting(containerEl)
       .setName("Git-backed sync behavior")
       .setDesc("Optional desktop-only Git behavior layered under the Synology/File Station flow.")
       .addToggle((toggle) =>
         toggle
-          .setValue(this.plugin.settings.syncBackend !== "filestation")
+          .setValue(effectiveSyncBackend !== "filestation")
           .onChange(async (value) => {
-            this.plugin.settings.syncBackend = value ? "git-filestation" : "filestation";
+            this.plugin.settings.syncBackend = value && desktopGitAvailable ? "git-filestation" : "filestation";
             await this.plugin.saveSettings();
             this.display();
           })
       );
 
-    if (this.plugin.settings.syncBackend !== "filestation") {
+    if (effectiveSyncBackend !== "filestation") {
       new Setting(containerEl)
         .setName("Git transport")
         .setDesc("Use File Station/QuickConnect for Obsidian plugin sync, or a mounted filesystem path for desktop-only native Git sync.")
@@ -339,7 +360,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           dd
             .addOption("git-filestation", "File Station / QuickConnect bare repo")
             .addOption("git-filesystem", "Mounted filesystem bare repo")
-            .setValue(this.plugin.settings.syncBackend)
+            .setValue(effectiveSyncBackend)
             .onChange(async (value: string) => {
               this.plugin.settings.syncBackend = value as "git-filestation" | "git-filesystem";
               await this.plugin.saveSettings();
@@ -347,7 +368,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             })
         );
 
-      if (this.plugin.settings.syncBackend === "git-filesystem") {
+      if (effectiveSyncBackend === "git-filesystem") {
         new Setting(containerEl)
           .setName("Use this vault's existing Git repo")
           .setDesc("Desktop-only mode for vaults that already contain .git. No File Station folder target is required. If origin exists, sync uses it; otherwise the plugin creates local checkpoints only until you add a remote.")
@@ -362,7 +383,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           );
       }
 
-      if (this.plugin.settings.syncBackend === "git-filestation") {
+      if (effectiveSyncBackend === "git-filestation") {
         new Setting(containerEl)
           .setName("Bare repository path on NAS")
           .setDesc("The NAS repo is the Git upstream; your readable notes remain in the local vault. Choose an existing bare repo such as /homes/username/Obsidian/MyVault.git.")
@@ -481,7 +502,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
         })
       );
 
-    if (this.plugin.settings.syncBackend === "filestation") {
+    if (effectiveSyncBackend === "filestation") {
       new Setting(containerEl)
         .setName("Conflict resolution")
         .setDesc("When a file differs on both sides")
