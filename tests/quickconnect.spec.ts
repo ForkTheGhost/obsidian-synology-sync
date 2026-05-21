@@ -21,6 +21,8 @@ function quickConnectResponse() {
         service: {
           port: 5001,
           ext_port: 5001,
+          relay_ip: "relay-api.example.quickconnect.to",
+          relay_port: 443,
         },
         smartdns: {
           host: "EXAMPLE-NAS.direct.quickconnect.to",
@@ -73,6 +75,29 @@ describe("resolveQuickConnect", () => {
       port: 443,
       https: true,
       relay: true,
+    });
+  });
+
+
+  it("uses the QuickConnect relay API tunnel before falling back to browser portal", async () => {
+    mockedRequestUrl
+      .mockResolvedValueOnce(quickConnectResponse())
+      .mockResolvedValueOnce({ status: 404, json: { success: false } })
+      .mockResolvedValueOnce({ status: 404, json: { success: false } })
+      .mockResolvedValueOnce({ status: 404, json: { success: false } })
+      .mockResolvedValueOnce({ status: 404, json: { success: false } })
+      .mockResolvedValueOnce({ status: 200, json: { success: true } });
+
+    await expect(resolveQuickConnect("Example-NAS")).resolves.toEqual({
+      host: "relay-api.example.quickconnect.to",
+      port: 443,
+      https: true,
+      relay: undefined,
+    });
+    expect(mockedRequestUrl).toHaveBeenNthCalledWith(6, {
+      url: "https://relay-api.example.quickconnect.to:443/webman/pingpong.cgi?action=cors&quickconnect=true",
+      method: "GET",
+      throw: false,
     });
   });
 
