@@ -246,12 +246,44 @@ async function pingCandidate(candidate: QCCandidate, timeoutMs: number): Promise
 
 export async function probeQuickConnectCandidates(candidates: QCCandidate[], timeoutMs = PING_FAST_TIMEOUT_MS): Promise<QCCandidate | null> {
   debugLog(`QC: parallel ping-pong testing ${candidates.length} candidates with ${timeoutMs}ms timeout...`);
-  const results = await Promise.all(candidates.map((candidate) => pingCandidate(candidate, timeoutMs)));
-  const index = results.findIndex(Boolean);
-  if (index < 0) return null;
-  const candidate = candidates[index];
-  debugLog(`QC: selected first reachable candidate [${index}] ${candidate.https ? "https" : "http"}://${candidate.host}:${candidate.port}`);
-  return candidate;
+  if (candidates.length === 0) return null;
+
+  // Start every probe immediately, but do not wait for all of them when we do
+  // not have to. As soon as the earliest still-possible candidate is known to
+  // be reachable, return it. Example: if candidate [0] succeeds quickly on LAN,
+  // move forward immediately instead of waiting for remote candidates to hit
+  // their timeout. If [4] succeeds first, wait only for [0..3] to settle so the
+  // original candidate-order preference is preserved.
+  const results: Array<boolean | undefined> = new Array(candidates.length);
+  let settled = 0;
+
+  return new Promise((resolve) => {
+    const tryResolve = () => {
+      for (let i = 0; i < candidates.length; i++) {
+        if (results[i] === true) {
+          const candidate = candidates[i];
+          debugLog(`QC: selected first reachable candidate [${i}] ${candidate.https ? "https" : "http"}://${candidate.host}:${candidate.port}`);
+          resolve(candidate);
+          return true;
+        }
+        if (results[i] === undefined) return false;
+      }
+      if (settled === candidates.length) {
+        resolve(null);
+        return true;
+      }
+      return false;
+    };
+
+    candidates.forEach((candidate, index) => {
+      void pingCandidate(candidate, timeoutMs).then((ok) => {
+        if (results[index] !== undefined) return;
+        results[index] = ok;
+        settled++;
+        tryResolve();
+      });
+    });
+  });
 }
 
 export async function resolveQuickConnect(quickConnectId: string): Promise<ResolvedNAS> {
