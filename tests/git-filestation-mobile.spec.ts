@@ -1,3 +1,4 @@
+import { TFolder } from "obsidian";
 import { MobileGitFileStationSyncEngine } from "../src/git-filestation-mobile";
 
 describe("MobileGitFileStationSyncEngine", () => {
@@ -98,6 +99,44 @@ describe("MobileGitFileStationSyncEngine", () => {
     const data = await memfs.promises.readFile("/tmp/binary.bin", { encoding: null });
     expect(Buffer.isBuffer(data)).toBe(true);
     expect(Array.from(data as Buffer)).toEqual([0, 255, 65]);
+  });
+
+  it("creates parent folders before creating checked-out nested files", async () => {
+    const folders = new Set<string>();
+    const createdFiles: string[] = [];
+    const vault = {
+      adapter: {},
+      getFiles: jest.fn(() => []),
+      getAbstractFileByPath: jest.fn((path: string) => {
+        if (!folders.has(path)) return null;
+        const folder = new TFolder();
+        folder.path = path;
+        return folder;
+      }),
+      createFolder: jest.fn(async (path: string) => { folders.add(path); }),
+      createBinary: jest.fn(async (path: string) => { createdFiles.push(path); }),
+    };
+    const fs = {
+      listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }),
+      createFolder: jest.fn(async () => undefined),
+      upload: jest.fn(async () => undefined),
+    };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+    const memfs = (engine as unknown as { memfs: { promises: { mkdir: (path: string, options?: { recursive?: boolean }) => Promise<void>; writeFile: (path: string, data: Uint8Array) => Promise<void> } }; applyCheckoutChanges: (before: Map<string, string>, result: { downloaded: string[]; uploaded: string[]; deleted: string[] }) => Promise<void> }).memfs;
+    await memfs.promises.mkdir("/vault/Folder/Sub", { recursive: true });
+    await memfs.promises.writeFile("/vault/Folder/Sub/note.md", new Uint8Array([104, 105]));
+
+    await (engine as unknown as { applyCheckoutChanges: (before: Map<string, string>, result: { downloaded: string[]; uploaded: string[]; deleted: string[] }) => Promise<void> }).applyCheckoutChanges(new Map(), { downloaded: [], uploaded: [], deleted: [] });
+
+    expect(vault.createFolder).toHaveBeenNthCalledWith(1, "Folder");
+    expect(vault.createFolder).toHaveBeenNthCalledWith(2, "Folder/Sub");
+    expect(createdFiles).toEqual(["Folder/Sub/note.md"]);
   });
 
 });
