@@ -488,5 +488,27 @@ describe("FileStation", () => {
       const text = new TextDecoder().decode(new Uint8Array(result));
       expect(text).toBe("hello world");
     });
+    it("requests identity encoding and reconstructs binary bytes from one-byte response text", async () => {
+      const fs = makeFs();
+      const compressedLookingPayload = new Uint8Array([0x78, 0x9c, 0xfb, 0xff, 0x00, 0x61]);
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": String(compressedLookingPayload.length),
+        },
+        // Simulates WebKit/Obsidian preserving byte values in response text
+        // while arrayBuffer may contain transport-decoded/corrupt bytes.
+        text: Array.from(compressedLookingPayload, (b) => String.fromCharCode(b)).join(""),
+        arrayBuffer: new Uint8Array([1, 2, 3]).buffer,
+      });
+
+      const result = new Uint8Array(await fs.download("/repo.git/objects/aa/bb"));
+      expect(result).toEqual(compressedLookingPayload);
+      expect(mockedRequestUrl).toHaveBeenCalledWith(expect.objectContaining({
+        headers: { "Accept-Encoding": "identity" },
+      }));
+    });
+
   });
 });
