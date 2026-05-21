@@ -1,6 +1,6 @@
 import { Plugin, Notice, Modal, App } from "obsidian";
 import { FileStation, FileStationConfig, LoginResult } from "./filestation";
-import { resolveQuickConnect, resolveQuickConnectCandidates, QCCandidate } from "./quickconnect";
+import { resolveQuickConnect, resolveQuickConnectCandidates, probeQuickConnectCandidates, QCCandidate } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { NativeGitSyncEngine } from "./git-sync";
 import { GitFileStationSyncEngine } from "./git-filestation-sync";
@@ -166,7 +166,14 @@ export default class SynologySync extends Plugin {
   async getFileStation(): Promise<FileStation> {
     if (this.settings.connectionType === "quickconnect") {
       if (!this.settings.quickConnectId) throw new Error("QuickConnect ID not configured");
-      const candidates = await resolveQuickConnectCandidates(this.settings.quickConnectId);
+      let candidates = await resolveQuickConnectCandidates(this.settings.quickConnectId);
+      const reachable = await probeQuickConnectCandidates(candidates);
+      if (!reachable) {
+        const slowReachable = await probeQuickConnectCandidates(candidates, 30000);
+        if (slowReachable) candidates = [slowReachable];
+      } else {
+        candidates = [reachable];
+      }
       let lastError: unknown = null;
       for (let i = 0; i < candidates.length; i++) {
         const candidate = candidates[i];
