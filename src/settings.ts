@@ -299,11 +299,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             this.plugin.settings.remotePath = value;
             await this.plugin.saveSettings();
           })
-      );
-
-    new Setting(containerEl)
-      .setName("Browse folders")
-      .setDesc("Connect to NAS and browse for the target folder")
+      )
       .addButton((btn) =>
         btn.setButtonText("Browse").onClick(async () => {
           try {
