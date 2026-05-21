@@ -477,6 +477,13 @@ export class FileStation {
   }
 
   async download(filePath: string): Promise<ArrayBuffer> {
+    // DSM may gzip File Station download responses on iOS/WebKit. Obsidian's
+    // requestUrl can expose the decompressed text while leaving arrayBuffer as
+    // the original compressed bytes, which corrupts binary Git objects with
+    // errors such as "too many length or distance symbols" when isomorphic-git
+    // inflates them later. Request identity transfer encoding and prefer a
+    // byte-for-byte reconstruction from the response text when it exactly
+    // matches the declared content length.
     const resp = await requestUrl({
       url: this.url("", {
         api: "SYNO.FileStation.Download",
@@ -486,6 +493,7 @@ export class FileStation {
         mode: "download",
       }),
       method: "GET",
+      headers: { "Accept-Encoding": "identity" },
       throw: false,
     });
     if (resp.status !== 200) {
@@ -497,6 +505,15 @@ export class FileStation {
       const preview = new TextDecoder().decode(new Uint8Array(resp.arrayBuffer).slice(0, 200));
       throw new Error(`download for ${filePath} returned ${ct} instead of file bytes: ${preview}`);
     }
+
+    const contentLength = Number(headers?.["content-length"] ?? headers?.["Content-Length"]);
+    const bodyText = (resp as unknown as { text?: string }).text;
+    if (bodyText !== undefined && Number.isFinite(contentLength) && bodyText.length === contentLength) {
+      const bytes = new Uint8Array(bodyText.length);
+      for (let i = 0; i < bodyText.length; i++) bytes[i] = bodyText.charCodeAt(i) & 0xff;
+      return bytes.buffer;
+    }
+
     return resp.arrayBuffer;
   }
 
