@@ -3,16 +3,22 @@ import process from "process";
 
 const prod = process.argv[2] === "production";
 
-// iOS/WebKit CompressionStream can produce Git loose-object bytes that pako
-// later fails to inflate with "too many length or distance symbols" inside
-// isomorphic-git. Force isomorphic-git to use its bundled pako deflater by
-// hiding the native stream API before bundled modules initialize.
+// iOS/WebKit CompressionStream/DecompressionStream can corrupt or fail Git
+// loose-object deflate/inflate inside isomorphic-git. Force isomorphic-git to
+// use its bundled pako implementation by hiding native stream APIs before
+// bundled modules initialize.
 const compressionStreamBanner = `try {
   if (typeof globalThis !== "undefined") {
     Object.defineProperty(globalThis, "CompressionStream", { value: undefined, configurable: true });
+    Object.defineProperty(globalThis, "DecompressionStream", { value: undefined, configurable: true });
   }
 } catch (_) {
-  try { if (typeof globalThis !== "undefined") globalThis.CompressionStream = undefined; } catch (_) {}
+  try {
+    if (typeof globalThis !== "undefined") {
+      globalThis.CompressionStream = undefined;
+      globalThis.DecompressionStream = undefined;
+    }
+  } catch (_) {}
 }`;
 
 esbuild.build({
