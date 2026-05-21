@@ -141,6 +141,25 @@ export function nestedGitRepoError(nestedRepos: string[]): { path: string; error
   };
 }
 
+export function invalidLocalFilesystemPathError(paths: string[]): { path: string; error: string } {
+  const listed = paths.slice(0, 10).join(", ");
+  const extra = paths.length > 10 ? ` and ${paths.length - 10} more` : "";
+  return {
+    path: "<invalid-local-paths>",
+    error: `Remote Git history contains paths that this desktop filesystem/Git checkout cannot create: ${listed}${extra}. Rename these notes on a compatible machine or in the remote history, then sync again. Common causes include Windows-reserved characters such as colon (:), question mark (?), asterisk (*), angle brackets, pipe, or reserved device names.`,
+  };
+}
+
+export function findInvalidLocalFilesystemPaths(paths: string[]): string[] {
+  const invalidSegment = /[<>:"|?*]/;
+  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+  return paths.filter((path) =>
+    path.split("/").some((part) =>
+      invalidSegment.test(part) || reserved.test(part) || /[ .]$/.test(part),
+    ),
+  );
+}
+
 export function classifyGitSetup(state: GitSetupState): GitSetupClassification {
   if (state.remoteExists && !state.remoteIsBareRepo && !state.remoteIsEmptyDirectory) {
     return {
@@ -247,6 +266,12 @@ export class NativeGitSyncEngine {
 
     if (!usesConfiguredBareRemote && state.originUrl) {
       await this.fetchOrigin();
+    }
+
+    const invalidRemotePaths = await this.invalidRemotePathsForLocalCheckout();
+    if (invalidRemotePaths.length > 0) {
+      result.errors.push(invalidLocalFilesystemPathError(invalidRemotePaths));
+      return result;
     }
 
     const nestedRepos = this.findNestedGitRepositories();
@@ -463,6 +488,14 @@ export class NativeGitSyncEngine {
   private async remoteTreeFiles(): Promise<string[]> {
     const r = await git(["ls-tree", "-r", "--name-only", `origin/${this.opts.branch}`], this.cwd);
     return uniqueLines(r.stdout);
+  }
+
+  private async invalidRemotePathsForLocalCheckout(): Promise<string[]> {
+    try {
+      return findInvalidLocalFilesystemPaths(await this.remoteTreeFiles());
+    } catch {
+      return [];
+    }
   }
 
   private async mergeRemote(allowUnrelatedHistories: boolean): Promise<void> {
