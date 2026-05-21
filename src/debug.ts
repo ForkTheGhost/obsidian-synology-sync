@@ -1,3 +1,5 @@
+import manifest from "../manifest.json";
+
 const MAX_ENTRIES = 200;
 const entries: string[] = [];
 
@@ -44,6 +46,7 @@ export function formatErrorForDebug(error: unknown): string {
 let runtimeLogged = false;
 
 export interface RuntimeDiagnostics {
+  pluginVersion: string;
   platform: string;
   isDesktop: boolean | string;
   isMobile: boolean | string;
@@ -86,6 +89,7 @@ export function getRuntimeDiagnostics(app?: unknown): RuntimeDiagnostics {
   const adapter = (app as { vault?: { adapter?: { getBasePath?: unknown } } } | undefined)?.vault?.adapter;
   const fp = hostFingerprint(app);
   return {
+    pluginVersion: manifest.version || "unknown",
     platform: nav?.platform || "unknown",
     isDesktop: obsidianPlatform?.isDesktop ?? "unknown",
     isMobile: obsidianPlatform?.isMobile ?? "unknown",
@@ -99,7 +103,7 @@ export function getRuntimeDiagnostics(app?: unknown): RuntimeDiagnostics {
 }
 
 export function formatRuntimeDiagnostics(d: RuntimeDiagnostics): string {
-  return `platform=${d.platform} obsidianDesktop=${d.isDesktop} obsidianMobile=${d.isMobile} iosApp=${d.isIosApp} mobileApp=${d.isMobileApp} hasVaultBasePath=${d.hasVaultBasePath} hostFingerprint=${d.hostFingerprint} hostFingerprintSource=${d.hostFingerprintSource} userAgent=${d.userAgent}`;
+  return `pluginVersion=${d.pluginVersion} platform=${d.platform} obsidianDesktop=${d.isDesktop} obsidianMobile=${d.isMobile} iosApp=${d.isIosApp} mobileApp=${d.isMobileApp} hasVaultBasePath=${d.hasVaultBasePath} hostFingerprint=${d.hostFingerprint} hostFingerprintSource=${d.hostFingerprintSource} userAgent=${d.userAgent}`;
 }
 
 export function logRuntimeDiagnostics(app?: unknown, force = false): void {

@@ -31,6 +31,7 @@ describe("runtime diagnostics", () => {
     expect(d.hasVaultBasePath).toBe(true);
     expect(d.hostFingerprint).toMatch(/^h_[0-9a-f]{8}$/);
     expect(d.hostFingerprintSource).toBe("vaultBasePath");
+    expect(formatRuntimeDiagnostics(d)).toContain("pluginVersion=");
     expect(formatRuntimeDiagnostics(d)).toContain("hasVaultBasePath=true");
     expect(formatRuntimeDiagnostics(d)).toContain("hostFingerprint=");
   });
