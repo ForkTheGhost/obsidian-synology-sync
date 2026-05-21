@@ -6,6 +6,7 @@ import { buildGitExcludes, classifyGitConflict, findInvalidLocalFilesystemPaths,
 
 import { Buffer } from "buffer";
 import * as git from "isomorphic-git";
+import pako from "pako";
 
 const globalScope = globalThis as typeof globalThis & { Buffer?: typeof Buffer };
 if (!globalScope.Buffer) globalScope.Buffer = Buffer;
@@ -158,13 +159,15 @@ export class MobileGitFileStationSyncEngine {
     for (const rel of looseObjects) {
       const oid = rel.slice("objects/".length).replace("/", "");
       try {
-        await git.readObject({ fs: this.memfs.client, gitdir: GITDIR, oid, format: "wrapped", cache: this.cache });
+        const bytes = await this.memfs.promises.readFile(`${GITDIR}/${rel}`);
+        const byteArray = bytes instanceof Uint8Array ? bytes : textEncoder.encode(String(bytes));
+        verifyGitLooseObjectBytes(byteArray, oid, rel);
       } catch (e) {
         const bytes = await this.memfs.promises.readFile(`${GITDIR}/${rel}`).catch(() => new Uint8Array());
         const byteArray = bytes instanceof Uint8Array ? bytes : textEncoder.encode(String(bytes));
         const prefix = hexPrefix(byteArray, 32);
         const hash = fnv1a32(byteArray);
-        throw new Error(`remote Git object failed to inflate oid=${oid} path=${rel} bytes=${byteArray.byteLength} prefix32=${prefix} fnv1a=${hash}: ${(e as Error).message}. The NAS object may be valid; this indicates the mobile-downloaded bytes differ from the repo bytes or the runtime inflate path is still corrupting them.`);
+        throw new Error(`remote Git object failed to inflate oid=${oid} path=${rel} bytes=${byteArray.byteLength} prefix32=${prefix} fnv1a=${hash}: ${(e as Error).message}. The mobile-downloaded bytes match/mismatch can be compared with the NAS object fingerprint; direct pako verification was used instead of isomorphic-git readObject.`);
       }
     }
   }
@@ -572,6 +575,21 @@ class MemoryFs {
       ctimeMs: node.ctimeMs,
       mode: node.mode,
     };
+  }
+}
+
+function verifyGitLooseObjectBytes(bytes: Uint8Array, oid: string, rel: string): void {
+  const inflated = pako.inflate(bytes);
+  const nul = inflated.indexOf(0);
+  if (nul <= 0) throw new Error(`inflated object missing header oid=${oid} path=${rel}`);
+  const header = textDecoder.decode(inflated.slice(0, nul));
+  if (!/^(blob|tree|commit|tag) [0-9]+$/.test(header)) {
+    throw new Error(`inflated object has invalid header oid=${oid} path=${rel} header=${header}`);
+  }
+  const expectedLength = Number(header.slice(header.indexOf(" ") + 1));
+  const actualLength = inflated.byteLength - nul - 1;
+  if (expectedLength !== actualLength) {
+    throw new Error(`inflated object length mismatch oid=${oid} path=${rel} expected=${expectedLength} actual=${actualLength}`);
   }
 }
 
