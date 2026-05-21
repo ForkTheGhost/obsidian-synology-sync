@@ -28,7 +28,6 @@ Required configuration:
 
 - File Station or QuickConnect connection settings
 - NAS bare Git repository path, for example `/homes/user/Obsidian/MyVault.git`
-- A desktop Obsidian runtime with local filesystem access to the vault
 
 Not required:
 
@@ -40,8 +39,8 @@ Behavior:
 - Human-readable notes live in each local checkout/vault.
 - The bare repository is the shared upstream for multi-user sync.
 - The picker/validation must only accept a bare Git repo shape: `HEAD`, `objects/`, and `refs/`.
-- This mode needs local filesystem access because Git operates on the local checkout.
-- On iOS/mobile runtimes without `getBasePath()`, this mode must not be attempted; the UI/logs should make that clear.
+- On desktop runtimes with local filesystem access, this mode may use native Git against the local checkout.
+- On iOS/mobile runtimes without `getBasePath()`, this mode uses a pure-JS Git engine over Obsidian's vault APIs instead of desktop-only Node/native Git APIs.
 
 ### Git-backed sync over mounted filesystem
 
@@ -148,3 +147,36 @@ Failures should be actionable errors, not raw Git crashes.
 Git-backed sync should protect volatile Obsidian configuration by default. Default excludes/policies should avoid syncing transient workspace/plugin state unless the user explicitly chooses a broader policy.
 
 The default policy is notes-oriented and should avoid surprising multi-device config churn.
+
+## Roadmap / open design items
+
+### Persistent mobile Git cache
+
+The first mobile Git-over-File-Station implementation uses an in-memory filesystem because Obsidian mobile does not expose a normal desktop filesystem path to plugins. A follow-up should evaluate `@isomorphic-git/lightning-fs` / IndexedDB as a persistent mobile cache so repeated syncs do not need to reconstruct the Git working state from the vault and NAS bare repo every run.
+
+Acceptance considerations:
+
+- Works inside Obsidian iOS/mobile WebView storage constraints.
+- Does not rely on desktop-only `getBasePath()`, Node `fs`, or native Git.
+- Has a safe cache invalidation/rebuild path if IndexedDB data is missing or corrupt.
+- Does not leak vault path/host-identifying data in logs.
+
+### Git history retention / compaction
+
+Long-running automatic sync can create many commits. The bare NAS repo can grow over time, especially with large binary attachments and frequent autosync commits. A follow-up should design an explicit, opt-in retention/compaction model instead of silently rewriting history.
+
+Possible policy shape:
+
+- Keep individual commits for the last 7 days.
+- Squash older daily history into daily snapshots for a short window.
+- Squash older daily snapshots into weekly snapshots for roughly 4 weeks.
+- Squash older weekly snapshots into monthly snapshots for roughly 6 months.
+- Preserve tags or checkpoint refs before destructive compaction.
+
+Design constraints:
+
+- History rewriting must coordinate across devices so stale clients do not push old history back.
+- Compaction should never run while other clients may be mid-sync unless there is a lock/lease protocol.
+- Users need clear warnings that compaction trades fine-grained history for repo size/performance.
+- Explore lighter fetch/clone options first where possible, such as shallow/single-branch fetches, before introducing destructive squash/GC behavior.
+- Include NAS-side garbage collection/prune guidance where supported, because squashing alone does not reclaim object storage until unreachable objects are pruned.

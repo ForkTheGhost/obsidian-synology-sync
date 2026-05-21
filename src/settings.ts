@@ -69,7 +69,8 @@ export function sanitizeSyncBackendForRuntime(
   adapter: unknown,
 ): "filestation" | "git-filesystem" | "git-filestation" {
   if (settings.syncBackend === "filestation") return "filestation";
-  return isDesktopVaultAdapter(adapter) ? settings.syncBackend : "filestation";
+  if (settings.syncBackend === "git-filestation") return "git-filestation";
+  return isDesktopVaultAdapter(adapter) ? "git-filesystem" : "filestation";
 }
 
 export const DEFAULT_SETTINGS: SynologySyncSettings = {
@@ -314,8 +315,8 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           .addOption("git-filesystem", "Git-backed sync over mounted filesystem")
           .setValue(effectiveSyncBackend)
           .onChange(async (value: string) => {
-            if (value !== "filestation" && !desktopGitAvailable) {
-              new Notice("Git-backed sync requires Obsidian desktop/local filesystem access.");
+            if (value === "git-filesystem" && !desktopGitAvailable) {
+              new Notice("Mounted filesystem Git sync requires Obsidian desktop/local filesystem access.");
               this.plugin.settings.syncBackend = "filestation";
             } else {
               this.plugin.settings.syncBackend = value as SynologySyncSettings["syncBackend"];
@@ -325,10 +326,10 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           })
       );
 
-    if (!desktopGitAvailable && this.plugin.settings.syncBackend !== "filestation") {
+    if (!desktopGitAvailable && this.plugin.settings.syncBackend === "git-filesystem") {
       new Setting(containerEl)
-        .setName("Git-backed sync unavailable")
-        .setDesc("This Obsidian runtime does not expose a local filesystem path, so Git-backed sync cannot run here. File Station folder sync will be used instead.");
+        .setName("Mounted filesystem Git sync unavailable")
+        .setDesc("This Obsidian runtime does not expose a local filesystem path, so mounted filesystem Git sync cannot run here. Git-backed File Station / QuickConnect sync remains available.");
     }
 
     if (effectiveSyncBackend === "filestation") {
