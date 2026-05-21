@@ -1,4 +1,4 @@
-import { TFile, Vault } from "obsidian";
+import { TFile, TFolder, Vault } from "obsidian";
 import { FileStation } from "./filestation";
 import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
@@ -602,8 +602,23 @@ export class MobileGitFileStationSyncEngine {
       }
       const bytes = await this.memfs.promises.readFile(`${WORKDIR}/${path}`);
       if (file instanceof TFile) await this.vault.modifyBinary(file, bytesToArrayBuffer(bytes));
-      else await this.vault.createBinary(path, bytesToArrayBuffer(bytes));
+      else {
+        await this.ensureVaultFolder(dirnameVaultPath(path));
+        await this.vault.createBinary(path, bytesToArrayBuffer(bytes));
+      }
       if (!result.downloaded.includes(path) && !result.uploaded.includes(path)) result.downloaded.push(path);
+    }
+  }
+
+  private async ensureVaultFolder(path: string): Promise<void> {
+    const parts = splitPath(path);
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      const existing = this.vault.getAbstractFileByPath(current);
+      if (existing instanceof TFolder) continue;
+      if (existing instanceof TFile) throw new Error(`Cannot create checkout folder ${current}; a file already exists at that path.`);
+      await this.vault.createFolder(current);
     }
   }
 
@@ -903,6 +918,13 @@ function shouldSkipRemoteGitFile(path: string): boolean {
 function basename(path: string): string {
   const parts = splitPath(path);
   return parts[parts.length - 1] || "";
+}
+
+
+function dirnameVaultPath(path: string): string {
+  const parts = splitPath(path);
+  parts.pop();
+  return parts.join("/");
 }
 
 function dirname(path: string): string {
