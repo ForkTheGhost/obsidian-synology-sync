@@ -34,14 +34,14 @@ interface QCServerInfo {
   errno?: number;
 }
 
-interface ResolvedNAS {
+export interface ResolvedNAS {
   host: string;
   port: number;
   https: boolean;
   relay?: boolean;
 }
 
-interface QCCandidate extends ResolvedNAS {
+export interface QCCandidate extends ResolvedNAS {
   kind: "portal" | "api" | "relay-api";
 }
 
@@ -88,7 +88,7 @@ async function requestUrlWithTimeout(
   }
 }
 
-export async function resolveQuickConnect(quickConnectId: string): Promise<ResolvedNAS> {
+export async function resolveQuickConnectCandidates(quickConnectId: string): Promise<QCCandidate[]> {
   debugLog(`QC: resolving "${quickConnectId}"`);
   const normalizedQuickConnectId = normalizeQuickConnectId(quickConnectId);
   const body = JSON.stringify([
@@ -222,8 +222,12 @@ export async function resolveQuickConnect(quickConnectId: string): Promise<Resol
   debugLog(`QC: ${candidates.length} candidates built`);
   candidates.forEach((c, i) => debugLog(`QC:   [${i}] ${c.https ? "https" : "http"}://${c.host}:${c.port}`));
 
-  // Ping-pong test candidates in parallel groups for speed.
-  // Test SmartDNS candidates first (valid certs), then fallbacks.
+  return candidates;
+}
+
+export async function resolveQuickConnect(quickConnectId: string): Promise<ResolvedNAS> {
+  const candidates = await resolveQuickConnectCandidates(quickConnectId);
+
   debugLog(`QC: ping-pong testing ${candidates.length} candidates...`);
 
   for (const c of candidates) {

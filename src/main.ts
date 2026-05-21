@@ -1,6 +1,6 @@
 import { Plugin, Notice, Modal, App } from "obsidian";
 import { FileStation, FileStationConfig, LoginResult } from "./filestation";
-import { resolveQuickConnect } from "./quickconnect";
+import { resolveQuickConnect, resolveQuickConnectCandidates, QCCandidate } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { NativeGitSyncEngine } from "./git-sync";
 import { GitFileStationSyncEngine } from "./git-filestation-sync";
@@ -123,6 +123,20 @@ export default class SynologySync extends Plugin {
     }
   }
 
+
+  private configFromQuickConnectCandidate(candidate: QCCandidate, otpCode?: string): FileStationConfig {
+    const baseUrl = `${candidate.https ? "https" : "http"}://${candidate.host}:${candidate.port}`;
+    return {
+      baseUrl,
+      username: this.settings.username,
+      password: this.settings.password,
+      deviceId: this.settings.deviceId || undefined,
+      deviceToken: this.settings.deviceToken || undefined,
+      otpCode,
+      quickConnectRelay: candidate.kind === "portal",
+    };
+  }
+
   async buildConfig(otpCode?: string): Promise<FileStationConfig> {
     let baseUrl: string;
     let quickConnectRelay = false;
@@ -150,6 +164,33 @@ export default class SynologySync extends Plugin {
   }
 
   async getFileStation(): Promise<FileStation> {
+    if (this.settings.connectionType === "quickconnect") {
+      if (!this.settings.quickConnectId) throw new Error("QuickConnect ID not configured");
+      const candidates = await resolveQuickConnectCandidates(this.settings.quickConnectId);
+      let lastError: unknown = null;
+      for (let i = 0; i < candidates.length; i++) {
+        const candidate = candidates[i];
+        const config = this.configFromQuickConnectCandidate(candidate);
+        debugLog(`QC: trying candidate [${i}] ${config.baseUrl} (${candidate.kind})`);
+        const fs = new FileStation(config);
+        try {
+          const result = await fs.login();
+          debugLog(`QC: authenticated candidate [${i}] ${config.baseUrl}`);
+          if (result.deviceToken && result.deviceToken !== this.settings.deviceToken) {
+            this.settings.deviceId = result.deviceId;
+            this.settings.deviceToken = result.deviceToken;
+            await this.saveSettings();
+          }
+          return fs;
+        } catch (e) {
+          lastError = e;
+          debugLog(`QC: candidate [${i}] failed: ${(e as Error).message}`);
+          try { await fs.logout(); } catch { /* ignore */ }
+        }
+      }
+      throw lastError instanceof Error ? lastError : new Error("QuickConnect login failed for all candidates");
+    }
+
     const config = await this.buildConfig();
     const fs = new FileStation(config);
     const result = await fs.login();
