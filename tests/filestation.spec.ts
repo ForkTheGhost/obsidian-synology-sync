@@ -488,26 +488,43 @@ describe("FileStation", () => {
       const text = new TextDecoder().decode(new Uint8Array(result));
       expect(text).toBe("hello world");
     });
-    it("requests identity encoding and reconstructs binary bytes from one-byte response text", async () => {
+    it("requests identity encoding and prefers arrayBuffer when content-length matches", async () => {
       const fs = makeFs();
-      const compressedLookingPayload = new Uint8Array([0x78, 0x9c, 0xfb, 0xff, 0x00, 0x61]);
+      const payload = new Uint8Array([0x78, 0x01, 0xfb, 0xff, 0x00, 0x61]);
       mockedRequestUrl.mockResolvedValueOnce({
         status: 200,
         headers: {
           "content-type": "application/octet-stream",
-          "content-length": String(compressedLookingPayload.length),
+          "content-length": String(payload.length),
         },
-        // Simulates WebKit/Obsidian preserving byte values in response text
-        // while arrayBuffer may contain transport-decoded/corrupt bytes.
-        text: Array.from(compressedLookingPayload, (b) => String.fromCharCode(b)).join(""),
+        // Text decoding arbitrary Git object bytes can corrupt high-bit bytes;
+        // arrayBuffer is authoritative when its length matches content-length.
+        text: "corrupt",
+        arrayBuffer: payload.buffer,
+      });
+
+      const result = new Uint8Array(await fs.download("/repo.git/objects/aa/bb"));
+      expect(result).toEqual(payload);
+      expect(mockedRequestUrl).toHaveBeenCalledWith(expect.objectContaining({
+        headers: { "Accept-Encoding": "identity" },
+      }));
+    });
+
+    it("reconstructs binary bytes from one-byte response text only when arrayBuffer length mismatches", async () => {
+      const fs = makeFs();
+      const payload = new Uint8Array([0x78, 0x9c, 0xfb, 0xff, 0x00, 0x61]);
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": String(payload.length),
+        },
+        text: Array.from(payload, (b) => String.fromCharCode(b)).join(""),
         arrayBuffer: new Uint8Array([1, 2, 3]).buffer,
       });
 
       const result = new Uint8Array(await fs.download("/repo.git/objects/aa/bb"));
-      expect(result).toEqual(compressedLookingPayload);
-      expect(mockedRequestUrl).toHaveBeenCalledWith(expect.objectContaining({
-        headers: { "Accept-Encoding": "identity" },
-      }));
+      expect(result).toEqual(payload);
     });
 
   });
