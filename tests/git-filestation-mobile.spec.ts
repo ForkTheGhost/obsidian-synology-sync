@@ -139,4 +139,39 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(createdFiles).toEqual(["Folder/Sub/note.md"]);
   });
 
+  it("materializes a conflict copy for pre-merge local changes", async () => {
+    const vault = {
+      adapter: {},
+      getFiles: jest.fn(() => []),
+      getAbstractFileByPath: jest.fn(() => null),
+      createFolder: jest.fn(async () => undefined),
+      createBinary: jest.fn(async () => undefined),
+    };
+    const fs = {
+      listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }),
+      createFolder: jest.fn(async () => undefined),
+      upload: jest.fn(async () => undefined),
+    };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+    const exposed = engine as unknown as {
+      memfs: { promises: { mkdir: (path: string, options?: { recursive?: boolean }) => Promise<void>; writeFile: (path: string, data: Uint8Array) => Promise<void>; readdir: (path: string) => Promise<string[]> } };
+      materializePreMergeLocalCopies: (changed: Set<string>, before: Map<string, string>, result: { conflicts: string[] }) => Promise<void>;
+    };
+    await exposed.memfs.promises.mkdir("/vault/Folder", { recursive: true });
+    await exposed.memfs.promises.writeFile("/vault/Folder/note.md", new Uint8Array([104, 105]));
+
+    const result = { conflicts: [] as string[] };
+    await exposed.materializePreMergeLocalCopies(new Set(["Folder/note.md"]), new Map(), result);
+
+    const entries = await exposed.memfs.promises.readdir("/vault/Folder");
+    expect(entries.some((name) => /^note \(conflict ios-device .+\)\.md$/.test(name))).toBe(true);
+    expect(result.conflicts).toEqual(["Folder/note.md"]);
+  });
+
 });
