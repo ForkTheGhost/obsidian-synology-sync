@@ -445,8 +445,6 @@ export class MobileGitFileStationSyncEngine {
 class MemoryFs {
   private root: FsNode = { type: "dir", children: new Map(), mtimeMs: Date.now(), ctimeMs: Date.now(), mode: 0o040777 };
 
-  client = { promises: this.promises };
-
   promises = {
     readFile: async (path: string, encoding?: string): Promise<Uint8Array | string> => {
       const node = this.getNode(path);
@@ -485,6 +483,8 @@ class MemoryFs {
     symlink: async (): Promise<void> => { throw Object.assign(new Error("ENOSYS"), { code: "ENOSYS" }); },
     chmod: async (path: string, mode: number): Promise<void> => { this.getNode(path).mode = mode; },
   };
+
+  client = { promises: this.promises };
 
   private getNode(path: string): FsNode {
     const parts = splitPath(path);
