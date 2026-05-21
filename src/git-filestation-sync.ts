@@ -2,7 +2,7 @@ import { TFile, Vault } from "obsidian";
 import { FileStation } from "./filestation";
 import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
-import { buildGitExcludes, classifyGitConflict, nestedGitRepoError } from "./git-sync";
+import { buildGitExcludes, classifyGitConflict, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError } from "./git-sync";
 
 declare const require: ((id: string) => unknown) | undefined;
 
@@ -78,6 +78,12 @@ export class GitFileStationSyncEngine {
 
     const remoteHadCommits = await this.remoteHasCommits();
     const localHadCommits = await this.localHasCommits();
+
+    const invalidRemotePaths = await this.invalidRemotePathsForLocalCheckout();
+    if (invalidRemotePaths.length > 0) {
+      result.errors.push(invalidLocalFilesystemPathError(invalidRemotePaths));
+      return result;
+    }
 
     const nestedRepos = this.findNestedGitRepositories();
     if (nestedRepos.length > 0) {
@@ -269,6 +275,14 @@ export class GitFileStationSyncEngine {
   private async remoteTreeFiles(): Promise<string[]> {
     const r = await git(["ls-tree", "-r", "--name-only", `origin/${this.opts.branch}`], this.cwd);
     return uniqueLines(r.stdout);
+  }
+
+  private async invalidRemotePathsForLocalCheckout(): Promise<string[]> {
+    try {
+      return findInvalidLocalFilesystemPaths(await this.remoteTreeFiles());
+    } catch {
+      return [];
+    }
   }
 
   private async mergeRemote(allowUnrelatedHistories: boolean): Promise<void> {

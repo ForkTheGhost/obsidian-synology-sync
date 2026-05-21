@@ -1,4 +1,4 @@
-import { buildGitExcludes, classifyGitConflict, classifyGitSetup, GitSetupState, nestedGitRepoError } from "../src/git-sync";
+import { buildGitExcludes, classifyGitConflict, classifyGitSetup, GitSetupState, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError } from "../src/git-sync";
 
 const baseState: GitSetupState = {
   localRepoExists: false,
@@ -118,5 +118,25 @@ describe("nested Git repository diagnostics", () => {
     expect(error.error).toContain(".archive/vaultBSWH");
     expect(error.error).toContain("before staging");
     expect(error.error).toContain("exclude these folders");
+  });
+});
+
+
+describe("invalid local filesystem paths", () => {
+  it("detects remote note paths that Windows/Git cannot check out", () => {
+    const invalid = findInvalidLocalFilesystemPaths([
+      "SecOps/Products & Solutions/Palo Alto/Cortex XDR/KB0104369 - Cortex XDR - Understanding the Agent: What It Is and How It Works.md",
+      "ok/note.md",
+    ]);
+    expect(invalid).toEqual([
+      "SecOps/Products & Solutions/Palo Alto/Cortex XDR/KB0104369 - Cortex XDR - Understanding the Agent: What It Is and How It Works.md",
+    ]);
+  });
+
+  it("returns an actionable error instead of allowing merge to crash", () => {
+    const error = invalidLocalFilesystemPathError(["A/B: C.md"]);
+    expect(error.path).toBe("<invalid-local-paths>");
+    expect(error.error).toContain("B: C.md");
+    expect(error.error).toContain("Rename these notes");
   });
 });
