@@ -100,8 +100,12 @@ export class MobileGitFileStationSyncEngine {
     const preMergeLocalChanged = preserveInitialLocalFiles ? new Set(localChanged) : new Set<string>();
 
     if (!localHadCommits && remoteHadCommits && !this.localHasUserFiles()) {
+      const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       await this.runPhase("checkout remote", () => this.checkoutRemote());
       await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
+      for (const path of remoteFiles) {
+        if (!this.isExcluded(path) && !result.downloaded.includes(path)) result.downloaded.push(path);
+      }
       await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
       return result;
     }
@@ -118,6 +122,7 @@ export class MobileGitFileStationSyncEngine {
     if (remoteHadCommits) {
       const remoteChanged = await this.runPhase("detect remote changes", () => this.remoteChangedFiles());
       await this.runPhase("merge remote", () => this.mergeRemote(!localHadCommits && this.localHasUserFiles()));
+      if (!localHadCommits) await this.runPhase("checkout merged remote", () => this.checkoutRemote());
       result.downloaded.push(...remoteChanged);
 
       const conflicts = await this.unmergedFiles();
