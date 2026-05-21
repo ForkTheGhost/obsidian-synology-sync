@@ -468,7 +468,15 @@ class MemoryFs {
     },
     mkdir: async (path: string, opts?: { recursive?: boolean } | number): Promise<void> => {
       const recursive = typeof opts === "object" && !!opts.recursive;
-      this.ensureDir(path, recursive);
+      try {
+        this.ensureDir(path, recursive);
+      } catch (error) {
+        if (recursive || !isMissingParentDir(error)) throw error;
+        // isomorphic-git initializes nested paths one level at a time, but on
+        // mobile this in-memory FS is the only parent creator. Match the
+        // forgiving behavior of browser filesystem shims for missing parents.
+        this.ensureDir(path, true);
+      }
     },
     rmdir: async (path: string): Promise<void> => {
       const node = this.getNode(path);
@@ -534,6 +542,10 @@ function emptyResult(): SyncResult {
   return { uploaded: [], downloaded: [], deleted: [], deletedRemote: [], deletedLocal: [], recreated: [], preservedLocal: [], conflicts: [], errors: [] };
 }
 
+function isMissingParentDir(error: unknown): boolean {
+  return !!error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "ENOENT";
+}
+
 function normalizeRemotePath(path: string): string {
   return path.trim().replace(/\/+$/, "");
 }
@@ -566,7 +578,8 @@ function dirname(path: string): string {
 }
 
 function splitPath(path: string): string[] {
-  return path.split("/").filter(Boolean);
+  if (path === ".") return [];
+  return path.split("/").filter((part) => part.length > 0 && part !== ".");
 }
 
 function basenameRemotePath(path: string): string {
