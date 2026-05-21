@@ -190,12 +190,18 @@ export default class SynologySync extends Plugin {
       return;
     }
 
-    if (this.settings.syncBackend === "git-filesystem") {
+    const effectiveSyncBackend = sanitizeSyncBackendForRuntime(this.settings, this.app.vault.adapter);
+    if (this.settings.syncBackend !== "filestation" && effectiveSyncBackend === "filestation") {
+      debugLog("Git-backed sync requested, but this Obsidian runtime has no local filesystem path; falling back to File Station sync.");
+      new Notice("Git-backed sync requires Obsidian desktop. Using File Station folder sync here.");
+    }
+
+    if (effectiveSyncBackend === "git-filesystem") {
       await this.runGitSync();
       return;
     }
 
-    if (this.settings.syncBackend === "git-filestation") {
+    if (effectiveSyncBackend === "git-filestation") {
       await this.runGitFileStationSync();
       return;
     }
