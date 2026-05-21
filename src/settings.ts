@@ -427,7 +427,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           .setDesc("Required unless using this vault's existing Git repo. Filesystem path to a bare Git repo reachable by this desktop, such as \\NAS\Share\MyVault.git or /Volumes/Share/MyVault.git.")
           .addText((text) =>
             text
-              .setPlaceholder("\\NAS\Share\MyVault.git")
+              .setPlaceholder("\\\\NAS\\Share\\MyVault.git")
               .setValue(this.plugin.settings.gitRemotePath)
               .onChange(async (value) => {
                 this.plugin.settings.gitRemotePath = value.trim();
