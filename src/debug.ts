@@ -51,12 +51,40 @@ export interface RuntimeDiagnostics {
   isMobileApp: boolean | string;
   userAgent: string;
   hasVaultBasePath: boolean;
+  hostFingerprint: string;
+  hostFingerprintSource: string;
+}
+
+function fnv1a32(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function hostFingerprint(app?: unknown): { value: string; source: string } {
+  const adapter = (app as { vault?: { adapter?: { getBasePath?: () => string } } } | undefined)?.vault?.adapter;
+  if (typeof adapter?.getBasePath === "function") {
+    try {
+      const basePath = adapter.getBasePath();
+      if (basePath) return { value: `h_${fnv1a32(basePath)}`, source: "vaultBasePath" };
+    } catch {
+      // Fall through to browser/mobile identifiers.
+    }
+  }
+
+  const nav = typeof navigator !== "undefined" ? navigator : undefined;
+  const parts = [nav?.platform || "", nav?.userAgent || "", nav?.language || "", String(nav?.maxTouchPoints ?? "")].join("|");
+  return { value: parts.trim() ? `h_${fnv1a32(parts)}` : "unknown", source: "runtimeProfile" };
 }
 
 export function getRuntimeDiagnostics(app?: unknown): RuntimeDiagnostics {
   const nav = typeof navigator !== "undefined" ? navigator : undefined;
   const obsidianPlatform = (globalThis as unknown as { Platform?: Record<string, unknown> }).Platform;
   const adapter = (app as { vault?: { adapter?: { getBasePath?: unknown } } } | undefined)?.vault?.adapter;
+  const fp = hostFingerprint(app);
   return {
     platform: nav?.platform || "unknown",
     isDesktop: obsidianPlatform?.isDesktop ?? "unknown",
@@ -65,11 +93,13 @@ export function getRuntimeDiagnostics(app?: unknown): RuntimeDiagnostics {
     isMobileApp: obsidianPlatform?.isMobileApp ?? "unknown",
     userAgent: nav?.userAgent || "unknown",
     hasVaultBasePath: typeof adapter?.getBasePath === "function",
+    hostFingerprint: fp.value,
+    hostFingerprintSource: fp.source,
   };
 }
 
 export function formatRuntimeDiagnostics(d: RuntimeDiagnostics): string {
-  return `platform=${d.platform} obsidianDesktop=${d.isDesktop} obsidianMobile=${d.isMobile} iosApp=${d.isIosApp} mobileApp=${d.isMobileApp} hasVaultBasePath=${d.hasVaultBasePath} userAgent=${d.userAgent}`;
+  return `platform=${d.platform} obsidianDesktop=${d.isDesktop} obsidianMobile=${d.isMobile} iosApp=${d.isIosApp} mobileApp=${d.isMobileApp} hasVaultBasePath=${d.hasVaultBasePath} hostFingerprint=${d.hostFingerprint} hostFingerprintSource=${d.hostFingerprintSource} userAgent=${d.userAgent}`;
 }
 
 export function logRuntimeDiagnostics(app?: unknown, force = false): void {

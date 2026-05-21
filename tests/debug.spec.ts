@@ -29,12 +29,28 @@ describe("runtime diagnostics", () => {
   it("reports whether the vault exposes a desktop filesystem path", () => {
     const d = getRuntimeDiagnostics({ vault: { adapter: { getBasePath: () => "/vault" } } });
     expect(d.hasVaultBasePath).toBe(true);
+    expect(d.hostFingerprint).toMatch(/^h_[0-9a-f]{8}$/);
+    expect(d.hostFingerprintSource).toBe("vaultBasePath");
     expect(formatRuntimeDiagnostics(d)).toContain("hasVaultBasePath=true");
+    expect(formatRuntimeDiagnostics(d)).toContain("hostFingerprint=");
   });
 
   it("reports missing filesystem path for mobile-like adapters", () => {
     const d = getRuntimeDiagnostics({ vault: { adapter: {} } });
     expect(d.hasVaultBasePath).toBe(false);
+    expect(d.hostFingerprint).toMatch(/^(h_[0-9a-f]{8}|unknown)$/);
     expect(formatRuntimeDiagnostics(d)).toContain("platform=");
+    expect(formatRuntimeDiagnostics(d)).toContain("hostFingerprintSource=");
+  });
+});
+
+
+describe("host fingerprint", () => {
+  it("uses the same fingerprint for the same vault path without logging the path", () => {
+    const app = { vault: { adapter: { getBasePath: () => "/Users/ray/Vault" } } };
+    const a = getRuntimeDiagnostics(app);
+    const b = getRuntimeDiagnostics(app);
+    expect(a.hostFingerprint).toBe(b.hostFingerprint);
+    expect(formatRuntimeDiagnostics(a)).not.toContain("/Users/ray/Vault");
   });
 });
