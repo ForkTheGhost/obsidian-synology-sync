@@ -263,4 +263,26 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(result.conflicts).toEqual(["note.md"]);
   });
 
+  it("treats already-existing vault folders as successful during materialization", async () => {
+    const folders = new Set<string>();
+    const vault = {
+      adapter: {},
+      getFiles: jest.fn(() => []),
+      getAbstractFileByPath: jest.fn((path: string) => {
+        if (!folders.has(path)) return null;
+        const folder = new TFolder();
+        folder.path = path;
+        return folder;
+      }),
+      createFolder: jest.fn(async (path: string) => { folders.add(path); throw new Error("Folder already exists."); }),
+    };
+    const fs = { listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }), createFolder: jest.fn(async () => undefined), upload: jest.fn(async () => undefined) };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git", branch: "main", syncIdentityId: "ios-device", authorName: "Obsidian Synology Sync", authorEmail: "synology-sync@local",
+    });
+    await expect((engine as unknown as { ensureVaultFolder: (path: string) => Promise<void> }).ensureVaultFolder("Folder/Sub")).resolves.toBeUndefined();
+    expect(vault.createFolder).toHaveBeenCalledWith("Folder");
+    expect(vault.createFolder).toHaveBeenCalledWith("Folder/Sub");
+  });
+
 });
