@@ -54,6 +54,15 @@ Bootstrap requirements:
 - Existing local vault + existing remote repo: checkpoint local state first, then merge/reconcile remote history; never silently overwrite local notes during setup.
 - A brand-new Obsidian vault may contain `.obsidian/` metadata and should still be treated as effectively empty when there are no user notes/assets.
 
+Sync operation model:
+
+- File Station is not Git protocol. The safe mental model is: bring enough of the NAS bare repository state onto the device, perform Git operations locally against the device vault/cache, then publish the resulting repository objects/ref update back to Synology through File Station.
+- Every Git-backed File Station sync that may write remote state must use the lock/lease protocol. The lease is not optional background protection; it is part of the write path.
+- A pre-lock fetch/listing may warm the local cache, but it is not authoritative. After acquiring the lease, the client must re-read the remote branch ref and either fetch any newly needed objects or abort/retry if the ref changed unexpectedly.
+- Local Git operations may use a persistent cache when available, but cache reuse must not skip remote ref verification under the lease.
+- Publishing order must be objects first, ref last. The final ref update must include an expected-old-ref check while the lease is held.
+- Releasing the lease is the final step after the ref update succeeds or after a safe abort/rollback path.
+
 ### Non-goals
 
 This plugin is not a general-purpose Git client and should not grow a separate first-class path for non-File-Station Git remotes. Existing Obsidian Git plugins already serve normal Git remotes well. The Git-backed mode here exists specifically to use Synology File Station / QuickConnect as the transport.
