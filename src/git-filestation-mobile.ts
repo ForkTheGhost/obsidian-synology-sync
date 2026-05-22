@@ -109,7 +109,10 @@ export class MobileGitFileStationSyncEngine {
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       await this.runPhase("checkout remote", () => this.checkoutRemote());
       await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
-      await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
+      // Direct materialization already writes every remote file through Obsidian's vault API.
+      // Do not immediately run applyCheckoutChanges against the original empty snapshot: on
+      // mobile, getAbstractFileByPath() may lag just-created files and a second createBinary()
+      // can double-touch the same path.
       return result;
     }
 
@@ -122,7 +125,10 @@ export class MobileGitFileStationSyncEngine {
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       await this.runPhase("checkout remote", () => this.checkoutRemote());
       await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
-      await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
+      // Direct materialization already writes every remote file through Obsidian's vault API.
+      // Do not immediately run applyCheckoutChanges against the original empty snapshot: on
+      // mobile, getAbstractFileByPath() may lag just-created files and a second createBinary()
+      // can double-touch the same path.
       return result;
     }
 
