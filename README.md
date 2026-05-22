@@ -60,26 +60,13 @@ You configure a **NAS bare Git repository path**, for example:
 
 Important: `MyVault.git` is repository storage. Do **not** open it as an Obsidian vault. Open the local vault/checkout on each device.
 
-### Advanced / under review: Git-backed sync over mounted filesystem
+### What about mounted drives, UNC paths, or running a real Git server?
 
-This is an advanced desktop-only shape and may not remain a first-class option. It adds extra code paths because the plugin has to support both File Station transport and normal filesystem Git access.
+Those are advanced setups, not the main plugin path.
 
-Use this only when your NAS repo is mounted like a normal filesystem path.
+If your Synology share is already mounted as a normal desktop path, you can usually treat it like a normal folder or Git remote outside this plugin. The plugin does not need a special sync option just to use a UNC path.
 
-Use this when:
-
-- You are on Windows, macOS, or Linux desktop.
-- Your NAS path is mounted locally, for example a UNC path or mounted volume.
-- Native Git can access that path directly.
-
-Examples:
-
-```text
-\\NAS\Share\MyVault.git
-/Volumes/Share/MyVault.git
-```
-
-This is not the same as mobile File Station / QuickConnect transport. It depends on desktop filesystem access.
+You can also run a real Git server, such as GitLab, on Synology. That gives you real Git server management, but it usually means exposing Git/server ports or managing VPN access. That loses the main benefit of this plugin's Git-backed File Station mode: using Synology File Station / QuickConnect as the transport instead of exposing Git services to the internet.
 
 ## Quick start: Simple File Sync over File Station
 
@@ -125,10 +112,6 @@ It points to a normal NAS folder full of readable Markdown files.
 Use this only for **Git-Backed Sync over File Station**.
 
 It points to a bare Git repository. A bare Git repository usually ends in `.git` and contains Git internals like `HEAD`, `objects/`, and `refs/`.
-
-### Mounted Git path / existing local repo
-
-Use this only for the advanced mounted-filesystem Git path on desktop, if the project keeps supporting it.
 
 ## Why not Remotely Save?
 
