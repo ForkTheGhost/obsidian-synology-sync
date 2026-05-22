@@ -1,6 +1,7 @@
 import { TFile, Vault } from "obsidian";
 import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
+import { isGitIgnoredPath } from "./git-excludes";
 
 declare const require: ((id: string) => unknown) | undefined;
 
@@ -58,64 +59,8 @@ class GitCommandError extends Error {
   }
 }
 
-export const DEFAULT_GIT_EXCLUDES = [
-  // Notes-first default: avoid common volatile/device-local Obsidian settings conflicts.
-  ".obsidian/app.json",
-  ".obsidian/appearance.json",
-  ".obsidian/graph.json",
-  ".obsidian/workspace*",
-  ".obsidian/plugins/*/data.json",
-  ".obsidian/plugins/synology-sync/",
-  ".trash/",
-  ".sync-tombstones/",
-  "node_modules/",
-];
-
-export const OBSIDIAN_CONFIG_SYNC_POLICY = [
-  { category: "workspace/UI layout", pattern: ".obsidian/workspace*", defaultBehavior: "device-local" },
-  { category: "app/appearance/graph state", pattern: ".obsidian/{app,appearance,graph}.json", defaultBehavior: "device-local" },
-  { category: "plugin data", pattern: ".obsidian/plugins/*/data.json", defaultBehavior: "excluded unless explicitly reviewed" },
-  { category: "plugin list/core plugin list", pattern: ".obsidian/{community-plugins,core-plugins}.json", defaultBehavior: "opt-in shared setting" },
-  { category: "hotkeys/snippets", pattern: ".obsidian/hotkeys.json and .obsidian/snippets/", defaultBehavior: "opt-in shared setting" },
-];
-
-export type ObsidianConfigSyncPolicy = "notes-only" | "selected-settings" | "full-config";
-
-export interface ObsidianConfigOptIns {
-  appearance?: boolean;
-  pluginLists?: boolean;
-  hotkeys?: boolean;
-  snippets?: boolean;
-  reviewedPluginConfig?: boolean;
-}
-
-export function buildGitExcludes(policy: ObsidianConfigSyncPolicy = "notes-only", optIns: ObsidianConfigOptIns = {}): string[] {
-  if (policy === "full-config") {
-    return [
-      ".obsidian/plugins/synology-sync/",
-      ".trash/",
-      ".sync-tombstones/",
-      "node_modules/",
-    ];
-  }
-
-  const excludes = [...DEFAULT_GIT_EXCLUDES];
-  if (policy === "selected-settings") {
-    if (optIns.appearance) removeAll(excludes, [".obsidian/app.json", ".obsidian/appearance.json", ".obsidian/graph.json"]);
-    if (optIns.pluginLists) removeAll(excludes, [".obsidian/community-plugins.json", ".obsidian/core-plugins.json", ".obsidian/core-plugins-migration.json"]);
-    if (optIns.hotkeys) removeAll(excludes, [".obsidian/hotkeys.json"]);
-    if (optIns.snippets) removeAll(excludes, [".obsidian/snippets/"]);
-    if (optIns.reviewedPluginConfig) removeAll(excludes, [".obsidian/plugins/*/data.json"]);
-  }
-  return excludes;
-}
-
-function removeAll(values: string[], remove: string[]): void {
-  for (const item of remove) {
-    const idx = values.indexOf(item);
-    if (idx >= 0) values.splice(idx, 1);
-  }
-}
+export { DEFAULT_GIT_EXCLUDES, OBSIDIAN_CONFIG_SYNC_POLICY, buildGitExcludes } from "./git-excludes";
+export type { ObsidianConfigOptIns, ObsidianConfigSyncPolicy } from "./git-excludes";
 
 export function describeObsidianConfigPolicy(policy: ObsidianConfigSyncPolicy): string {
   if (policy === "full-config") return "Advanced full config: most Obsidian config is synced; review secrets/device-path risk before enabling.";
@@ -396,7 +341,7 @@ export class NativeGitSyncEngine {
       if (!(file instanceof TFile)) return false;
       if (isSetupOnlyPath(file.path)) return false;
       const allExcludes = [...buildGitExcludes(), ...(this.opts.excludePatterns || [])];
-      if (allExcludes.some((pattern) => matchesSimpleExclude(file.path, pattern))) return false;
+      if (isGitIgnoredPath(file.path, allExcludes)) return false;
       return true;
     });
   }
@@ -549,7 +494,7 @@ export class NativeGitSyncEngine {
         if (entry.name === ".git" && dir === this.cwd) continue;
         const full = path.join(dir, entry.name);
         const rel = path.relative(this.cwd, full).replace(/\\/g, "/");
-        if (!rel || allExcludes.some((pattern) => matchesSimpleExclude(rel, pattern))) continue;
+        if (!rel || isGitIgnoredPath(rel, allExcludes)) continue;
         if (entry.name === ".git" && (entry.isDirectory() || entry.isFile())) {
           found.push(path.relative(this.cwd, dir).replace(/\\/g, "/") || ".");
           continue;
@@ -611,11 +556,6 @@ function isSetupOnlyPath(path: string): boolean {
   return path.startsWith(".obsidian/");
 }
 
-function matchesSimpleExclude(path: string, pattern: string): boolean {
-  if (pattern.endsWith("/")) return path.startsWith(pattern);
-  if (pattern.endsWith("*")) return path.startsWith(pattern.slice(0, -1));
-  return path === pattern;
-}
 
 function parsePorcelainZ(output: string): string[] {
   const parts = output.split("\0").filter(Boolean);

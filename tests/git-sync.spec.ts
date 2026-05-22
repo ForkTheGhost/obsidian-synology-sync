@@ -1,4 +1,5 @@
 import { buildGitExcludes, classifyGitConflict, classifyGitSetup, GitSetupState, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError } from "../src/git-sync";
+import { isGitIgnoredPath, matchesGitIgnorePattern } from "../src/git-excludes";
 
 const baseState: GitSetupState = {
   localRepoExists: false,
@@ -100,6 +101,32 @@ describe("Obsidian config sync policy", () => {
     expect(excludes).not.toContain(".obsidian/community-plugins.json");
     expect(excludes).not.toContain(".obsidian/hotkeys.json");
     expect(excludes).toContain(".obsidian/plugins/*/data.json");
+  });
+
+  it("uses gitignore-style matching for plugin data exclusions", () => {
+    const excludes = buildGitExcludes("notes-only");
+    expect(isGitIgnoredPath(".obsidian/plugins/calendar/data.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/plugins/foo/data.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/plugins/foo/main.js", excludes)).toBe(false);
+    expect(isGitIgnoredPath(".obsidian/plugins/foo/manifest.json", excludes)).toBe(false);
+  });
+
+  it("keeps notes-first Obsidian state exclusions aligned with gitignore semantics", () => {
+    const excludes = buildGitExcludes("notes-only");
+    expect(isGitIgnoredPath(".obsidian/app.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/appearance.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/graph.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/workspace-mobile.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".trash/deleted.md", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".sync-tombstones/device.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath("Daily/today.md", excludes)).toBe(false);
+  });
+
+  it("supports common gitignore wildcard shapes used by the plugin", () => {
+    expect(matchesGitIgnorePattern("nested/node_modules/pkg/index.js", "node_modules/")).toBe(true);
+    expect(matchesGitIgnorePattern(".obsidian/workspace-mobile.json", ".obsidian/workspace*")).toBe(true);
+    expect(matchesGitIgnorePattern(".obsidian/plugins/calendar/data.json", ".obsidian/plugins/*/data.json")).toBe(true);
+    expect(matchesGitIgnorePattern(".obsidian/plugins/calendar/nested/data.json", ".obsidian/plugins/*/data.json")).toBe(false);
   });
 
   it("labels note conflicts and settings conflicts separately", () => {
