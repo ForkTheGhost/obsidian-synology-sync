@@ -15,9 +15,10 @@ Choose this if you want the easiest setup.
 Use this when:
 
 - You are one person syncing one vault.
+- You usually use one device at a time.
 - You want the NAS folder to contain normal Markdown files you can browse in File Station.
 - You want the most straightforward mobile-friendly mode.
-- You do not care about Git history.
+- You will rely on Synology's native backup tools for historical backups.
 
 What it does:
 
@@ -31,7 +32,7 @@ You configure a **Remote folder path**, for example:
 /homes/username/Obsidian/MyVault
 ```
 
-This is the default mental model: “copy my changed notes between Obsidian and a Synology folder.”
+This is the default mental model: “copy my changed notes between Obsidian and a Synology folder.” It is best for single-user workflows where only one device is actively syncing at a time.
 
 ### Option 2: Git-backed sync over File Station / QuickConnect
 
