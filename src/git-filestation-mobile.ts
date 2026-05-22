@@ -700,10 +700,7 @@ export class MobileGitFileStationSyncEngine {
       if (this.isExcluded(path)) continue;
       const blob = await git.readBlob({ fs: this.memfs.client, gitdir: GITDIR, oid: head, filepath: path, cache: this.cache });
       const bytes = blob.blob instanceof Uint8Array ? blob.blob : new Uint8Array(blob.blob);
-      const existing = this.vault.getAbstractFileByPath(path);
-      await this.ensureVaultFolder(dirnameVaultPath(path));
-      if (existing instanceof TFile) await this.vault.modifyBinary(existing, bytesToArrayBuffer(bytes));
-      else await this.vault.createBinary(path, bytesToArrayBuffer(bytes));
+      await this.writeVaultBinary(path, bytes);
       await this.writeMemFile(`${WORKDIR}/${path}`, bytes);
       if (!result.downloaded.includes(path) && !result.uploaded.includes(path)) result.downloaded.push(path);
     }
@@ -727,12 +724,34 @@ export class MobileGitFileStationSyncEngine {
         continue;
       }
       const bytes = await this.memfs.promises.readFile(`${WORKDIR}/${path}`);
-      if (file instanceof TFile) await this.vault.modifyBinary(file, bytesToArrayBuffer(bytes));
-      else {
-        await this.ensureVaultFolder(dirnameVaultPath(path));
-        await this.vault.createBinary(path, bytesToArrayBuffer(bytes));
-      }
+      await this.writeVaultBinary(path, bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
       if (!result.downloaded.includes(path) && !result.uploaded.includes(path)) result.downloaded.push(path);
+    }
+  }
+
+  private async writeVaultBinary(path: string, bytes: Uint8Array): Promise<void> {
+    await this.ensureVaultFolder(dirnameVaultPath(path));
+    const data = bytesToArrayBuffer(bytes);
+    const existing = this.vault.getAbstractFileByPath(path);
+    if (existing instanceof TFile) {
+      await this.vault.modifyBinary(existing, data);
+      return;
+    }
+    try {
+      await this.vault.createBinary(path, data);
+      return;
+    } catch (e) {
+      const afterCreate = this.vault.getAbstractFileByPath(path);
+      if (afterCreate instanceof TFile) {
+        await this.vault.modifyBinary(afterCreate, data);
+        return;
+      }
+      if (/already exists/i.test((e as Error).message || "") && this.vault.adapter && typeof this.vault.adapter.writeBinary === "function") {
+        debugLog(`[git-filestation-mobile] vault file already exists, overwriting through adapter: ${path}`);
+        await this.vault.adapter.writeBinary(path, data);
+        return;
+      }
+      throw e;
     }
   }
 

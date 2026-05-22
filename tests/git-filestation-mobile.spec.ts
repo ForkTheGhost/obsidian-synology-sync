@@ -285,4 +285,24 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(vault.createFolder).toHaveBeenCalledWith("Folder/Sub");
   });
 
+  it("overwrites already-existing vault files through adapter when Obsidian index is stale", async () => {
+    const written = new Map<string, Uint8Array>();
+    const vault = {
+      adapter: { writeBinary: jest.fn(async (path: string, data: ArrayBuffer) => { written.set(path, new Uint8Array(data)); }) },
+      getFiles: jest.fn(() => []),
+      getAbstractFileByPath: jest.fn(() => null),
+      createFolder: jest.fn(async () => undefined),
+      createBinary: jest.fn(async () => { throw new Error("File already exists."); }),
+      modifyBinary: jest.fn(async () => undefined),
+    };
+    const fs = { listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }), createFolder: jest.fn(async () => undefined), upload: jest.fn(async () => undefined) };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git", branch: "main", syncIdentityId: "ios-device", authorName: "Obsidian Synology Sync", authorEmail: "synology-sync@local",
+    });
+    await (engine as unknown as { writeVaultBinary: (path: string, bytes: Uint8Array) => Promise<void> }).writeVaultBinary(".obsidian/app.json", new Uint8Array([123, 125]));
+    expect(vault.createBinary).toHaveBeenCalledWith(".obsidian/app.json", expect.any(ArrayBuffer));
+    expect(vault.adapter.writeBinary).toHaveBeenCalledWith(".obsidian/app.json", expect.any(ArrayBuffer));
+    expect(Array.from(written.get(".obsidian/app.json") || [])).toEqual([123, 125]);
+  });
+
 });
