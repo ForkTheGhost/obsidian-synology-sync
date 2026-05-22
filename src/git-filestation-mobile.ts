@@ -75,12 +75,17 @@ export class MobileGitFileStationSyncEngine {
     await this.runPhase("load vault", () => this.loadVaultIntoMemory());
     await this.runPhase("ensure local repo", () => this.ensureLocalRepo());
     await this.runPhase("configure local repo", () => this.configureLocalRepo());
+
+    const hadUserFilesAtStart = this.localHasUserFiles();
+    const workdirFilesAtStart = await this.listWorkdirFiles();
+    const hadLocalCommitsBeforeRemoteImport = await this.localHasCommits();
+
     await this.runPhase("download remote bare repo", () => this.downloadRemoteBareRepoIfPresent());
     await this.runPhase("verify downloaded Git store", () => this.verifyDownloadedGitStore());
     await this.runPhase("ensure remote configured", () => this.ensureRemoteConfigured());
 
     const remoteHadCommits = await this.remoteHasCommits();
-    const localHadCommits = await this.localHasCommits();
+    const localHadCommits = hadLocalCommitsBeforeRemoteImport;
 
     const invalidRemotePaths = await this.runPhase("inspect remote tree", () => this.invalidRemotePathsForLocalCheckout());
     if (invalidRemotePaths.length > 0) {
@@ -99,7 +104,7 @@ export class MobileGitFileStationSyncEngine {
     // Treat an empty Obsidian/workdir + existing remote as a pure first pull and
     // materialize the remote tree before status/merge logic can mistake missing
     // workdir files for local deletes.
-    if (remoteHadCommits && !this.localHasUserFiles() && (await this.listWorkdirFiles()).length === 0) {
+    if (remoteHadCommits && !hadUserFilesAtStart && workdirFilesAtStart.length === 0) {
       const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       await this.runPhase("checkout remote", () => this.checkoutRemote());
@@ -112,10 +117,10 @@ export class MobileGitFileStationSyncEngine {
 
     const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
     const localChanged = await this.runPhase("detect local changes", () => this.changedFiles());
-    const preserveInitialLocalFiles = !localHadCommits && remoteHadCommits && this.localHasUserFiles();
+    const preserveInitialLocalFiles = !localHadCommits && remoteHadCommits && hadUserFilesAtStart;
     const preMergeLocalChanged = preserveInitialLocalFiles ? new Set(localChanged) : new Set<string>();
 
-    if (!localHadCommits && remoteHadCommits && !this.localHasUserFiles()) {
+    if (!localHadCommits && remoteHadCommits && !hadUserFilesAtStart) {
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       await this.runPhase("checkout remote", () => this.checkoutRemote());
       await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
@@ -136,7 +141,7 @@ export class MobileGitFileStationSyncEngine {
 
     if (remoteHadCommits) {
       const remoteChanged = await this.runPhase("detect remote changes", () => this.remoteChangedFiles());
-      await this.runPhase("merge remote", () => this.mergeRemote(!localHadCommits && this.localHasUserFiles()));
+      await this.runPhase("merge remote", () => this.mergeRemote(!localHadCommits && hadUserFilesAtStart));
       if (!localHadCommits) await this.runPhase("checkout merged remote", () => this.checkoutRemote());
       result.downloaded.push(...remoteChanged);
 

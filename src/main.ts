@@ -309,8 +309,6 @@ export default class SynologySync extends Plugin {
       }
 
       this.showResult(result);
-      debugLog(`GIT-OVER-FILE-STATION SYNC FINISHED: ${result.errors.length === 0 ? "SUCCESS" : "FAILED"} — ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.conflicts.length} conflicts, ${result.errors.length} errors`);
-      debugLog(`GIT SYNC FINISHED: ${result.errors.length === 0 ? "SUCCESS" : "FAILED"} — ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.conflicts.length} conflicts, ${result.errors.length} errors`);
       debugLog(`SYNC FINISHED: ${result.errors.length === 0 ? "SUCCESS" : "FAILED"} — ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.conflicts.length} conflicts, ${result.errors.length} errors`);
     } catch (e) {
       debugLog(`SYNC FINISHED: FAILED — ${(e as Error).message}`);
@@ -354,6 +352,7 @@ export default class SynologySync extends Plugin {
         await this.saveSettings();
       }
       this.showResult(result);
+      debugLog(`GIT SYNC FINISHED: ${result.errors.length === 0 ? "SUCCESS" : "FAILED"} — ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.conflicts.length} conflicts, ${result.errors.length} errors`);
     } catch (e) {
       debugLog(`GIT SYNC FINISHED: FAILED — ${(e as Error).message}`);
       debugLog(`GIT SYNC FAILED: ${formatErrorForDebug(e)}`);
@@ -393,6 +392,7 @@ export default class SynologySync extends Plugin {
         await this.saveSettings();
       }
       this.showResult(result);
+      debugLog(`GIT-OVER-FILE-STATION SYNC FINISHED: ${result.errors.length === 0 ? "SUCCESS" : "FAILED"} — ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.conflicts.length} conflicts, ${result.errors.length} errors`);
     } catch (e) {
       debugLog(`GIT-OVER-FILE-STATION SYNC FINISHED: FAILED — ${(e as Error).message}`);
       debugLog(`GIT-OVER-FILE-STATION SYNC FAILED: ${formatErrorForDebug(e)}`);
