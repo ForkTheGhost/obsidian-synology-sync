@@ -46,7 +46,7 @@ Behavior:
 
 ### Git-backed sync over mounted filesystem
 
-Mounted filesystem Git sync uses native Git directly against either an existing local repo or a mounted bare repo path.
+Mounted filesystem Git sync is under product review and should not be expanded casually. It uses native Git directly against either an existing local repo or a mounted bare repo path, which creates a separate desktop-only code path in addition to File Station transport.
 
 Required configuration, one of:
 
@@ -61,6 +61,8 @@ Not required:
 Behavior:
 
 - This is desktop-only.
+- Supporting it increases implementation and testing surface area because mounted filesystem Git and File Station Git transport behave differently.
+- Treat this mode as optional/advanced until product direction confirms it should remain first-class.
 - If using an existing local repo with an origin, sync uses that origin.
 - If no origin is configured, the plugin can create local checkpoints only and must report that changes were not published.
 

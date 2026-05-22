@@ -6,9 +6,9 @@ Sync your Obsidian vault with a Synology NAS using the File Station API. No WebD
 
 ## Which sync option should I choose?
 
-Think of the plugin as offering two very different ways to use your NAS.
+Think of the plugin as offering two main ways to use your NAS.
 
-### Option 1: Simple file sync
+### Option 1: Simple File Sync over File Station
 
 Choose this if you want the easiest setup.
 
@@ -34,9 +34,9 @@ You configure a **Remote folder path**, for example:
 
 This is the default mental model: “copy my changed notes between Obsidian and a Synology folder.” It is best for single-user workflows where only one device is actively syncing at a time.
 
-### Option 2: Git-backed sync over File Station / QuickConnect
+### Option 2: Git-Backed Sync over File Station
 
-Choose this if you want the NAS to act like a shared Git server.
+Choose this if you want every device to keep its own vault, while the NAS keeps the shared history that ties them together.
 
 Use this when:
 
@@ -60,9 +60,11 @@ You configure a **NAS bare Git repository path**, for example:
 
 Important: `MyVault.git` is repository storage. Do **not** open it as an Obsidian vault. Open the local vault/checkout on each device.
 
-### Option 3: Git-backed sync over mounted filesystem
+### Advanced / under review: Git-backed sync over mounted filesystem
 
-Choose this only on desktop when your NAS repo is mounted like a normal filesystem path.
+This is an advanced desktop-only shape and may not remain a first-class option. It adds extra code paths because the plugin has to support both File Station transport and normal filesystem Git access.
+
+Use this only when your NAS repo is mounted like a normal filesystem path.
 
 Use this when:
 
@@ -79,14 +81,14 @@ Examples:
 
 This is not the same as mobile File Station / QuickConnect transport. It depends on desktop filesystem access.
 
-## Quick start: simple file sync
+## Quick start: Simple File Sync over File Station
 
 1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Obsidian's Community Plugins.
 2. In BRAT settings, click **Add Beta Plugin**.
 3. Enter: `ForkTheGhost/obsidian-synology-sync`.
 4. Enable **Synology Sync** in Settings > Community plugins.
 5. Open Settings > Synology Sync.
-6. Choose **Simple file sync**.
+6. Choose **Simple File Sync over File Station**.
 7. Enter your **QuickConnect ID** or direct NAS hostname/IP.
 8. Enter your DSM username and password.
 9. Set the **Remote folder path**, for example `/homes/username/Obsidian/MyVault`.
@@ -114,19 +116,19 @@ QuickConnect is easiest when you do not want to manage local IP addresses, DDNS,
 
 ### Remote folder path
 
-Use this only for **Simple file sync**.
+Use this only for **Simple File Sync over File Station**.
 
 It points to a normal NAS folder full of readable Markdown files.
 
 ### NAS bare Git repository path
 
-Use this only for **Git-backed sync over File Station / QuickConnect**.
+Use this only for **Git-Backed Sync over File Station**.
 
 It points to a bare Git repository. A bare Git repository usually ends in `.git` and contains Git internals like `HEAD`, `objects/`, and `refs/`.
 
 ### Mounted Git path / existing local repo
 
-Use this only for **Git-backed sync over mounted filesystem** on desktop.
+Use this only for the advanced mounted-filesystem Git path on desktop, if the project keeps supporting it.
 
 ## Why not Remotely Save?
 
