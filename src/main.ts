@@ -5,7 +5,7 @@ import { SyncEngine, SyncResult } from "./sync";
 import { GitFileStationSyncEngine } from "./git-filestation-sync";
 import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
 import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
-import { debugLog, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics } from "./debug";
+import { beginDebugSync, debugLog, endDebugSync, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics } from "./debug";
 
 // UUID generator with fallbacks for older runtimes.
 // crypto.randomUUID requires iOS 15.4+ / Chromium 92+; we fall back through
@@ -239,7 +239,6 @@ export default class SynologySync extends Plugin {
       return;
     }
 
-    logRuntimeDiagnostics(this.app);
     const effectiveSyncBackend = sanitizeSyncBackendForRuntime(this.settings, this.app.vault.adapter);
     if (effectiveSyncBackend === "git-filestation") {
       await this.runGitFileStationSync();
@@ -252,6 +251,7 @@ export default class SynologySync extends Plugin {
     }
 
     this.syncing = true;
+    beginDebugSync(this.app);
     new Notice("Synology Sync starting...");
 
     let fs: FileStation | null = null;
@@ -308,9 +308,11 @@ export default class SynologySync extends Plugin {
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
       }
+      endDebugSync();
       this.syncing = false;
     }
   }
+
 
   private async runGitFileStationSync(): Promise<void> {
     if (!this.settings.gitFileStationRepoPath) {
@@ -319,6 +321,7 @@ export default class SynologySync extends Plugin {
     }
 
     this.syncing = true;
+    beginDebugSync(this.app);
     new Notice("Git-over-File-Station sync starting...");
 
     let fs: FileStation | null = null;
@@ -353,6 +356,7 @@ export default class SynologySync extends Plugin {
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
       }
+      endDebugSync();
       this.syncing = false;
     }
   }

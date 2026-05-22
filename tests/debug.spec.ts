@@ -1,4 +1,4 @@
-import { clearDebugLog, debugLog, formatErrorForDebug, formatRuntimeDiagnostics, getDebugLog, getRuntimeDiagnostics } from "../src/debug";
+import { beginDebugSync, clearDebugLog, debugLog, endDebugSync, formatErrorForDebug, formatRuntimeDiagnostics, getDebugLog, getDebugLogSnippet, getRuntimeDiagnostics } from "../src/debug";
 
 describe("debug logging", () => {
   beforeEach(() => clearDebugLog());
@@ -21,6 +21,42 @@ describe("debug logging", () => {
     debugLog(`SYNC FAILED: ${formatErrorForDebug(new Error("boom"))}`);
 
     expect(getDebugLog()).toContain("SYNC FAILED: Error: boom");
+  });
+
+  it("generates runtime diagnostics in copied snippets when no runtime entry is in the log", () => {
+    debugLog("SYNC FAILED: Error: boom");
+
+    const snippet = getDebugLogSnippet({ vault: { adapter: {} } });
+
+    expect(snippet).toContain("RUNTIME: pluginVersion=");
+    expect(snippet).toContain("hasVaultBasePath=false");
+    expect(snippet).toContain("SYNC FAILED: Error: boom");
+    expect(getDebugLog()).not.toContain("RUNTIME:");
+  });
+
+  it("copies the full last sync block in the full log but only runtime plus last five lines in snippets", () => {
+    debugLog("PREVIOUS SYNC LINE");
+    beginDebugSync({ vault: { adapter: {} } });
+    for (let i = 0; i < 12; i++) debugLog(`current sync line ${i}`);
+    debugLog("SYNC FINISHED: SUCCESS — 0 uploaded, 0 downloaded, 0 deleted, 0 conflicts, 0 errors");
+    endDebugSync();
+    debugLog("NEXT SYNC LINE NOT INCLUDED");
+
+    const fullLog = getDebugLog();
+    const snippet = getDebugLogSnippet({ vault: { adapter: {} } });
+
+    expect(fullLog).toContain("RUNTIME: pluginVersion=");
+    expect(fullLog).toContain("current sync line 0");
+    expect(fullLog).toContain("current sync line 11");
+    expect(fullLog).toContain("SYNC FINISHED: SUCCESS");
+    expect(fullLog).not.toContain("PREVIOUS SYNC LINE");
+    expect(fullLog).not.toContain("NEXT SYNC LINE NOT INCLUDED");
+    expect(snippet).toContain("RUNTIME: pluginVersion=");
+    expect(snippet).not.toContain("current sync line 0");
+    expect(snippet).toContain("current sync line 8");
+    expect(snippet).toContain("current sync line 11");
+    expect(snippet).toContain("SYNC FINISHED: SUCCESS");
+    expect(snippet.split("\n")).toHaveLength(6);
   });
 });
 
