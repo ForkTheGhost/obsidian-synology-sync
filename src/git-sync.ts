@@ -1,7 +1,7 @@
 import { TFile, Vault } from "obsidian";
 import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
-import { isGitIgnoredPath } from "./git-excludes";
+import { buildGitExcludes, isGitIgnoredPath } from "./git-excludes";
 
 declare const require: ((id: string) => unknown) | undefined;
 

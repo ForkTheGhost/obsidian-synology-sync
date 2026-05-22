@@ -77,11 +77,11 @@ export class MobileGitFileStationSyncEngine {
     await this.runPhase("ensure local repo", () => this.ensureLocalRepo());
     await this.runPhase("configure local repo", () => this.configureLocalRepo());
 
+    const hadLocalCommitsBeforeRemoteImport = await this.localHasCommits();
     const hadUserFilesAtStart = this.localHasUserFiles();
     const workdirFilesAtStart = await this.listWorkdirFiles();
     const hiddenSystemFilesAtStart = this.hiddenSystemVaultFilesAtStart(workdirFilesAtStart);
-    const initialLocalFiles = await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
-    const hadLocalCommitsBeforeRemoteImport = await this.localHasCommits();
+    const initialLocalFiles = hadLocalCommitsBeforeRemoteImport ? new Map<string, Uint8Array>() : await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
 
     await this.runPhase("download remote bare repo", () => this.downloadRemoteBareRepoIfPresent());
     await this.runPhase("verify downloaded Git store", () => this.verifyDownloadedGitStore());
@@ -141,10 +141,14 @@ export class MobileGitFileStationSyncEngine {
       // local work while keeping remote history as the source of truth.
       await this.runPhase("checkout remote", () => this.checkoutRemote());
       await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
-      await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(initialLocalFiles, result));
-      if (result.conflicts.length > 0) await this.runPhase("commit local conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
-      await this.runPhase("push local branch", () => this.pushWithRetry());
-      await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
+      if (initialLocalFiles.size > 0) {
+        await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(initialLocalFiles, result));
+        if (result.conflicts.length > 0) {
+          await this.runPhase("commit local conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
+          await this.runPhase("push local branch", () => this.pushWithRetry());
+          await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
+        }
+      }
       return result;
     }
 
