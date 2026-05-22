@@ -812,7 +812,7 @@ class DebugLogModal extends Modal {
       )
       .addButton((btn) =>
         btn.setButtonText("Copy snippet").onClick(async () => {
-          await navigator.clipboard.writeText(getDebugLogSnippet());
+          await navigator.clipboard.writeText(getDebugLogSnippet(this.app));
           new Notice("Debug snippet copied to clipboard");
         })
       );
