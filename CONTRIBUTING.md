@@ -20,6 +20,18 @@ Issues must identify:
 
 Documentation-only changes do not require a build if they do not affect generated plugin artifacts.
 
+## Local Build
+
+Install dependencies and build the plugin:
+
+```bash
+npm install
+npm run build        # production build
+npm run dev          # development build with sourcemaps
+```
+
+For manual testing, copy `main.js`, `manifest.json`, and `styles.css` (if present) to your vault's `.obsidian/plugins/synology-sync/` folder.
+
 ## Changing Infra
 
 Changes to `.github/workflows/`, build tooling, release packaging, repository structure, or other project infrastructure must include an `ARCHITECTURE.md` update in the same PR when that structure is not already documented. PRs labeled `bug` are exempt from architecture-update enforcement unless they intentionally change architecture.

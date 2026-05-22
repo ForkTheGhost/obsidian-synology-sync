@@ -2,6 +2,8 @@
 
 This plugin supports two intentionally different sync architectures. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync.
 
+`README.md` is the user-facing explanation of this architecture. It should explain the sync-mode choice in simple terms, so a non-developer can decide which option to check and understand how that choice affects where their readable notes live. Build, test, and contribution instructions belong in `CONTRIBUTING.md`, not the README.
+
 ## Sync modes
 
 ### Simple file sync (single user)
