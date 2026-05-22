@@ -78,6 +78,7 @@ export class MobileGitFileStationSyncEngine {
 
     const hadUserFilesAtStart = this.localHasUserFiles();
     const workdirFilesAtStart = await this.listWorkdirFiles();
+    const hiddenSystemFilesAtStart = this.hiddenSystemVaultFilesAtStart(workdirFilesAtStart);
     const hadLocalCommitsBeforeRemoteImport = await this.localHasCommits();
 
     await this.runPhase("download remote bare repo", () => this.downloadRemoteBareRepoIfPresent());
@@ -104,7 +105,8 @@ export class MobileGitFileStationSyncEngine {
     // Treat an empty Obsidian/workdir + existing remote as a pure first pull and
     // materialize the remote tree before status/merge logic can mistake missing
     // workdir files for local deletes.
-    if (remoteHadCommits && !hadUserFilesAtStart && workdirFilesAtStart.length === 0) {
+    if (remoteHadCommits && !hadUserFilesAtStart && workdirFilesAtStart.length === hiddenSystemFilesAtStart.length) {
+      if (hiddenSystemFilesAtStart.length > 0) debugLog(`[git-filestation-mobile] treating vault as empty except hidden system files: ${hiddenSystemFilesAtStart.join(", ")}`);
       const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       await this.runPhase("checkout remote", () => this.checkoutRemote());
@@ -122,6 +124,7 @@ export class MobileGitFileStationSyncEngine {
     const preMergeLocalChanged = preserveInitialLocalFiles ? new Set(localChanged) : new Set<string>();
 
     if (!localHadCommits && remoteHadCommits && !hadUserFilesAtStart) {
+      if (hiddenSystemFilesAtStart.length > 0) debugLog(`[git-filestation-mobile] treating vault as empty except hidden system files: ${hiddenSystemFilesAtStart.join(", ")}`);
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       await this.runPhase("checkout remote", () => this.checkoutRemote());
       await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
@@ -628,11 +631,19 @@ export class MobileGitFileStationSyncEngine {
     return Array.from(new Set(found)).sort();
   }
 
+  private hiddenSystemVaultFilesAtStart(paths: string[]): string[] {
+    return paths.filter((path) => path.startsWith(".") && !path.startsWith(".obsidian/") && !this.isExcluded(path)).sort();
+  }
+
   private async loadVaultIntoMemory(): Promise<void> {
     await this.memfs.promises.mkdir(WORKDIR, { recursive: true });
     for (const file of this.vault.getFiles()) {
       if (!(file instanceof TFile)) continue;
       if (this.isExcluded(file.path)) continue;
+      if (file.path.startsWith(".")) {
+        debugLog(`[git-filestation-mobile] ignoring hidden system vault file during mobile load: ${file.path}`);
+        continue;
+      }
       await this.writeMemFile(`${WORKDIR}/${file.path}`, new Uint8Array(await this.vault.readBinary(file)));
     }
   }
