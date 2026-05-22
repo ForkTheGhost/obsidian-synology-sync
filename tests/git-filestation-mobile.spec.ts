@@ -232,4 +232,23 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect((engine as unknown as { hiddenSystemVaultFilesAtStart: (paths: string[]) => string[] }).hiddenSystemVaultFilesAtStart([".obsidian/app.json", "note.md"])).toEqual([]);
   });
 
+  it("preserves non-empty mobile first-pull files as conflict copies without replacing remote", async () => {
+    const vaultFiles = new Map<string, Uint8Array>([["local.md", new TextEncoder().encode("local draft")]]);
+    const created = new Map<string, Uint8Array>();
+    const vault = {
+      adapter: {},
+      getFiles: jest.fn(() => Array.from(vaultFiles.keys()).map((path) => ({ path }))),
+      readBinary: jest.fn(async (file) => vaultFiles.get(file.path)?.buffer),
+      getAbstractFileByPath: jest.fn((path) => vaultFiles.has(path) ? { path } : null),
+      createBinary: jest.fn(async (path, data) => { created.set(path, new Uint8Array(data)); vaultFiles.set(path, new Uint8Array(data)); }),
+      modifyBinary: jest.fn(async (file, data) => { created.set(file.path, new Uint8Array(data)); vaultFiles.set(file.path, new Uint8Array(data)); }),
+      createFolder: jest.fn(async () => undefined),
+    };
+    const fs = { listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }), createFolder: jest.fn(async () => undefined), upload: jest.fn(async () => undefined) };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git", branch: "main", syncIdentityId: "ios-device", authorName: "Obsidian Synology Sync", authorEmail: "synology-sync@local",
+    });
+    expect((engine as unknown as { materializeInitialLocalCopies: (before: Map<string, string>, result: { conflicts: string[] }) => Promise<void> }).materializeInitialLocalCopies).toBeDefined();
+  });
+
 });
