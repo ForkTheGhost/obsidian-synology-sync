@@ -43,10 +43,8 @@ describe("DEFAULT_SETTINGS", () => {
     expect(s.syncIdentityId).toBe("");
   });
 
-  it("has safe generic defaults for Git-backed sync", () => {
-    expect(DEFAULT_SETTINGS.gitRemotePath).toBe("");
+  it("has safe generic defaults for Git-backed File Station sync", () => {
     expect(DEFAULT_SETTINGS.gitFileStationRepoPath).toBe("");
-    expect(DEFAULT_SETTINGS.gitUseExistingLocalRepo).toBe(false);
     expect(DEFAULT_SETTINGS.gitBranch).toBe("main");
     expect(DEFAULT_SETTINGS.gitAuthorName).toBe("Obsidian Synology Sync");
     expect(DEFAULT_SETTINGS.gitAuthorEmail).toBe("synology-sync@local");
@@ -88,8 +86,8 @@ describe("sanitizeSyncBackendForRuntime", () => {
     expect(sanitizeSyncBackendForRuntime(s, { getBasePath: () => "/vault" })).toBe("git-filestation");
   });
 
-  it("falls back to File Station for mounted filesystem Git sync without a desktop filesystem adapter", () => {
-    const s: SynologySyncSettings = { ...DEFAULT_SETTINGS, syncBackend: "git-filesystem" };
+  it("normalizes unknown legacy sync backends to File Station", () => {
+    const s = { ...DEFAULT_SETTINGS, syncBackend: "git-filesystem" } as unknown as SynologySyncSettings;
     expect(sanitizeSyncBackendForRuntime(s, {})).toBe("filestation");
   });
 });

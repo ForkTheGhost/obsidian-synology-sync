@@ -5,7 +5,7 @@ import { getDebugLog, getDebugLogSnippet, clearDebugLog, subscribeDebugLog } fro
 import { FileStation, FileInfo } from "./filestation";
 
 export interface SynologySyncSettings {
-  syncBackend: "filestation" | "git-filesystem" | "git-filestation";
+  syncBackend: "filestation" | "git-filestation";
   connectionType: "quickconnect" | "direct";
   quickConnectId: string;
   host: string;
@@ -48,29 +48,20 @@ export interface SynologySyncSettings {
   // out-of-memory errors on mobile. 0 disables the limit. Default: 100.
   maxFileSizeMb: number;
 
-  // Git-backed sync modes. Filesystem mode points native Git at a mounted bare
-  // repo path. File Station mode stores a real bare repo on the NAS and uses
+  // Git-backed File Station mode stores a real bare repo on the NAS and uses
   // File Station/QuickConnect as the transport.
-  gitRemotePath: string;
   gitFileStationRepoPath: string;
-  gitUseExistingLocalRepo: boolean;
   gitBranch: string;
   gitAuthorName: string;
   gitAuthorEmail: string;
 }
 
 
-export function isDesktopVaultAdapter(adapter: unknown): boolean {
-  return !!adapter && typeof (adapter as { getBasePath?: unknown }).getBasePath === "function";
-}
-
 export function sanitizeSyncBackendForRuntime(
   settings: SynologySyncSettings,
-  adapter: unknown,
-): "filestation" | "git-filesystem" | "git-filestation" {
-  if (settings.syncBackend === "filestation") return "filestation";
-  if (settings.syncBackend === "git-filestation") return "git-filestation";
-  return isDesktopVaultAdapter(adapter) ? "git-filesystem" : "filestation";
+  _adapter: unknown,
+): "filestation" | "git-filestation" {
+  return settings.syncBackend === "git-filestation" ? "git-filestation" : "filestation";
 }
 
 export const DEFAULT_SETTINGS: SynologySyncSettings = {
@@ -101,9 +92,7 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   tombstoneJitterMs: 5000,
   remoteAbsenceGraceCycles: 2,
   maxFileSizeMb: 100,
-  gitRemotePath: "",
   gitFileStationRepoPath: "",
-  gitUseExistingLocalRepo: false,
   gitBranch: "main",
   gitAuthorName: "Obsidian Synology Sync",
   gitAuthorEmail: "synology-sync@local",
@@ -302,40 +291,27 @@ export class SynologySyncSettingTab extends PluginSettingTab {
     // Sync target
     containerEl.createEl("h3", { text: "Sync Target" });
 
-    const desktopGitAvailable = isDesktopVaultAdapter(this.app.vault.adapter);
     const effectiveSyncBackend = sanitizeSyncBackendForRuntime(this.plugin.settings, this.app.vault.adapter);
 
     new Setting(containerEl)
       .setName("Sync mode")
-      .setDesc("Choose simple single-user folder sync, or Git-backed multi-user sync. Git modes do not require a remote folder path.")
+      .setDesc("Connect to Synology File Station by QuickConnect or direct address, then choose simple file sync or Git-backed sync over File Station.")
       .addDropdown((dd) =>
         dd
-          .addOption("filestation", "Simple file sync (single user)")
-          .addOption("git-filestation", "Git-backed sync over File Station / QuickConnect")
-          .addOption("git-filesystem", "Git-backed sync over mounted filesystem")
+          .addOption("filestation", "Simple File Sync over File Station")
+          .addOption("git-filestation", "Git-Backed Sync over File Station")
           .setValue(effectiveSyncBackend)
           .onChange(async (value: string) => {
-            if (value === "git-filesystem" && !desktopGitAvailable) {
-              new Notice("Mounted filesystem Git sync requires Obsidian desktop/local filesystem access.");
-              this.plugin.settings.syncBackend = "filestation";
-            } else {
-              this.plugin.settings.syncBackend = value as SynologySyncSettings["syncBackend"];
-            }
+            this.plugin.settings.syncBackend = value as SynologySyncSettings["syncBackend"];
             await this.plugin.saveSettings();
             this.display();
           })
       );
 
-    if (!desktopGitAvailable && this.plugin.settings.syncBackend === "git-filesystem") {
-      new Setting(containerEl)
-        .setName("Mounted filesystem Git sync unavailable")
-        .setDesc("This Obsidian runtime does not expose a local filesystem path, so mounted filesystem Git sync cannot run here. Git-backed File Station / QuickConnect sync remains available.");
-    }
-
     if (effectiveSyncBackend === "filestation") {
       new Setting(containerEl)
         .setName("Remote folder path")
-        .setDesc("Required for simple single-user File Station folder sync. Git-backed modes use a bare Git repo path instead.")
+        .setDesc("Required for Simple File Sync over File Station. Use a normal NAS folder containing readable Markdown files.")
         .addText((text) =>
           text
             .setPlaceholder("/homes/username/Obsidian/MyVault")
@@ -361,81 +337,51 @@ export class SynologySyncSettingTab extends PluginSettingTab {
         );
     }
 
-    if (effectiveSyncBackend !== "filestation") {
-      if (effectiveSyncBackend === "git-filesystem") {
-        new Setting(containerEl)
-          .setName("Use this vault's existing Git repo")
-          .setDesc("Desktop-only mode for vaults that already contain .git. No File Station folder target is required. If origin exists, sync uses it; otherwise the plugin creates local checkpoints only until you add a remote.")
-          .addToggle((toggle) =>
-            toggle
-              .setValue(this.plugin.settings.gitUseExistingLocalRepo)
-              .onChange(async (value) => {
-                this.plugin.settings.gitUseExistingLocalRepo = value;
+    if (effectiveSyncBackend === "git-filestation") {
+      new Setting(containerEl)
+        .setName("Bare repository path on NAS")
+        .setDesc("Required for Git-Backed Sync over File Station. Use a bare Git repository on Synology, such as MyVault.git; do not open this path as an Obsidian vault.")
+        .addText((text) =>
+          text
+            .setPlaceholder("/homes/username/Obsidian/MyVault.git")
+            .setValue(this.plugin.settings.gitFileStationRepoPath)
+            .onChange(async (value) => {
+              this.plugin.settings.gitFileStationRepoPath = value.trim();
+              await this.plugin.saveSettings();
+            })
+        )
+        .addButton((btn) =>
+          btn.setButtonText("Browse").onClick(async () => {
+            try {
+              const fs = await this.plugin.getFileStation();
+              new FolderBrowserModal(this.app, fs, this.plugin.settings.gitFileStationRepoPath, async (path) => {
+                this.plugin.settings.gitFileStationRepoPath = path;
                 await this.plugin.saveSettings();
                 this.display();
-              })
-          );
-      }
-
-      if (effectiveSyncBackend === "git-filestation") {
-        new Setting(containerEl)
-          .setName("Bare repository path on NAS")
-          .setDesc("Required for Git-backed File Station/QuickConnect sync. This replaces the simple remote folder path for multi-user sync.")
-          .addText((text) =>
-            text
-              .setPlaceholder("/homes/username/Obsidian/MyVault.git")
-              .setValue(this.plugin.settings.gitFileStationRepoPath)
-              .onChange(async (value) => {
-                this.plugin.settings.gitFileStationRepoPath = value.trim();
-                await this.plugin.saveSettings();
-              })
-          )
-          .addButton((btn) =>
-            btn.setButtonText("Browse").onClick(async () => {
-              try {
-                const fs = await this.plugin.getFileStation();
-                new FolderBrowserModal(this.app, fs, this.plugin.settings.gitFileStationRepoPath, async (path) => {
-                  this.plugin.settings.gitFileStationRepoPath = path;
-                  await this.plugin.saveSettings();
-                  this.display();
-                }, {
-                  title: "Select bare Git repo",
-                  selectLabel: (path) => `Use this repo: ${path}`,
-                  emptySelectionLabel: "Select a repo folder first",
-                  selectedNotice: (path) => `Bare repo path set to: ${path}`,
-                  validateSelection: async (fs, path) => {
-                    const bare = await fs.isBareGitRepo(path);
-                    if (bare) {
-                      return {
-                        ok: true,
-                        message: "Bare Git repo detected. This will be used as the shared upstream; do not open it as an Obsidian vault.",
-                      };
-                    }
+              }, {
+                title: "Select bare Git repo",
+                selectLabel: (path) => `Use this repo: ${path}`,
+                emptySelectionLabel: "Select a repo folder first",
+                selectedNotice: (path) => `Bare repo path set to: ${path}`,
+                validateSelection: async (fs, path) => {
+                  const bare = await fs.isBareGitRepo(path);
+                  if (bare) {
                     return {
-                      ok: false,
-                      message: "This looks like a normal folder, not a bare Git repo. Choose a repo folder such as MyVault.git or initialize one first.",
+                      ok: true,
+                      message: "Bare Git repo detected. This will be used as the shared upstream; do not open it as an Obsidian vault.",
                     };
-                  },
-                }).open();
-              } catch (e) {
-                new Notice(`Browse failed: ${(e as Error).message}`);
-              }
-            })
-          );
-      } else if (!this.plugin.settings.gitUseExistingLocalRepo) {
-        new Setting(containerEl)
-          .setName("Mounted bare repository path")
-          .setDesc("Required unless using this vault's existing Git repo. Filesystem path to a bare Git repo reachable by this desktop, such as \\NAS\Share\MyVault.git or /Volumes/Share/MyVault.git.")
-          .addText((text) =>
-            text
-              .setPlaceholder("\\\\NAS\\Share\\MyVault.git")
-              .setValue(this.plugin.settings.gitRemotePath)
-              .onChange(async (value) => {
-                this.plugin.settings.gitRemotePath = value.trim();
-                await this.plugin.saveSettings();
-              })
-          );
-      }
+                  }
+                  return {
+                    ok: false,
+                    message: "This looks like a normal folder, not a bare Git repo. Choose a repo folder such as MyVault.git or initialize one first.",
+                  };
+                },
+              }).open();
+            } catch (e) {
+              new Notice(`Browse failed: ${(e as Error).message}`);
+            }
+          })
+        );
 
       new Setting(containerEl)
         .setName("Branch")

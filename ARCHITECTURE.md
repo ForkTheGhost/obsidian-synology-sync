@@ -1,6 +1,8 @@
 # Architecture
 
-This plugin supports two intentionally different sync architectures. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync.
+This plugin supports File Station connections via QuickConnect or a direct Synology address, with two intentionally different sync architectures layered on top: simple file sync or Git-backed sync over File Station. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync.
+
+`README.md` is the user-facing explanation of this architecture. It should explain the sync-mode choice in simple terms, so a non-developer can decide which option to check and understand how that choice affects where their readable notes live. Build, test, and contribution instructions belong in `CONTRIBUTING.md`, not the README.
 
 ## Sync modes
 
@@ -42,25 +44,32 @@ Behavior:
 - On desktop runtimes with local filesystem access, this mode may use native Git against the local checkout.
 - On iOS/mobile runtimes without `getBasePath()`, this mode uses a pure-JS Git engine over Obsidian's vault APIs instead of desktop-only Node/native Git APIs.
 
-### Git-backed sync over mounted filesystem
+Bootstrap requirements:
 
-Mounted filesystem Git sync uses native Git directly against either an existing local repo or a mounted bare repo path.
+- The plugin must support both new/empty Obsidian vaults and existing Obsidian vaults with user notes already present.
+- The plugin must support both empty/new NAS bare Git repositories and existing NAS bare Git repositories with history already present.
+- Empty local vault + empty remote repo: create the initial Git history from the local vault once there is content to sync.
+- Existing local vault + empty remote repo: checkpoint/commit the local vault and publish it as the initial remote history.
+- Empty local vault + existing remote repo: materialize/check out the remote history into the local vault without requiring a separate desktop clone step.
+- Existing local vault + existing remote repo: checkpoint local state first, then merge/reconcile remote history; never silently overwrite local notes during setup.
+- A brand-new Obsidian vault may contain `.obsidian/` metadata and should still be treated as effectively empty when there are no user notes/assets.
 
-Required configuration, one of:
+Sync operation model:
 
-- Existing local vault Git repo mode, or
-- Mounted bare repository path, for example `\\NAS\Share\MyVault.git` or `/Volumes/Share/MyVault.git`
+- File Station is not Git protocol. The safe mental model is: bring enough of the NAS bare repository state onto the device, perform Git operations locally against the device vault/cache, then publish the resulting repository objects/ref update back to Synology through File Station.
+- Every Git-backed File Station sync that may write remote state must use the lock/lease protocol. The lease is not optional background protection; it is part of the write path.
+- A pre-lock fetch/listing may warm the local cache, but it is not authoritative. After acquiring the lease, the client must re-read the remote branch ref and either fetch any newly needed objects or abort/retry if the ref changed unexpectedly.
+- Local Git operations may use a persistent cache when available, but cache reuse must not skip remote ref verification under the lease.
+- Sync should be smart/incremental. Clients should avoid blindly downloading or uploading the entire repository on every run when safe change detection is available.
+- "Bring enough of the NAS bare repository state onto the device" means the minimum Git objects and refs needed to compute and publish the current sync safely. It does not mean cloning all historical objects when those objects are not needed for the operation.
+- The minimal transport set must be derived from Git object/ref reachability rules and documented Git behavior, not discovered by trial and error. Implementations should be backed by focused research into Git object graph requirements, shallow/partial fetch concepts, pack/object negotiation, ref update safety, and isomorphic-git constraints before optimizing the File Station transfer plan.
+- Change detection may use File Station metadata such as size and modification time, Git object IDs, file hashes, cached manifests, or another reliable fingerprint strategy. Metadata shortcuts must be conservative: if the client cannot prove an object/file is unchanged, it should verify or transfer rather than risk missing data.
+- Publishing order must be objects first, ref last. The final ref update must include an expected-old-ref check while the lease is held.
+- Releasing the lease is the final step after the ref update succeeds or after a safe abort/rollback path.
 
-Not required:
+### Non-goals
 
-- Remote folder path
-- File Station remote folder target
-
-Behavior:
-
-- This is desktop-only.
-- If using an existing local repo with an origin, sync uses that origin.
-- If no origin is configured, the plugin can create local checkpoints only and must report that changes were not published.
+This plugin is not a general-purpose Git client and should not grow a separate first-class path for non-File-Station Git remotes. Existing Obsidian Git plugins already serve normal Git remotes well. The Git-backed mode here exists specifically to use Synology File Station / QuickConnect as the transport.
 
 ## Settings UI contract
 
@@ -68,9 +77,9 @@ The settings UI should make the choice explicit with a Sync mode selector:
 
 - Simple file sync (single user) shows Remote folder path.
 - Git-backed sync over File Station / QuickConnect shows NAS bare Git repo path.
-- Git-backed sync over mounted filesystem shows mounted bare repo or existing local repo settings.
+The settings UI should not present non-File-Station Git remotes as a primary sync mode.
 
-Remote folder path belongs only to Simple file sync. Git-backed modes must not require or imply it.
+Remote folder path belongs only to Simple file sync. Git-backed File Station mode must not require or imply it.
 
 ## Runtime and platform diagnostics
 
