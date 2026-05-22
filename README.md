@@ -40,8 +40,9 @@ Choose this if you want every device to keep its own vault, while the NAS keeps 
 
 Use this when:
 
-- Multiple devices or people need safer Git-style history.
-- You want commits and a shared branch instead of direct file copying.
+- You want each device to keep its own local vault.
+- You want the NAS to keep Git history for that vault.
+- You understand this mode is still beta while multi-device conflict/lock safety is being hardened.
 - You understand that the NAS folder is not the readable notes folder.
 
 What it does:
