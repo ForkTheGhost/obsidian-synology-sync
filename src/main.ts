@@ -353,8 +353,10 @@ export default class SynologySync extends Plugin {
       }
       this.showResult(result);
       debugLog(`GIT SYNC FINISHED: ${result.errors.length === 0 ? "SUCCESS" : "FAILED"} — ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.conflicts.length} conflicts, ${result.errors.length} errors`);
+      debugLog(`SYNC FINISHED: ${result.errors.length === 0 ? "SUCCESS" : "FAILED"} — ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.conflicts.length} conflicts, ${result.errors.length} errors`);
     } catch (e) {
       debugLog(`GIT SYNC FINISHED: FAILED — ${(e as Error).message}`);
+      debugLog(`SYNC FINISHED: FAILED — ${(e as Error).message}`);
       debugLog(`GIT SYNC FAILED: ${formatErrorForDebug(e)}`);
       new Notice(`Git sync failed: ${(e as Error).message}`);
       console.error("Git-backed Synology Sync error:", e);
@@ -393,8 +395,10 @@ export default class SynologySync extends Plugin {
       }
       this.showResult(result);
       debugLog(`GIT-OVER-FILE-STATION SYNC FINISHED: ${result.errors.length === 0 ? "SUCCESS" : "FAILED"} — ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.conflicts.length} conflicts, ${result.errors.length} errors`);
+      debugLog(`SYNC FINISHED: ${result.errors.length === 0 ? "SUCCESS" : "FAILED"} — ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.conflicts.length} conflicts, ${result.errors.length} errors`);
     } catch (e) {
       debugLog(`GIT-OVER-FILE-STATION SYNC FINISHED: FAILED — ${(e as Error).message}`);
+      debugLog(`SYNC FINISHED: FAILED — ${(e as Error).message}`);
       debugLog(`GIT-OVER-FILE-STATION SYNC FAILED: ${formatErrorForDebug(e)}`);
       new Notice(`Git-over-File-Station sync failed: ${(e as Error).message}`);
       console.error("Git-over-File-Station Synology Sync error:", e);
