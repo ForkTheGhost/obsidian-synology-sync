@@ -2,7 +2,6 @@ import { Plugin, Notice, Modal, App } from "obsidian";
 import { FileStation, FileStationConfig, LoginResult } from "./filestation";
 import { resolveQuickConnect, resolveQuickConnectCandidates, probeQuickConnectCandidates, QCCandidate } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
-import { NativeGitSyncEngine } from "./git-sync";
 import { GitFileStationSyncEngine } from "./git-filestation-sync";
 import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
 import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
@@ -77,7 +76,7 @@ export default class SynologySync extends Plugin {
 
     this.setupAutoSync();
 
-    const hasStartupTarget = !!this.settings.remotePath || !!this.settings.gitRemotePath || !!this.settings.gitFileStationRepoPath;
+    const hasStartupTarget = !!this.settings.remotePath || !!this.settings.gitFileStationRepoPath;
     if (this.settings.syncOnStartup && hasStartupTarget) {
       // Use onLayoutReady instead of a fixed 5s timeout so we sync as soon as
       // the workspace is ready (typically <1s) rather than always waiting 5s.
@@ -242,16 +241,6 @@ export default class SynologySync extends Plugin {
 
     logRuntimeDiagnostics(this.app);
     const effectiveSyncBackend = sanitizeSyncBackendForRuntime(this.settings, this.app.vault.adapter);
-    if (this.settings.syncBackend === "git-filesystem" && effectiveSyncBackend === "filestation") {
-      debugLog("Mounted filesystem Git sync requested, but this Obsidian runtime has no local filesystem path; falling back to File Station sync.");
-      new Notice("Mounted filesystem Git sync requires Obsidian desktop. Using File Station folder sync here.");
-    }
-
-    if (effectiveSyncBackend === "git-filesystem") {
-      await this.runGitSync();
-      return;
-    }
-
     if (effectiveSyncBackend === "git-filestation") {
       await this.runGitFileStationSync();
       return;
@@ -319,48 +308,6 @@ export default class SynologySync extends Plugin {
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
       }
-      this.syncing = false;
-    }
-  }
-
-  private async runGitSync(): Promise<void> {
-    if (!this.settings.gitUseExistingLocalRepo && !this.settings.gitRemotePath) {
-      new Notice("Configure mounted Git bare repository path, or enable existing local Git repo mode, in Synology Sync settings first");
-      return;
-    }
-
-    this.syncing = true;
-    new Notice("Git-backed Synology Sync starting...");
-
-    try {
-      const engine = new NativeGitSyncEngine(this.app.vault, {
-        remotePath: this.settings.gitUseExistingLocalRepo ? "" : this.settings.gitRemotePath,
-        branch: this.settings.gitBranch,
-        syncIdentityId: this.settings.syncIdentityId,
-        authorName: this.settings.gitAuthorName,
-        authorEmail: this.settings.gitAuthorEmail,
-        excludePatterns: this.settings.excludePatterns
-          .split("\n")
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0),
-      });
-
-      const result = await engine.sync();
-      const hasInfraError = result.errors.some((e) => e.path.startsWith("<"));
-      if (!hasInfraError) {
-        this.settings.lastSync = Date.now();
-        await this.saveSettings();
-      }
-      this.showResult(result);
-      debugLog(`GIT SYNC FINISHED: ${result.errors.length === 0 ? "SUCCESS" : "FAILED"} — ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.conflicts.length} conflicts, ${result.errors.length} errors`);
-      debugLog(`SYNC FINISHED: ${result.errors.length === 0 ? "SUCCESS" : "FAILED"} — ${result.uploaded.length} uploaded, ${result.downloaded.length} downloaded, ${result.deleted.length} deleted, ${result.conflicts.length} conflicts, ${result.errors.length} errors`);
-    } catch (e) {
-      debugLog(`GIT SYNC FINISHED: FAILED — ${(e as Error).message}`);
-      debugLog(`SYNC FINISHED: FAILED — ${(e as Error).message}`);
-      debugLog(`GIT SYNC FAILED: ${formatErrorForDebug(e)}`);
-      new Notice(`Git sync failed: ${(e as Error).message}`);
-      console.error("Git-backed Synology Sync error:", e);
-    } finally {
       this.syncing = false;
     }
   }
