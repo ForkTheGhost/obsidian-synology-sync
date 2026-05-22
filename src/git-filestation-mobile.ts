@@ -108,10 +108,8 @@ export class MobileGitFileStationSyncEngine {
       const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       await this.runPhase("checkout remote", () => this.checkoutRemote());
+      await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
       await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
-      for (const path of remoteFiles) {
-        if (!this.isExcluded(path) && !result.downloaded.includes(path)) result.downloaded.push(path);
-      }
       return result;
     }
 
@@ -123,10 +121,8 @@ export class MobileGitFileStationSyncEngine {
     if (!localHadCommits && remoteHadCommits && !hadUserFilesAtStart) {
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       await this.runPhase("checkout remote", () => this.checkoutRemote());
+      await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
       await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
-      for (const path of remoteFiles) {
-        if (!this.isExcluded(path) && !result.downloaded.includes(path)) result.downloaded.push(path);
-      }
       return result;
     }
 
@@ -641,6 +637,23 @@ export class MobileGitFileStationSyncEngine {
       if (!this.isExcluded(file)) snapshot.set(file, await this.fileHash(`${WORKDIR}/${file}`));
     }
     return snapshot;
+  }
+
+  private async materializeRemoteFiles(remoteFiles: string[], result: SyncResult): Promise<void> {
+    debugLog(`[git-filestation-mobile] materializing remote files count=${remoteFiles.length}`);
+    const head = await git.resolveRef({ fs: this.memfs.client, gitdir: GITDIR, ref: `refs/heads/${this.opts.branch}` });
+    for (const path of remoteFiles) {
+      if (this.isExcluded(path)) continue;
+      const blob = await git.readBlob({ fs: this.memfs.client, gitdir: GITDIR, oid: head, filepath: path, cache: this.cache });
+      const bytes = blob.blob instanceof Uint8Array ? blob.blob : new Uint8Array(blob.blob);
+      const existing = this.vault.getAbstractFileByPath(path);
+      await this.ensureVaultFolder(dirnameVaultPath(path));
+      if (existing instanceof TFile) await this.vault.modifyBinary(existing, bytesToArrayBuffer(bytes));
+      else await this.vault.createBinary(path, bytesToArrayBuffer(bytes));
+      await this.writeMemFile(`${WORKDIR}/${path}`, bytes);
+      if (!result.downloaded.includes(path) && !result.uploaded.includes(path)) result.downloaded.push(path);
+    }
+    debugLog(`[git-filestation-mobile] materialized remote files count=${result.downloaded.length}`);
   }
 
   private async applyCheckoutChanges(before: Map<string, string>, result: SyncResult): Promise<void> {

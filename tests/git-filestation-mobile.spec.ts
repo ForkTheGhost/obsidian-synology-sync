@@ -174,4 +174,52 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(result.conflicts).toEqual(["Folder/note.md"]);
   });
 
+  it("directly materializes remote files during pure first pull", async () => {
+    const folders = new Set<string>();
+    const createdFiles: Record<string, Uint8Array> = {};
+    const vault = {
+      adapter: {},
+      getFiles: jest.fn(() => []),
+      getAbstractFileByPath: jest.fn((path: string) => {
+        if (!folders.has(path)) return null;
+        const folder = new TFolder();
+        folder.path = path;
+        return folder;
+      }),
+      createFolder: jest.fn(async (path: string) => { folders.add(path); }),
+      createBinary: jest.fn(async (path: string, data: ArrayBuffer) => { createdFiles[path] = new Uint8Array(data); }),
+      modifyBinary: jest.fn(async () => undefined),
+    };
+    const fs = {
+      listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }),
+      createFolder: jest.fn(async () => undefined),
+      upload: jest.fn(async () => undefined),
+    };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+    const exposed = engine as unknown as {
+      memfs: { promises: { mkdir: (path: string, options?: { recursive?: boolean }) => Promise<void>; } };
+      materializeRemoteFiles: (remoteFiles: string[], result: { downloaded: string[]; uploaded: string[]; deleted: string[]; conflicts?: string[]; errors?: unknown[] }) => Promise<void>;
+    };
+    await exposed.memfs.promises.mkdir("/vault/.git", { recursive: true });
+    const git = await import("isomorphic-git");
+    await git.init({ fs: (exposed.memfs as unknown as { client: unknown }).client as never, dir: "/vault", defaultBranch: "main" });
+    await (exposed.memfs as unknown as { promises: { writeFile: (path: string, data: Uint8Array) => Promise<void> } }).promises.writeFile("/vault/Folder/note.md", new Uint8Array([104, 105]));
+    await git.add({ fs: (exposed.memfs as unknown as { client: unknown }).client as never, dir: "/vault", filepath: "Folder/note.md" });
+    await git.commit({ fs: (exposed.memfs as unknown as { client: unknown }).client as never, dir: "/vault", message: "seed", author: { name: "a", email: "a@example.com" } });
+    await (exposed.memfs as unknown as { promises: { unlink: (path: string) => Promise<void> } }).promises.unlink("/vault/Folder/note.md");
+
+    const result = { downloaded: [] as string[], uploaded: [] as string[], deleted: [] as string[] };
+    await exposed.materializeRemoteFiles(["Folder/note.md"], result);
+
+    expect(vault.createFolder).toHaveBeenCalledWith("Folder");
+    expect(Array.from(createdFiles["Folder/note.md"])).toEqual([104, 105]);
+    expect(result.downloaded).toEqual(["Folder/note.md"]);
+  });
+
 });
