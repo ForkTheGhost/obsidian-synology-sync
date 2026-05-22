@@ -744,7 +744,16 @@ export class MobileGitFileStationSyncEngine {
       const existing = this.vault.getAbstractFileByPath(current);
       if (existing instanceof TFolder) continue;
       if (existing instanceof TFile) throw new Error(`Cannot create checkout folder ${current}; a file already exists at that path.`);
-      await this.vault.createFolder(current);
+      try {
+        await this.vault.createFolder(current);
+      } catch (e) {
+        const afterCreate = this.vault.getAbstractFileByPath(current);
+        if (afterCreate instanceof TFolder || /already exists/i.test((e as Error).message || "")) {
+          debugLog(`[git-filestation-mobile] checkout folder already exists: ${current}`);
+          continue;
+        }
+        throw e;
+      }
     }
   }
 
