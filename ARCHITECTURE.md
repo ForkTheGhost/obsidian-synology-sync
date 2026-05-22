@@ -44,6 +44,16 @@ Behavior:
 - On desktop runtimes with local filesystem access, this mode may use native Git against the local checkout.
 - On iOS/mobile runtimes without `getBasePath()`, this mode uses a pure-JS Git engine over Obsidian's vault APIs instead of desktop-only Node/native Git APIs.
 
+Bootstrap requirements:
+
+- The plugin must support both new/empty Obsidian vaults and existing Obsidian vaults with user notes already present.
+- The plugin must support both empty/new NAS bare Git repositories and existing NAS bare Git repositories with history already present.
+- Empty local vault + empty remote repo: create the initial Git history from the local vault once there is content to sync.
+- Existing local vault + empty remote repo: checkpoint/commit the local vault and publish it as the initial remote history.
+- Empty local vault + existing remote repo: materialize/check out the remote history into the local vault without requiring a separate desktop clone step.
+- Existing local vault + existing remote repo: checkpoint local state first, then merge/reconcile remote history; never silently overwrite local notes during setup.
+- A brand-new Obsidian vault may contain `.obsidian/` metadata and should still be treated as effectively empty when there are no user notes/assets.
+
 ### Non-goals
 
 This plugin is not a general-purpose Git client and should not grow a separate first-class path for non-File-Station Git remotes. Existing Obsidian Git plugins already serve normal Git remotes well. The Git-backed mode here exists specifically to use Synology File Station / QuickConnect as the transport.
