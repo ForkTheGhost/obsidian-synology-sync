@@ -19,6 +19,13 @@ export function getDebugLog(): string {
   return entries.join("\n");
 }
 
+export function getDebugLogSnippet(): string {
+  const runtime = [...entries].reverse().find((entry) => entry.includes("RUNTIME:"));
+  const tail = entries.slice(-5);
+  const lines = runtime ? [runtime, ...tail.filter((entry) => entry !== runtime)] : tail;
+  return lines.join("\n");
+}
+
 export function clearDebugLog(): void {
   entries.length = 0;
   listeners.forEach((listener) => {

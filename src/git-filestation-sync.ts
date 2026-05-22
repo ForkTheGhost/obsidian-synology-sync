@@ -3,6 +3,7 @@ import { FileStation } from "./filestation";
 import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
 import { buildGitExcludes, classifyGitConflict, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError } from "./git-sync";
+import { isGitIgnoredPath } from "./git-excludes";
 
 declare const require: ((id: string) => unknown) | undefined;
 
@@ -229,7 +230,7 @@ export class GitFileStationSyncEngine {
     return this.vault.getFiles().some((file) => {
       if (!(file instanceof TFile)) return false;
       if (file.path.startsWith(".obsidian/")) return false;
-      if (DEFAULT_GIT_EXCLUDES.some((pattern) => matchesSimpleExclude(file.path, pattern))) return false;
+      if (isGitIgnoredPath(file.path, DEFAULT_GIT_EXCLUDES)) return false;
       return true;
     });
   }
@@ -361,7 +362,7 @@ export class GitFileStationSyncEngine {
         if (entry.name === ".git" && dir === this.cwd) continue;
         const full = path.join(dir, entry.name);
         const rel = path.relative(this.cwd, full).replace(/\\/g, "/");
-        if (!rel || allExcludes.some((pattern) => matchesSimpleExclude(rel, pattern))) continue;
+        if (!rel || isGitIgnoredPath(rel, allExcludes)) continue;
         if (entry.name === ".git" && (entry.isDirectory() || entry.isFile())) {
           found.push(path.relative(this.cwd, dir).replace(/\\/g, "/") || ".");
           continue;
@@ -418,11 +419,6 @@ function getVaultBasePath(vault: Vault): string {
   return adapter.getBasePath();
 }
 
-function matchesSimpleExclude(path: string, pattern: string): boolean {
-  if (pattern.endsWith("/")) return path.startsWith(pattern);
-  if (pattern.endsWith("*")) return path.startsWith(pattern.slice(0, -1));
-  return path === pattern;
-}
 
 function parsePorcelainZ(output: string): string[] {
   const parts = output.split("\0").filter(Boolean);

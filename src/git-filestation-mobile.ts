@@ -3,6 +3,7 @@ import { FileStation } from "./filestation";
 import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
 import { buildGitExcludes, classifyGitConflict, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError } from "./git-sync";
+import { isGitIgnoredPath } from "./git-excludes";
 
 import { Buffer } from "buffer";
 import * as git from "isomorphic-git";
@@ -76,11 +77,11 @@ export class MobileGitFileStationSyncEngine {
     await this.runPhase("ensure local repo", () => this.ensureLocalRepo());
     await this.runPhase("configure local repo", () => this.configureLocalRepo());
 
+    const hadLocalCommitsBeforeRemoteImport = await this.localHasCommits();
     const hadUserFilesAtStart = this.localHasUserFiles();
     const workdirFilesAtStart = await this.listWorkdirFiles();
     const hiddenSystemFilesAtStart = this.hiddenSystemVaultFilesAtStart(workdirFilesAtStart);
-    const initialLocalFiles = await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
-    const hadLocalCommitsBeforeRemoteImport = await this.localHasCommits();
+    const initialLocalFiles = hadLocalCommitsBeforeRemoteImport ? new Map<string, Uint8Array>() : await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
 
     await this.runPhase("download remote bare repo", () => this.downloadRemoteBareRepoIfPresent());
     await this.runPhase("verify downloaded Git store", () => this.verifyDownloadedGitStore());
@@ -140,10 +141,14 @@ export class MobileGitFileStationSyncEngine {
       // local work while keeping remote history as the source of truth.
       await this.runPhase("checkout remote", () => this.checkoutRemote());
       await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
-      await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(initialLocalFiles, result));
-      if (result.conflicts.length > 0) await this.runPhase("commit local conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
-      await this.runPhase("push local branch", () => this.pushWithRetry());
-      await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
+      if (initialLocalFiles.size > 0) {
+        await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(initialLocalFiles, result));
+        if (result.conflicts.length > 0) {
+          await this.runPhase("commit local conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
+          await this.runPhase("push local branch", () => this.pushWithRetry());
+          await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
+        }
+      }
       return result;
     }
 
@@ -373,7 +378,7 @@ export class MobileGitFileStationSyncEngine {
     return this.vault.getFiles().some((file) => {
       if (!(file instanceof TFile)) return false;
       if (file.path.startsWith(".obsidian/")) return false;
-      if (DEFAULT_GIT_EXCLUDES.some((pattern) => matchesSimpleExclude(file.path, pattern))) return false;
+      if (isGitIgnoredPath(file.path, DEFAULT_GIT_EXCLUDES)) return false;
       return true;
     });
   }
@@ -664,7 +669,7 @@ export class MobileGitFileStationSyncEngine {
       .map((file) => file.path)
       .filter((path) => /(^|\/)\.git(\/|$)/.test(path))
       .map((path) => path.replace(/\/.git(\/.*)?$/, ""))
-      .filter((path) => path && !DEFAULT_GIT_EXCLUDES.some((pattern) => matchesSimpleExclude(path, pattern)));
+      .filter((path) => path && !isGitIgnoredPath(path, DEFAULT_GIT_EXCLUDES));
     return Array.from(new Set(found)).sort();
   }
 
@@ -787,7 +792,7 @@ export class MobileGitFileStationSyncEngine {
   }
 
   private isExcluded(path: string): boolean {
-    return path.startsWith(".git/") || DEFAULT_GIT_EXCLUDES.some((pattern) => matchesSimpleExclude(path, pattern));
+    return path.startsWith(".git/") || isGitIgnoredPath(path, DEFAULT_GIT_EXCLUDES);
   }
 
   private async listWorkdirFiles(): Promise<string[]> {
@@ -1059,11 +1064,6 @@ function relativeRemotePath(base: string, path: string): string {
   return path.startsWith(`${normalizedBase}/`) ? path.slice(normalizedBase.length + 1) : path;
 }
 
-function matchesSimpleExclude(path: string, pattern: string): boolean {
-  if (pattern.endsWith("/")) return path.startsWith(pattern);
-  if (pattern.endsWith("*")) return path.startsWith(pattern.slice(0, -1));
-  return path === pattern;
-}
 
 function shouldSkipRemoteGitFile(path: string): boolean {
   return path === "config" || path === "description" || path.endsWith(".lock") || path.startsWith("hooks/");

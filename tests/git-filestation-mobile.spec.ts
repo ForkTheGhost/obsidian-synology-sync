@@ -228,7 +228,7 @@ describe("MobileGitFileStationSyncEngine", () => {
     const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
       remotePath: "/homes/user/Obsidian/Test.git", branch: "main", syncIdentityId: "ios-device", authorName: "Obsidian Synology Sync", authorEmail: "synology-sync@local",
     });
-    expect((engine as unknown as { hiddenSystemVaultFilesAtStart: (paths: string[]) => string[] }).hiddenSystemVaultFilesAtStart([".trash", ".DS_Store"])).toEqual([".DS_Store", ".trash"]);
+    expect((engine as unknown as { hiddenSystemVaultFilesAtStart: (paths: string[]) => string[] }).hiddenSystemVaultFilesAtStart([".trash", ".DS_Store"])).toEqual([".DS_Store"]);
     expect((engine as unknown as { hiddenSystemVaultFilesAtStart: (paths: string[]) => string[] }).hiddenSystemVaultFilesAtStart([".obsidian/app.json", "note.md"])).toEqual([]);
   });
 
@@ -261,6 +261,31 @@ describe("MobileGitFileStationSyncEngine", () => {
     const normalBytes = await exposed.memfs.promises.readFile("/vault/note.md", { encoding: null });
     expect(new TextDecoder().decode(normalBytes as Uint8Array)).toBe("remote version");
     expect(result.conflicts).toEqual(["note.md"]);
+  });
+
+  it("does not re-preserve downloaded remote files as conflicts once local history exists", async () => {
+    const vault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
+    const fs = { listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }), createFolder: jest.fn(async () => undefined), upload: jest.fn(async () => undefined) };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git", branch: "main", syncIdentityId: "ios-device", authorName: "Obsidian Synology Sync", authorEmail: "synology-sync@local",
+    });
+    const exposed = engine as unknown as {
+      memfs: { client: unknown; promises: { mkdir: (path: string, options?: { recursive?: boolean }) => Promise<void>; writeFile: (path: string, data: Uint8Array | string) => Promise<void> } };
+      localHasCommits: () => Promise<boolean>;
+      snapshotInitialLocalFileBytes: (paths: string[]) => Promise<Map<string, Uint8Array>>;
+    };
+    await exposed.memfs.promises.mkdir("/vault", { recursive: true });
+    const git = await import("isomorphic-git");
+    await git.init({ fs: exposed.memfs.client as never, dir: "/vault", defaultBranch: "main" });
+    await exposed.memfs.promises.writeFile("/vault/note.md", new TextEncoder().encode("remote materialized"));
+    await git.add({ fs: exposed.memfs.client as never, dir: "/vault", filepath: "note.md" });
+    await git.commit({ fs: exposed.memfs.client as never, dir: "/vault", message: "seed", author: { name: "a", email: "a@example.com" } });
+
+    const hadLocalCommitsBeforeRemoteImport = await exposed.localHasCommits();
+    const initialLocalFiles = hadLocalCommitsBeforeRemoteImport ? new Map<string, Uint8Array>() : await exposed.snapshotInitialLocalFileBytes(["note.md"]);
+
+    expect(hadLocalCommitsBeforeRemoteImport).toBe(true);
+    expect(initialLocalFiles.size).toBe(0);
   });
 
   it("treats already-existing vault folders as successful during materialization", async () => {

@@ -1,7 +1,7 @@
 import { App, PluginSettingTab, Setting, Notice, Modal } from "obsidian";
 import type SynologySync from "./main";
 import { resolveQuickConnect } from "./quickconnect";
-import { getDebugLog, clearDebugLog, subscribeDebugLog } from "./debug";
+import { getDebugLog, getDebugLogSnippet, clearDebugLog, subscribeDebugLog } from "./debug";
 import { FileStation, FileInfo } from "./filestation";
 
 export interface SynologySyncSettings {
@@ -811,7 +811,10 @@ class DebugLogModal extends Modal {
         })
       )
       .addButton((btn) =>
-        btn.setButtonText("Close").onClick(() => this.close())
+        btn.setButtonText("Copy snippet").onClick(async () => {
+          await navigator.clipboard.writeText(getDebugLogSnippet());
+          new Notice("Debug snippet copied to clipboard");
+        })
       );
   }
 
