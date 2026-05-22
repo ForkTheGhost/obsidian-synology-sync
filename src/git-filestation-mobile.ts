@@ -119,21 +119,36 @@ export class MobileGitFileStationSyncEngine {
     }
 
     const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
-    const localChanged = await this.runPhase("detect local changes", () => this.changedFiles());
-    const preserveInitialLocalFiles = !localHadCommits && remoteHadCommits && hadUserFilesAtStart;
-    const preMergeLocalChanged = preserveInitialLocalFiles ? new Set(localChanged) : new Set<string>();
 
-    if (!localHadCommits && remoteHadCommits && !hadUserFilesAtStart) {
-      if (hiddenSystemFilesAtStart.length > 0) debugLog(`[git-filestation-mobile] treating vault as empty except hidden system files: ${hiddenSystemFilesAtStart.join(", ")}`);
+    if (!localHadCommits && remoteHadCommits) {
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
+      if (!hadUserFilesAtStart) {
+        if (hiddenSystemFilesAtStart.length > 0) debugLog(`[git-filestation-mobile] treating vault as empty except hidden system files: ${hiddenSystemFilesAtStart.join(", ")}`);
+        await this.runPhase("checkout remote", () => this.checkoutRemote());
+        await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
+        // Direct materialization already writes every remote file through Obsidian's vault API.
+        // Do not immediately run applyCheckoutChanges against the original empty snapshot: on
+        // mobile, getAbstractFileByPath() may lag just-created files and a second createBinary()
+        // can double-touch the same path.
+        return result;
+      }
+
+      // First sync into a non-empty mobile vault must not let starter/local files replace
+      // the established remote vault. Anchor the local branch to the remote first, materialize
+      // the remote tree, then add the starter files back as conflict copies. This preserves
+      // local work while keeping remote history as the source of truth.
       await this.runPhase("checkout remote", () => this.checkoutRemote());
       await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
-      // Direct materialization already writes every remote file through Obsidian's vault API.
-      // Do not immediately run applyCheckoutChanges against the original empty snapshot: on
-      // mobile, getAbstractFileByPath() may lag just-created files and a second createBinary()
-      // can double-touch the same path.
+      await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(beforeSnapshot, result));
+      if (result.conflicts.length > 0) await this.runPhase("commit local conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
+      await this.runPhase("push local branch", () => this.pushWithRetry());
+      await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
       return result;
     }
+
+    const localChanged = await this.runPhase("detect local changes", () => this.changedFiles());
+    const preserveInitialLocalFiles = false;
+    const preMergeLocalChanged = new Set<string>();
 
     const needsBootstrapCommit = !localHadCommits && !remoteHadCommits;
     if (localChanged.length > 0 || needsBootstrapCommit) {
@@ -568,6 +583,18 @@ export class MobileGitFileStationSyncEngine {
   private async copyLocalBranchToRemote(): Promise<void> {
     const oid = await git.resolveRef({ fs: this.memfs.client, dir: WORKDIR, ref: "HEAD" });
     await this.writeMemText(`${GITDIR}/refs/heads/${this.opts.branch}`, `${oid}\n`);
+  }
+
+  private async materializeInitialLocalCopies(before: Map<string, string>, result: SyncResult): Promise<void> {
+    for (const [path] of before) {
+      if (this.isExcluded(path)) continue;
+      const copyPath = conflictCopyPath(path, this.opts.syncIdentityId);
+      if (await this.pathExists(`${WORKDIR}/${copyPath}`)) continue;
+      await this.writeMemFile(`${WORKDIR}/${copyPath}`, await this.readMemBytes(`${WORKDIR}/${path}`));
+      await git.add({ fs: this.memfs.client, dir: WORKDIR, filepath: copyPath, cache: this.cache });
+      result.conflicts.push(path);
+      debugLog(`[git-filestation-mobile] preserved pre-sync local copy ${path} -> ${copyPath}`);
+    }
   }
 
   private async materializePreMergeLocalCopies(localChanged: Set<string>, before: Map<string, string>, result: SyncResult): Promise<void> {
