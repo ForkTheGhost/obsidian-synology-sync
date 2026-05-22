@@ -79,6 +79,7 @@ export class MobileGitFileStationSyncEngine {
     const hadUserFilesAtStart = this.localHasUserFiles();
     const workdirFilesAtStart = await this.listWorkdirFiles();
     const hiddenSystemFilesAtStart = this.hiddenSystemVaultFilesAtStart(workdirFilesAtStart);
+    const initialLocalFiles = await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
     const hadLocalCommitsBeforeRemoteImport = await this.localHasCommits();
 
     await this.runPhase("download remote bare repo", () => this.downloadRemoteBareRepoIfPresent());
@@ -139,7 +140,7 @@ export class MobileGitFileStationSyncEngine {
       // local work while keeping remote history as the source of truth.
       await this.runPhase("checkout remote", () => this.checkoutRemote());
       await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
-      await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(beforeSnapshot, result));
+      await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(initialLocalFiles, result));
       if (result.conflicts.length > 0) await this.runPhase("commit local conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
       await this.runPhase("push local branch", () => this.pushWithRetry());
       await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
@@ -585,12 +586,21 @@ export class MobileGitFileStationSyncEngine {
     await this.writeMemText(`${GITDIR}/refs/heads/${this.opts.branch}`, `${oid}\n`);
   }
 
-  private async materializeInitialLocalCopies(before: Map<string, string>, result: SyncResult): Promise<void> {
-    for (const [path] of before) {
+  private async snapshotInitialLocalFileBytes(paths: string[]): Promise<Map<string, Uint8Array>> {
+    const snapshot = new Map<string, Uint8Array>();
+    for (const path of paths) {
+      if (this.isExcluded(path)) continue;
+      snapshot.set(path, await this.readMemBytes(`${WORKDIR}/${path}`));
+    }
+    return snapshot;
+  }
+
+  private async materializeInitialLocalCopies(initialFiles: Map<string, Uint8Array>, result: SyncResult): Promise<void> {
+    for (const [path, bytes] of initialFiles) {
       if (this.isExcluded(path)) continue;
       const copyPath = conflictCopyPath(path, this.opts.syncIdentityId);
       if (await this.pathExists(`${WORKDIR}/${copyPath}`)) continue;
-      await this.writeMemFile(`${WORKDIR}/${copyPath}`, await this.readMemBytes(`${WORKDIR}/${path}`));
+      await this.writeMemFile(`${WORKDIR}/${copyPath}`, bytes);
       await git.add({ fs: this.memfs.client, dir: WORKDIR, filepath: copyPath, cache: this.cache });
       result.conflicts.push(path);
       debugLog(`[git-filestation-mobile] preserved pre-sync local copy ${path} -> ${copyPath}`);
