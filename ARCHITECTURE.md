@@ -1,6 +1,6 @@
 # Architecture
 
-This plugin supports two intentionally different sync architectures. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync.
+This plugin supports File Station connections via QuickConnect or a direct Synology address, with two intentionally different sync architectures layered on top: simple file sync or Git-backed sync over File Station. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync.
 
 `README.md` is the user-facing explanation of this architecture. It should explain the sync-mode choice in simple terms, so a non-developer can decide which option to check and understand how that choice affects where their readable notes live. Build, test, and contribution instructions belong in `CONTRIBUTING.md`, not the README.
 
@@ -44,16 +44,9 @@ Behavior:
 - On desktop runtimes with local filesystem access, this mode may use native Git against the local checkout.
 - On iOS/mobile runtimes without `getBasePath()`, this mode uses a pure-JS Git engine over Obsidian's vault APIs instead of desktop-only Node/native Git APIs.
 
-### Mounted filesystem Git and external Git servers
+### Non-goals
 
-Mounted filesystem Git and real Git servers are advanced alternatives, not primary plugin sync modes.
-
-Rationale:
-
-- If a Synology share is already mounted as a normal desktop path or UNC path, users can treat it like a normal folder or Git remote outside this plugin. A dedicated plugin mode for that path adds implementation and testing surface without preserving the File Station / QuickConnect benefit.
-- Existing Obsidian Git plugins already work well for normal Git remotes. This plugin's Git-backed mode is specifically for using Synology File Station / QuickConnect creatively as the transport, not for replacing the normal Git-plugin ecosystem.
-- Running a real Git server on Synology, such as GitLab, provides real Git server management but usually requires exposing Git/server ports or managing VPN access. That loses the main benefit of Git-backed File Station sync: using Synology File Station / QuickConnect as the transport instead of exposing Git services to the internet.
-- Therefore mounted filesystem Git should not be presented as a first-class user option unless product direction changes. Prefer Simple File Sync over File Station for normal folder sync, and Git-Backed Sync over File Station for Git history through QuickConnect/File Station transport.
+This plugin is not a general-purpose Git client and should not grow a separate first-class path for non-File-Station Git remotes. Existing Obsidian Git plugins already serve normal Git remotes well. The Git-backed mode here exists specifically to use Synology File Station / QuickConnect as the transport.
 
 ## Settings UI contract
 
@@ -61,7 +54,7 @@ The settings UI should make the choice explicit with a Sync mode selector:
 
 - Simple file sync (single user) shows Remote folder path.
 - Git-backed sync over File Station / QuickConnect shows NAS bare Git repo path.
-- Mounted filesystem Git is not a first-class user option unless product direction changes.
+The settings UI should not present non-File-Station Git remotes as a primary sync mode.
 
 Remote folder path belongs only to Simple file sync. Git-backed File Station mode must not require or imply it.
 
