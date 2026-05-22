@@ -66,6 +66,8 @@ Those are advanced setups, not the main plugin path.
 
 If your Synology share is already mounted as a normal desktop path, you can usually treat it like a normal folder or Git remote outside this plugin. The plugin does not need a special sync option just to use a UNC path.
 
+There are also existing Obsidian Git plugins that already work well for normal Git remotes. This plugin's Git-backed mode is not trying to replace those. It exists for the creative File Station / QuickConnect path: using Synology's built-in File Station API as the transport when you do not want to expose Git services directly.
+
 You can also run a real Git server, such as GitLab, on Synology. That gives you real Git server management, but it usually means exposing Git/server ports or managing VPN access. That loses the main benefit of this plugin's Git-backed File Station mode: using Synology File Station / QuickConnect as the transport instead of exposing Git services to the internet.
 
 ## Quick start: Simple File Sync over File Station

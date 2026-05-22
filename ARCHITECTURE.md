@@ -51,6 +51,7 @@ Mounted filesystem Git and real Git servers are advanced alternatives, not prima
 Rationale:
 
 - If a Synology share is already mounted as a normal desktop path or UNC path, users can treat it like a normal folder or Git remote outside this plugin. A dedicated plugin mode for that path adds implementation and testing surface without preserving the File Station / QuickConnect benefit.
+- Existing Obsidian Git plugins already work well for normal Git remotes. This plugin's Git-backed mode is specifically for using Synology File Station / QuickConnect creatively as the transport, not for replacing the normal Git-plugin ecosystem.
 - Running a real Git server on Synology, such as GitLab, provides real Git server management but usually requires exposing Git/server ports or managing VPN access. That loses the main benefit of Git-backed File Station sync: using Synology File Station / QuickConnect as the transport instead of exposing Git services to the internet.
 - Therefore mounted filesystem Git should not be presented as a first-class user option unless product direction changes. Prefer Simple File Sync over File Station for normal folder sync, and Git-Backed Sync over File Station for Git history through QuickConnect/File Station transport.
 
