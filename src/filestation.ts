@@ -33,6 +33,16 @@ export interface LoginResult {
   deviceToken?: string; // returned on first OTP login; save this for future logins
 }
 
+export class FileStationPathExistsError extends Error {
+  code?: number;
+
+  constructor(message: string, code?: number) {
+    super(message);
+    this.name = "FileStationPathExistsError";
+    this.code = code;
+  }
+}
+
 export type AuthPhase = "resolve_candidates" | "select_endpoint" | "start_login" | "classify_response" | "retry_without_token" | "prompt_otp" | "persist_replacement_token" | "repair_relay_session" | "fail";
 export type AuthEndpointKind = "direct" | "relay" | "manual" | "unknown";
 export type AuthResponseKind = "dsm_json_success" | "dsm_json_error" | "timeout" | "html_portal" | "network_error" | "unexpected_response";
@@ -573,6 +583,14 @@ export class FileStation {
   }
 
   async createFolder(folderPath: string, name: string): Promise<void> {
+    await this.createFolderInternal(folderPath, name, true, false);
+  }
+
+  async createFolderStrict(folderPath: string, name: string, forceParent: boolean = true): Promise<void> {
+    await this.createFolderInternal(folderPath, name, forceParent, true);
+  }
+
+  private async createFolderInternal(folderPath: string, name: string, forceParent: boolean, failIfExists: boolean): Promise<void> {
     const resp = await requestUrl({
       url: this.url("", {
         api: "SYNO.FileStation.CreateFolder",
@@ -580,15 +598,21 @@ export class FileStation {
         method: "create",
         folder_path: JSON.stringify([folderPath]),
         name: JSON.stringify([name]),
-        force_parent: "true",
+        force_parent: forceParent ? "true" : "false",
       }),
       method: "GET",
     });
-    // Ignore "already exists" (1100) and "folder exists" (414) errors
-    const cfData = this.parseJson(resp, "createFolder");
+    const cfData = this.parseJson(resp, failIfExists ? "createFolderStrict" : "createFolder");
     const errCode = cfData.error?.code;
-    if (!cfData.success && errCode !== 1100 && errCode !== 414) {
-      throw new Error(`createFolder failed: ${JSON.stringify(cfData.error)}`);
+    const alreadyExists = errCode === 1100 || errCode === 414;
+    if (!cfData.success && alreadyExists && failIfExists) {
+      throw new FileStationPathExistsError(`createFolderStrict failed because ${folderPath}/${name} already exists`, errCode);
+    }
+    // Non-strict callers keep the legacy behavior and ignore "already exists"
+    // (1100) / "folder exists" (414). Strict callers need already-exists to
+    // fail so createFolder can be used as an atomic-ish lock acquire primitive.
+    if (!cfData.success && !(alreadyExists && !failIfExists)) {
+      throw new Error(`${failIfExists ? "createFolderStrict" : "createFolder"} failed: ${JSON.stringify(cfData.error)}`);
     }
   }
 

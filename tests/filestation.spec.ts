@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { FileStation } from "../src/filestation";
+import { FileStation, FileStationPathExistsError } from "../src/filestation";
 
 const mockedRequestUrl = requestUrl as jest.Mock;
 
@@ -273,6 +273,34 @@ describe("FileStation", () => {
       });
 
       await expect(fs.listFolder("/root")).rejects.toThrow(/NAS returned an HTML page/);
+    });
+  });
+
+  describe("createFolderStrict", () => {
+    function makeFs(): FileStation {
+      const fs = new FileStation({ baseUrl: "https://nas.local:5001", username: "u", password: "p" });
+      (fs as unknown as { sid: string }).sid = "test-sid";
+      return fs;
+    }
+
+    it("fails when File Station reports that the folder already exists", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        json: { success: false, error: { code: 414 } },
+      });
+
+      await expect(fs.createFolderStrict("/repo.git/.synology-sync/locks", "main.lock")).rejects.toBeInstanceOf(FileStationPathExistsError);
+    });
+
+    it("preserves legacy createFolder behavior by ignoring already-exists", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        json: { success: false, error: { code: 414 } },
+      });
+
+      await expect(fs.createFolder("/repo.git/.synology-sync/locks", "main.lock")).resolves.toBeUndefined();
     });
   });
 
