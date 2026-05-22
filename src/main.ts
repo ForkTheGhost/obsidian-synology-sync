@@ -6,7 +6,7 @@ import { NativeGitSyncEngine } from "./git-sync";
 import { GitFileStationSyncEngine } from "./git-filestation-sync";
 import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
 import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
-import { debugLog, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics } from "./debug";
+import { beginDebugSync, debugLog, endDebugSync, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics } from "./debug";
 
 // UUID generator with fallbacks for older runtimes.
 // crypto.randomUUID requires iOS 15.4+ / Chromium 92+; we fall back through
@@ -240,7 +240,6 @@ export default class SynologySync extends Plugin {
       return;
     }
 
-    logRuntimeDiagnostics(this.app);
     const effectiveSyncBackend = sanitizeSyncBackendForRuntime(this.settings, this.app.vault.adapter);
     if (this.settings.syncBackend === "git-filesystem" && effectiveSyncBackend === "filestation") {
       debugLog("Mounted filesystem Git sync requested, but this Obsidian runtime has no local filesystem path; falling back to File Station sync.");
@@ -263,6 +262,7 @@ export default class SynologySync extends Plugin {
     }
 
     this.syncing = true;
+    beginDebugSync(this.app);
     new Notice("Synology Sync starting...");
 
     let fs: FileStation | null = null;
@@ -319,6 +319,7 @@ export default class SynologySync extends Plugin {
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
       }
+      endDebugSync();
       this.syncing = false;
     }
   }
@@ -330,6 +331,7 @@ export default class SynologySync extends Plugin {
     }
 
     this.syncing = true;
+    beginDebugSync(this.app);
     new Notice("Git-backed Synology Sync starting...");
 
     try {
@@ -361,6 +363,7 @@ export default class SynologySync extends Plugin {
       new Notice(`Git sync failed: ${(e as Error).message}`);
       console.error("Git-backed Synology Sync error:", e);
     } finally {
+      endDebugSync();
       this.syncing = false;
     }
   }
@@ -372,6 +375,7 @@ export default class SynologySync extends Plugin {
     }
 
     this.syncing = true;
+    beginDebugSync(this.app);
     new Notice("Git-over-File-Station sync starting...");
 
     let fs: FileStation | null = null;
@@ -406,6 +410,7 @@ export default class SynologySync extends Plugin {
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
       }
+      endDebugSync();
       this.syncing = false;
     }
   }

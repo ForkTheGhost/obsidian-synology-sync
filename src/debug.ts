@@ -2,13 +2,20 @@ import manifest from "../manifest.json";
 
 const MAX_ENTRIES = 200;
 const entries: string[] = [];
+const lastSyncEntries: string[] = [];
+let activeSyncEntries: string[] | null = null;
 const listeners = new Set<() => void>();
 
-export function debugLog(msg: string): void {
+function formatDebugEntry(msg: string): string {
   const ts = new Date().toISOString().substring(11, 23);
-  const entry = `[${ts}] ${msg}`;
+  return `[${ts}] ${msg}`;
+}
+
+export function debugLog(msg: string): void {
+  const entry = formatDebugEntry(msg);
   entries.push(entry);
   if (entries.length > MAX_ENTRIES) entries.shift();
+  if (activeSyncEntries) activeSyncEntries.push(entry);
   console.log(`[SynologySync] ${msg}`);
   listeners.forEach((listener) => {
     try { listener(); } catch { /* ignore listener errors */ }
@@ -16,18 +23,35 @@ export function debugLog(msg: string): void {
 }
 
 export function getDebugLog(): string {
-  return entries.join("\n");
+  const syncEntries = activeSyncEntries ?? lastSyncEntries;
+  return (syncEntries.length > 0 ? syncEntries : entries).join("\n");
 }
 
-export function getDebugLogSnippet(): string {
-  const runtime = [...entries].reverse().find((entry) => entry.includes("RUNTIME:"));
-  const tail = entries.slice(-5);
-  const lines = runtime ? [runtime, ...tail.filter((entry) => entry !== runtime)] : tail;
-  return lines.join("\n");
+export function getDebugLogSnippet(app?: unknown): string {
+  const logEntries = activeSyncEntries ?? (lastSyncEntries.length > 0 ? lastSyncEntries : entries);
+  const runtime = [...logEntries, ...entries].reverse().find((entry) => entry.includes("RUNTIME:"))
+    ?? formatDebugEntry(`RUNTIME: ${formatRuntimeDiagnostics(getRuntimeDiagnostics(app))}`);
+  const tail = logEntries.filter((entry) => entry !== runtime).slice(-5);
+  return [runtime, ...tail].join("\n");
+}
+
+export function beginDebugSync(app?: unknown): void {
+  activeSyncEntries = [];
+  debugLog(`RUNTIME: ${formatRuntimeDiagnostics(getRuntimeDiagnostics(app))}`);
+}
+
+export function endDebugSync(): void {
+  if (activeSyncEntries) {
+    lastSyncEntries.length = 0;
+    lastSyncEntries.push(...activeSyncEntries);
+    activeSyncEntries = null;
+  }
 }
 
 export function clearDebugLog(): void {
   entries.length = 0;
+  lastSyncEntries.length = 0;
+  activeSyncEntries = null;
   listeners.forEach((listener) => {
     try { listener(); } catch { /* ignore listener errors */ }
   });
