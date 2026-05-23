@@ -1,5 +1,6 @@
 import { TFile, Vault } from "obsidian";
 import { FileStation } from "./filestation";
+import { withFileStationGitLease } from "./git-filestation-lease";
 import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
 import { buildGitExcludes, classifyGitConflict, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError } from "./git-sync";
@@ -13,6 +14,8 @@ export interface GitFileStationSyncOptions {
   syncIdentityId: string;
   authorName: string;
   authorEmail: string;
+  configPolicy?: import("./git-excludes").ObsidianConfigSyncPolicy;
+  configOptIns?: import("./git-excludes").ObsidianConfigOptIns;
 }
 
 interface GitCommandResult {
@@ -34,7 +37,6 @@ class GitCommandError extends Error {
   }
 }
 
-const DEFAULT_GIT_EXCLUDES = buildGitExcludes();
 
 /**
  * Syncs a local Obsidian vault using real Git commits and a bare repository
@@ -49,6 +51,7 @@ export class GitFileStationSyncEngine {
   private cwd: string;
   private cacheDir: string;
   private remoteCachePath: string;
+  private gitExcludes: string[];
 
   constructor(vault: Vault, fs: FileStation, opts: GitFileStationSyncOptions) {
     this.vault = vault;
@@ -64,6 +67,7 @@ export class GitFileStationSyncEngine {
     const path = getNodeModule("path") as { join: (...parts: string[]) => string };
     this.cacheDir = path.join(this.cwd, ".obsidian", "plugins", "synology-sync", "git-filestation-cache");
     this.remoteCachePath = path.join(this.cacheDir, "remote.git");
+    this.gitExcludes = buildGitExcludes(this.opts.configPolicy, this.opts.configOptIns);
   }
 
   async sync(): Promise<SyncResult> {
@@ -96,7 +100,7 @@ export class GitFileStationSyncEngine {
 
     if (!localHadCommits && remoteHadCommits && !this.localHasUserFiles()) {
       await this.checkoutRemote(result);
-      await this.uploadBareRepoMirror();
+      await this.publishWithLease();
       return result;
     }
 
@@ -127,8 +131,7 @@ export class GitFileStationSyncEngine {
       }
     }
 
-    await this.pushWithRetry();
-    await this.uploadBareRepoMirror();
+    await this.publishWithLease();
     return result;
   }
 
@@ -230,7 +233,7 @@ export class GitFileStationSyncEngine {
     return this.vault.getFiles().some((file) => {
       if (!(file instanceof TFile)) return false;
       if (file.path.startsWith(".obsidian/")) return false;
-      if (isGitIgnoredPath(file.path, DEFAULT_GIT_EXCLUDES)) return false;
+      if (isGitIgnoredPath(file.path, this.gitExcludes)) return false;
       return true;
     });
   }
@@ -308,9 +311,35 @@ export class GitFileStationSyncEngine {
     return uniqueLines(r.stdout);
   }
 
-  private async pushWithRetry(): Promise<void> {
+  private async publishWithLease(): Promise<void> {
+    const expectedOldRef = await this.remoteRefOid();
+    await withFileStationGitLease(this.fs, {
+      remotePath: this.opts.remotePath,
+      branch: this.opts.branch,
+      owner: this.opts.syncIdentityId,
+      expectedOldRef,
+    }, async () => {
+      const afterLockRef = await this.remoteRefOid();
+      if (afterLockRef !== expectedOldRef) {
+        throw new Error(`Remote ref changed while acquiring lease for ${this.opts.branch}; aborting so the next sync can fetch and merge safely.`);
+      }
+      await this.pushWithRetry(expectedOldRef);
+      await this.uploadBareRepoMirror();
+    });
+  }
+
+  private async remoteRefOid(): Promise<string | undefined> {
     try {
-      await git(["push", "-u", "origin", `HEAD:${this.opts.branch}`], this.cwd);
+      const r = await git(["--git-dir", this.remoteCachePath, "rev-parse", "--verify", `refs/heads/${this.opts.branch}`], undefined);
+      return r.stdout.trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async pushWithRetry(expectedOldRef?: string): Promise<void> {
+    try {
+      await this.pushExpectedOldRef(expectedOldRef);
       return;
     } catch (e) {
       debugLog(`[git-filestation] push rejected or failed, fetching and retrying once: ${(e as Error).message}`);
@@ -320,8 +349,18 @@ export class GitFileStationSyncEngine {
       if (conflicts.length > 0) {
         throw new Error("Push retry found merge conflicts; resolve them and sync again.");
       }
-      await git(["push", "-u", "origin", `HEAD:${this.opts.branch}`], this.cwd);
+      await this.pushExpectedOldRef(expectedOldRef);
     }
+  }
+
+  private async pushExpectedOldRef(expectedOldRef?: string): Promise<void> {
+    // This force-with-lease is the real expected-old-ref correctness boundary.
+    // The File Station lease is advisory and reduces contention; this ref check
+    // prevents silent overwrites if another writer advanced the branch.
+    const leaseRef = expectedOldRef
+      ? `refs/heads/${this.opts.branch}:${expectedOldRef}`
+      : `refs/heads/${this.opts.branch}`;
+    await git(["push", "-u", "origin", `HEAD:refs/heads/${this.opts.branch}`, `--force-with-lease=${leaseRef}`], this.cwd);
   }
 
   private async uploadBareRepoMirror(): Promise<void> {
@@ -353,7 +392,7 @@ export class GitFileStationSyncEngine {
     const path = getNodeModule("path") as { join: (...parts: string[]) => string; relative: (from: string, to: string) => string };
     const fs = getNodeModule("fs") as { readdirSync: (p: string, opts?: { withFileTypes?: boolean }) => Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> };
     const found: string[] = [];
-    const allExcludes = DEFAULT_GIT_EXCLUDES;
+    const allExcludes = this.gitExcludes;
 
     const walk = (dir: string): void => {
       let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
@@ -390,7 +429,7 @@ export class GitFileStationSyncEngine {
     const excludePath = path.join(this.cwd, ".git", "info", "exclude");
     fs.mkdirSync(path.dirname(excludePath), { recursive: true });
     const prior = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf8") : "";
-    const missing = DEFAULT_GIT_EXCLUDES.filter((line) => !prior.split(/\r?\n/).includes(line));
+    const missing = this.gitExcludes.filter((line) => !prior.split(/\r?\n/).includes(line));
     if (missing.length > 0) {
       fs.appendFileSync(excludePath, `${prior.endsWith("\n") || prior.length === 0 ? "" : "\n"}${missing.join("\n")}\n`, "utf8");
     }
@@ -515,7 +554,7 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 function shouldSkipRemoteGitFile(path: string): boolean {
-  return path === "config" || path === "description" || path.endsWith(".lock") || path.startsWith("hooks/");
+  return path === "config" || path === "description" || path.endsWith(".lock") || path.startsWith("hooks/") || path.startsWith(".synology-sync/");
 }
 
 function normalizeRemotePath(path: string): string {

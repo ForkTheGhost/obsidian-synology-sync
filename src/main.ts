@@ -335,6 +335,8 @@ export default class SynologySync extends Plugin {
         syncIdentityId: this.settings.syncIdentityId,
         authorName: this.settings.gitAuthorName,
         authorEmail: this.settings.gitAuthorEmail,
+        configPolicy: this.settings.obsidianConfigPolicy,
+        configOptIns: this.settings.obsidianConfigOptIns,
       });
 
       const result = await engine.sync();

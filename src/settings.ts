@@ -3,6 +3,7 @@ import type SynologySync from "./main";
 import { resolveQuickConnect } from "./quickconnect";
 import { getDebugLog, getDebugLogSnippet, clearDebugLog, subscribeDebugLog } from "./debug";
 import { FileStation, FileInfo } from "./filestation";
+import type { ObsidianConfigOptIns, ObsidianConfigSyncPolicy } from "./git-excludes";
 
 export interface SynologySyncSettings {
   syncBackend: "filestation" | "git-filestation";
@@ -54,6 +55,8 @@ export interface SynologySyncSettings {
   gitBranch: string;
   gitAuthorName: string;
   gitAuthorEmail: string;
+  obsidianConfigPolicy: ObsidianConfigSyncPolicy;
+  obsidianConfigOptIns: ObsidianConfigOptIns;
 }
 
 
@@ -96,6 +99,8 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   gitBranch: "main",
   gitAuthorName: "Obsidian Synology Sync",
   gitAuthorEmail: "synology-sync@local",
+  obsidianConfigPolicy: "notes-only",
+  obsidianConfigOptIns: {},
 };
 
 // Legacy default that was shipped in releases prior to 2026.0505.1.
@@ -395,6 +400,40 @@ export class SynologySyncSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
             })
         );
+
+
+      new Setting(containerEl)
+        .setName("Obsidian config sync policy")
+        .setDesc("Notes only is safest. Selected settings lets you opt into reviewed .obsidian categories. Advanced full config may sync secrets/device-specific paths.")
+        .addDropdown((dd) =>
+          dd
+            .addOption("notes-only", "Notes only")
+            .addOption("selected-settings", "Notes + selected settings")
+            .addOption("full-config", "Advanced full config")
+            .setValue(this.plugin.settings.obsidianConfigPolicy)
+            .onChange(async (value: string) => {
+              this.plugin.settings.obsidianConfigPolicy = value as ObsidianConfigSyncPolicy;
+              await this.plugin.saveSettings();
+              this.display();
+            })
+        );
+
+      if (this.plugin.settings.obsidianConfigPolicy === "selected-settings") {
+        const opt = this.plugin.settings.obsidianConfigOptIns || {};
+        const addOptIn = (name: string, desc: string, key: keyof ObsidianConfigOptIns) => {
+          new Setting(containerEl)
+            .setName(name)
+            .setDesc(desc)
+            .addToggle((toggle) => toggle.setValue(!!opt[key]).onChange(async (value) => {
+              this.plugin.settings.obsidianConfigOptIns = { ...(this.plugin.settings.obsidianConfigOptIns || {}), [key]: value };
+              await this.plugin.saveSettings();
+            }));
+        };
+        addOptIn("Appearance/app/graph settings", "Sync reviewed appearance/app/graph JSON files.", "appearance");
+        addOptIn("Plugin lists", "Sync community/core plugin list files, not plugin data.", "pluginLists");
+        addOptIn("Hotkeys", "Sync .obsidian/hotkeys.json.", "hotkeys");
+        addOptIn("Snippets", "Sync .obsidian/snippets/.", "snippets");
+      }
 
       new Setting(containerEl)
         .setName("Commit author")

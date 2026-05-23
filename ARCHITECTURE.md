@@ -189,3 +189,24 @@ Design constraints:
 - Users need clear warnings that compaction trades fine-grained history for repo size/performance.
 - Explore lighter fetch/clone options first where possible, such as shallow/single-branch fetches, before introducing destructive squash/GC behavior.
 - Include NAS-side garbage collection/prune guidance where supported, because squashing alone does not reclaim object storage until unreachable objects are pruned.
+
+
+## File Station Git safety implementation notes
+
+Git-Backed Sync over File Station treats the NAS path as a bare Git repository transported through File Station, not as Git protocol.
+
+### Lease and ref safety
+
+A writer acquires an advisory lease under `.synology-sync/leases/<branch>.lock` using strict File Station create semantics (`force_parent=false`). Lease metadata records owner, branch, expected old ref, creation time, expiry, and a token. The lease reduces concurrent writers but is not the sole correctness guarantee: the publish path must still use expected-old-ref semantics and publish objects before refs. Desktop/native Git uses `--force-with-lease` against the local bare cache; mobile rechecks the downloaded remote ref before writing its cached ref and aborts if it changed.
+
+### Minimal transport and fingerprints
+
+File Station metadata such as size/mtime is only a cheap negative check: it can prove a file changed, but it cannot prove Git object equivalence because repacking can rewrite pack files for the same reachable object set. Git object IDs and ref OIDs are authoritative. If unchanged state cannot be proven from object/ref identity, the implementation must verify or transfer rather than assume equivalence.
+
+### Obsidian config policy
+
+The default policy is Notes only: Markdown/assets sync by default and volatile/device-local `.obsidian` state stays local. Selected settings opt-ins allow reviewed categories such as plugin lists, hotkeys, snippets, and appearance/app/graph settings. Advanced full config is explicit opt-in and carries conflict/secrets/device-path risk.
+
+### Validation
+
+Release candidates should pass `npm run check` and the disposable smoke-vault workflow documented in `docs/SMOKE-VAULT.md`.

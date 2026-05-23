@@ -48,6 +48,8 @@ describe("DEFAULT_SETTINGS", () => {
     expect(DEFAULT_SETTINGS.gitBranch).toBe("main");
     expect(DEFAULT_SETTINGS.gitAuthorName).toBe("Obsidian Synology Sync");
     expect(DEFAULT_SETTINGS.gitAuthorEmail).toBe("synology-sync@local");
+    expect(DEFAULT_SETTINGS.obsidianConfigPolicy).toBe("notes-only");
+    expect(DEFAULT_SETTINGS.obsidianConfigOptIns).toEqual({});
   });
 });
 
