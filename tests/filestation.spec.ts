@@ -319,6 +319,19 @@ describe("FileStation", () => {
       });
     });
 
+    it("recognizes numeric string already-exists codes from File Station", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        json: { success: false, error: { code: "414" } },
+      });
+
+      await expect(fs.createFolderStrict("/repo.git/.synology-sync/locks", "main.lock")).rejects.toMatchObject({
+        name: "FileStationPathExistsError",
+        code: 414,
+      });
+    });
+
     it("preserves legacy createFolder behavior by forcing parents and ignoring already-exists", async () => {
       const fs = makeFs();
       mockedRequestUrl.mockResolvedValueOnce({
