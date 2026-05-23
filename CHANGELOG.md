@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 2026.0523.1
+
+### Fixed
+
+- Harden Git-over-File-Station publishing with advisory leases, expected-old-ref/ref preflight checks, object-before-ref mirroring, and content-stable preserved conflict copies.
+- Add the Git-backed File Station safety stack: strict create-folder lock primitive, tightened File Station error discrimination, `.obsidian` config policy, and disposable smoke-vault/review-gate workflow.
+
 ### Fixed
 
 - Git-over-File-Station preserved conflict copies are now content-stable, so repeated unchanged syncs do not create a new timestamped copy each run while new local content still gets a distinct preserved copy.
