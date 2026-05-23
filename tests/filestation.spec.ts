@@ -319,6 +319,19 @@ describe("FileStation", () => {
       });
     });
 
+    it("recognizes numeric string already-exists codes from File Station", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        json: { success: false, error: { code: "414" } },
+      });
+
+      await expect(fs.createFolderStrict("/repo.git/.synology-sync/locks", "main.lock")).rejects.toMatchObject({
+        name: "FileStationPathExistsError",
+        code: 414,
+      });
+    });
+
     it("preserves legacy createFolder behavior by forcing parents and ignoring already-exists", async () => {
       const fs = makeFs();
       mockedRequestUrl.mockResolvedValueOnce({
@@ -356,9 +369,12 @@ describe("FileStation", () => {
       expect((err as FileStationApiError).code).toBe(119);
     });
 
-    it("does not treat unrelated nested code properties as the FileStation error code", async () => {
+    it("does not treat unrelated nested `code` properties as the FileStation error code", async () => {
       const fs = makeFs();
-      // The extractor intentionally only walks error.code and error.errors[].code.
+      // A future response shape might include a `code` inside an unrelated
+      // metadata field. The tightened extractor must only walk
+      // `error.code` and `error.errors[].code`, so this is a generic failure
+      // — not an already-exists.
       mockedRequestUrl.mockResolvedValueOnce({
         status: 200,
         json: { success: false, error: { code: 400, metadata: { code: 1100 } } },
