@@ -210,4 +210,6 @@ The default policy is Notes only: Markdown/assets sync by default and volatile/d
 
 ### Validation
 
-Release candidates should pass `npm run check` and the disposable smoke-vault workflow documented in `docs/SMOKE-VAULT.md`.
+Release candidates should pass `npm run check` and the disposable smoke-vault workflow documented in `docs/SMOKE-VAULT.md`. `npm run check` is the local quality gate for Jest, ESLint, and the production build.
+
+The ESLint gate uses a flat config based on `obsidianmd/obsidian-sample-plugin` and loads `eslint-plugin-obsidianmd`. Existing-code compatibility exclusions are kept in `eslint.config.mjs` so lint adoption stays focused on tooling correctness first; tighten those exclusions in follow-up PRs when the affected code is intentionally refactored.

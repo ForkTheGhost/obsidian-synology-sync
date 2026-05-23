@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### chore: Add Obsidian lint gate (`pending`) - closes #15
+
+Add an ESLint flat config based on the Obsidian sample plugin pattern, wire `npm run lint` into the local check gate, and document the test/lint/build contributor workflow.
+
 ## 2026.0523.1
 
 ### Fixed
