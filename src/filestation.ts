@@ -81,10 +81,11 @@ function isLikelyHtmlResponse(error: unknown): boolean {
   return /invalid json/i.test(msg) || /unexpected token\s*</i.test(msg) || msg.includes("<!DOCTYPE") || msg.includes("<html");
 }
 
-// DSM File Station errors use a documented top-level `error.code` and, for
-// batch operations, per-item details under `error.errors[].code`. Walk only
-// those paths so unrelated nested `code` fields cannot be mistaken for the
-// operation error.
+// DSM File Station errors follow a documented shape: a top-level `error.code`
+// and, for batch operations, per-item details under `error.errors[].code`.
+// Walk only those paths instead of recursing through arbitrary nested objects
+// so unrelated `code` properties on future response shapes cannot be misread
+// as the operation's error code.
 function toNumericCode(value: unknown): number | undefined {
   if (typeof value === "number") return value;
   if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
@@ -631,8 +632,10 @@ export class FileStation {
   // DSM serializing concurrent CreateFolder calls with force_parent=false; this
   // assumption is not yet validated by a multi-writer concurrency test, and the
   // lease layer built on top must not treat it as a guarantee. Callers must
-  // ensure the parent directory exists separately so lock contention can be told
-  // apart from a missing lock directory via FileStationApiError.code.
+  // ensure the parent directory exists separately — when the parent is missing
+  // DSM returns a non-exists error code which surfaces as a FileStationApiError
+  // (distinct from FileStationPathExistsError) so lock contention can be told
+  // apart from a missing lock directory without string-matching.
   async createFolderStrict(folderPath: string, name: string): Promise<void> {
     await this.createFolderInternal(folderPath, name, false, true);
   }
@@ -664,7 +667,6 @@ export class FileStation {
       // exists" (414) for non-strict callers.
       return;
     }
-
     const failureCode = findFileStationErrorCode(cfData.error);
     throw new FileStationApiError(`${label} failed: ${JSON.stringify(cfData.error)}`, failureCode);
   }
