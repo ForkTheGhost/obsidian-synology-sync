@@ -603,6 +603,23 @@ export class MobileGitFileStationSyncEngine {
   private async materializeInitialLocalCopies(initialFiles: Map<string, Uint8Array>, result: SyncResult): Promise<void> {
     for (const [path, bytes] of initialFiles) {
       if (this.isExcluded(path)) continue;
+
+      // Repeat-sync/idempotency guard: an established mobile checkout may lose
+      // its local Git metadata/cache while the vault files themselves already
+      // match the remote branch. In that first-pull recovery path we checkout
+      // and materialize the remote file before deciding whether the pre-sync
+      // local bytes need preservation. If the bytes now at the normal path are
+      // identical to the original local bytes, this was an idempotent no-op —
+      // not a user conflict — and creating a timestamped conflict copy on every
+      // sync would spam the vault with hundreds of preserved copies.
+      if (await this.pathExists(`${WORKDIR}/${path}`)) {
+        const materializedBytes = await this.readMemBytes(`${WORKDIR}/${path}`);
+        if (bytesEqual(bytes, materializedBytes)) {
+          debugLog(`[git-filestation-mobile] pre-sync local file already matches remote; no conflict copy needed: ${path}`);
+          continue;
+        }
+      }
+
       const copyPath = conflictCopyPath(path, this.opts.syncIdentityId);
       if (await this.pathExists(`${WORKDIR}/${copyPath}`)) continue;
       await this.writeMemFile(`${WORKDIR}/${copyPath}`, bytes);
@@ -1116,6 +1133,14 @@ function dirnameRemotePath(path: string): string {
 function joinRemotePath(base: string, relDir: string): string {
   const normalized = normalizeRemotePath(base);
   return relDir ? `${normalized}/${relDir}` : normalized;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
