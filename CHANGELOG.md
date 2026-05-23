@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Git-over-File-Station preserved conflict copies are now content-stable, so repeated unchanged syncs do not create a new timestamped copy each run while new local content still gets a distinct preserved copy.
+- Git-over-File-Station publish now re-reads the NAS branch ref before uploading the mirrored bare repo and fails closed if the ref changed after download, reducing stale-overwrite risk while the full lease/ref-safety stack is built.
+- File Station strict folder creation now uses typed API errors, preserves path-exists as a distinct error, and only interprets documented DSM error code paths.
+
+### Changed
+
+- Architecture docs now explicitly treat File Station leases as advisory until real-device concurrency validation proves otherwise, and document Git object IDs as authoritative over File Station mtime/size shortcuts.
+
 ## 2026.0514.2
 
 ### Fixed

@@ -56,6 +56,7 @@ export class MobileGitFileStationSyncEngine {
   private opts: MobileGitFileStationSyncOptions;
   private memfs = new MemoryFs();
   private cache: Record<string, unknown> = {};
+  private remoteBranchOidAtDownload: string | undefined;
 
   constructor(vault: Vault, fs: FileStation, opts: MobileGitFileStationSyncOptions) {
     this.vault = vault;
@@ -89,6 +90,7 @@ export class MobileGitFileStationSyncEngine {
 
     const remoteHadCommits = await this.remoteHasCommits();
     const localHadCommits = hadLocalCommitsBeforeRemoteImport;
+    this.remoteBranchOidAtDownload = remoteHadCommits ? await this.remoteBranchOidInMemory() : undefined;
 
     const invalidRemotePaths = await this.runPhase("inspect remote tree", () => this.invalidRemotePathsForLocalCheckout());
     if (invalidRemotePaths.length > 0) {
@@ -365,6 +367,14 @@ export class MobileGitFileStationSyncEngine {
     }
   }
 
+  private async remoteBranchOidInMemory(): Promise<string | undefined> {
+    try {
+      return await git.resolveRef({ fs: this.memfs.client, gitdir: GITDIR, ref: `refs/heads/${this.opts.branch}` });
+    } catch {
+      return undefined;
+    }
+  }
+
   private async localHasCommits(): Promise<boolean> {
     try {
       await git.resolveRef({ fs: this.memfs.client, dir: WORKDIR, ref: "HEAD" });
@@ -603,12 +613,7 @@ export class MobileGitFileStationSyncEngine {
   private async materializeInitialLocalCopies(initialFiles: Map<string, Uint8Array>, result: SyncResult): Promise<void> {
     for (const [path, bytes] of initialFiles) {
       if (this.isExcluded(path)) continue;
-      const copyPath = conflictCopyPath(path, this.opts.syncIdentityId);
-      if (await this.pathExists(`${WORKDIR}/${copyPath}`)) continue;
-      await this.writeMemFile(`${WORKDIR}/${copyPath}`, bytes);
-      await git.add({ fs: this.memfs.client, dir: WORKDIR, filepath: copyPath, cache: this.cache });
-      result.conflicts.push(path);
-      debugLog(`[git-filestation-mobile] preserved pre-sync local copy ${path} -> ${copyPath}`);
+      await this.materializePreservedCopy(path, bytes, result, "pre-sync local copy", true);
     }
   }
 
@@ -618,28 +623,68 @@ export class MobileGitFileStationSyncEngine {
       if (!localChanged.has(path) || this.isExcluded(path)) continue;
       const currentHash = await this.fileHash(`${WORKDIR}/${path}`);
       if (before.has(path) && before.get(path) !== currentHash) continue;
-      const copyPath = conflictCopyPath(path, this.opts.syncIdentityId);
-      if (await this.pathExists(`${WORKDIR}/${copyPath}`)) continue;
-      await this.writeMemFile(`${WORKDIR}/${copyPath}`, await this.readMemBytes(`${WORKDIR}/${path}`));
-      await git.add({ fs: this.memfs.client, dir: WORKDIR, filepath: copyPath, cache: this.cache });
-      result.conflicts.push(path);
-      debugLog(`[git-filestation-mobile] preserved local pre-merge copy ${path} -> ${copyPath}`);
+      await this.materializePreservedCopy(path, await this.readMemBytes(`${WORKDIR}/${path}`), result, "local pre-merge copy", true);
     }
   }
 
   private async materializeConflictCopies(conflicts: string[], result: SyncResult): Promise<void> {
     for (const path of conflicts) {
       if (this.isExcluded(path)) continue;
-      const copyPath = conflictCopyPath(path, this.opts.syncIdentityId);
-      if (!(await this.pathExists(`${WORKDIR}/${path}`)) || await this.pathExists(`${WORKDIR}/${copyPath}`)) continue;
-      await this.writeMemFile(`${WORKDIR}/${copyPath}`, await this.readMemBytes(`${WORKDIR}/${path}`));
-      await git.add({ fs: this.memfs.client, dir: WORKDIR, filepath: copyPath, cache: this.cache });
-      debugLog(`[git-filestation-mobile] preserved conflicted local copy ${path} -> ${copyPath}`);
+      if (!(await this.pathExists(`${WORKDIR}/${path}`))) continue;
+      await this.materializePreservedCopy(path, await this.readMemBytes(`${WORKDIR}/${path}`), result, "conflicted local copy", false);
     }
     if (conflicts.length > 0) result.conflicts.push(...conflicts.filter((p) => !result.conflicts.includes(p)));
   }
 
+  private async materializePreservedCopy(path: string, bytes: Uint8Array, result: SyncResult, label: string, recordConflict: boolean): Promise<boolean> {
+    const existingCopyPath = await this.findExistingConflictCopyWithBytes(path, bytes);
+    if (existingCopyPath) {
+      debugLog(`[git-filestation-mobile] ${label} already preserved ${path} -> ${existingCopyPath}; skipping duplicate`);
+      return false;
+    }
+
+    const copyPath = await conflictCopyPath(path, this.opts.syncIdentityId, bytes);
+    if (await this.pathExists(`${WORKDIR}/${copyPath}`)) {
+      debugLog(`[git-filestation-mobile] ${label} target already exists ${path} -> ${copyPath}; skipping duplicate`);
+      return false;
+    }
+
+    await this.writeMemFile(`${WORKDIR}/${copyPath}`, bytes);
+    await git.add({ fs: this.memfs.client, dir: WORKDIR, filepath: copyPath, cache: this.cache });
+    if (recordConflict && !result.conflicts.includes(path)) result.conflicts.push(path);
+    debugLog(`[git-filestation-mobile] preserved ${label} ${path} -> ${copyPath}`);
+    return true;
+  }
+
+  private async findExistingConflictCopyWithBytes(path: string, bytes: Uint8Array): Promise<string | undefined> {
+    const naming = conflictCopyNaming(path, this.opts.syncIdentityId);
+    const dirAbs = naming.dir ? `${WORKDIR}/${naming.dir}` : WORKDIR;
+    let entries: string[];
+    try {
+      entries = await this.memfs.promises.readdir(dirAbs);
+    } catch {
+      return undefined;
+    }
+
+    for (const entry of entries) {
+      if (!entry.startsWith(naming.prefix) || !entry.endsWith(naming.suffix)) continue;
+      const candidate = naming.dir ? `${naming.dir}/${entry}` : entry;
+      if (candidate === path) continue;
+      try {
+        const stat = await this.memfs.promises.lstat(`${WORKDIR}/${candidate}`);
+        if (!stat.isFile()) continue;
+        const existing = await this.readMemBytes(`${WORKDIR}/${candidate}`);
+        if (bytesEqual(existing, bytes)) return candidate;
+      } catch {
+        continue;
+      }
+    }
+
+    return undefined;
+  }
+
   private async uploadBareRepoMirror(): Promise<void> {
+    await this.assertRemoteRefUnchangedBeforePublish();
     await this.ensureRemoteDirectoryTree();
     const files = await this.listMemFiles(GITDIR);
     for (const abs of files) {
@@ -647,6 +692,27 @@ export class MobileGitFileStationSyncEngine {
       if (shouldSkipRemoteGitFile(rel)) continue;
       const bytes = await this.memfs.promises.readFile(abs);
       await this.fs.upload(joinRemotePath(this.opts.remotePath, dirnameRemotePath(rel)), basenameRemotePath(rel), bytesToArrayBuffer(bytes), true);
+    }
+  }
+
+  private async assertRemoteRefUnchangedBeforePublish(): Promise<void> {
+    const current = await this.readRemoteBranchOidFromFileStation();
+    if (current === this.remoteBranchOidAtDownload) return;
+    throw new Error([
+      `Remote Git ref refs/heads/${this.opts.branch} changed during sync; refusing to publish a stale mirror.`,
+      `expected=${this.remoteBranchOidAtDownload ?? "<missing>"}`,
+      `actual=${current ?? "<missing>"}`,
+      "Retry sync to merge the newer remote state.",
+    ].join(" "));
+  }
+
+  private async readRemoteBranchOidFromFileStation(): Promise<string | undefined> {
+    try {
+      const bytes = new Uint8Array(await this.fs.download(joinRemotePath(this.opts.remotePath, `refs/heads/${this.opts.branch}`)));
+      const text = textDecoder.decode(bytes).trim();
+      return /^[0-9a-f]{40}$/i.test(text) ? text : undefined;
+    } catch {
+      return undefined;
     }
   }
 
@@ -1075,14 +1141,29 @@ function basename(path: string): string {
 }
 
 
-function conflictCopyPath(path: string, syncIdentityId: string): string {
+function conflictCopyNaming(path: string, syncIdentityId: string): { dir: string; prefix: string; suffix: string } {
   const dir = dirnameVaultPath(path);
   const base = basename(path);
   const dot = base.lastIndexOf(".");
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const safeId = syncIdentityId.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "local";
-  const copyBase = dot > 0 ? `${base.slice(0, dot)} (conflict ${safeId} ${stamp})${base.slice(dot)}` : `${base} (conflict ${safeId} ${stamp})`;
+  const prefix = dot > 0 ? `${base.slice(0, dot)} (conflict ${safeId} ` : `${base} (conflict ${safeId} `;
+  const suffix = dot > 0 ? `)${base.slice(dot)}` : ")";
+  return { dir, prefix, suffix };
+}
+
+async function conflictCopyPath(path: string, syncIdentityId: string, bytes: Uint8Array): Promise<string> {
+  const { dir, prefix, suffix } = conflictCopyNaming(path, syncIdentityId);
+  const blobOid = await sha1Hex(wrapGitObject("blob", bytes));
+  const copyBase = `${prefix}${blobOid.slice(0, 12)}${suffix}`;
   return dir ? `${dir}/${copyBase}` : copyBase;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 function dirnameVaultPath(path: string): string {

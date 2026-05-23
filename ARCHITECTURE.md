@@ -63,9 +63,12 @@ Sync operation model:
 - Sync should be smart/incremental. Clients should avoid blindly downloading or uploading the entire repository on every run when safe change detection is available.
 - "Bring enough of the NAS bare repository state onto the device" means the minimum Git objects and refs needed to compute and publish the current sync safely. It does not mean cloning all historical objects when those objects are not needed for the operation.
 - The minimal transport set must be derived from Git object/ref reachability rules and documented Git behavior, not discovered by trial and error. Implementations should be backed by focused research into Git object graph requirements, shallow/partial fetch concepts, pack/object negotiation, ref update safety, and isomorphic-git constraints before optimizing the File Station transfer plan.
-- Change detection may use File Station metadata such as size and modification time, Git object IDs, file hashes, cached manifests, or another reliable fingerprint strategy. Metadata shortcuts must be conservative: if the client cannot prove an object/file is unchanged, it should verify or transfer rather than risk missing data.
-- Publishing order must be objects first, ref last. The final ref update must include an expected-old-ref check while the lease is held.
+- File Station metadata such as size and modification time may be used only as cheap negative checks. Git object IDs are the authoritative identity for Git data. Repacking can change pack file size/mtime while preserving the same reachable object set, so size/mtime must not be treated as proof of equivalence.
+- The File Station lock/lease is advisory until a real-device concurrency test proves a stronger acquire primitive. `CreateFolder(force_parent=false)` and any future rename/move acquire flow must be validated with concurrent clients before correctness depends on it.
+- Lease acquire and lease metadata write are separate File Station operations. The design must specify crash recovery for an empty/ownerless lock directory, or encode enough owner/TTL data in the lock directory name so acquisition and liveness metadata are created together.
+- Publishing order must be objects first, ref last. Before publishing, clients must re-read the NAS branch ref and fail closed if it changed since download. A future final ref update must include an expected-old-ref check while the lease is held; without that, the lease reduces contention but is not the correctness boundary.
 - Releasing the lease is the final step after the ref update succeeds or after a safe abort/rollback path.
+- Preserved conflict-copy names must be stable for the same local content so repeat syncs do not create unbounded duplicate copies. New local content should still get a distinct preserved copy.
 
 ### Non-goals
 

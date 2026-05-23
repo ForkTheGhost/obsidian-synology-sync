@@ -49,6 +49,7 @@ export class GitFileStationSyncEngine {
   private cwd: string;
   private cacheDir: string;
   private remoteCachePath: string;
+  private remoteBranchOidAtDownload: string | undefined;
 
   constructor(vault: Vault, fs: FileStation, opts: GitFileStationSyncOptions) {
     this.vault = vault;
@@ -79,6 +80,7 @@ export class GitFileStationSyncEngine {
 
     const remoteHadCommits = await this.remoteHasCommits();
     const localHadCommits = await this.localHasCommits();
+    this.remoteBranchOidAtDownload = remoteHadCommits ? await this.remoteBranchOidInCache() : undefined;
 
     const invalidRemotePaths = await this.invalidRemotePathsForLocalCheckout();
     if (invalidRemotePaths.length > 0) {
@@ -244,6 +246,16 @@ export class GitFileStationSyncEngine {
     }
   }
 
+  private async remoteBranchOidInCache(): Promise<string | undefined> {
+    try {
+      const r = await git(["--git-dir", this.remoteCachePath, "rev-parse", `refs/heads/${this.opts.branch}`], undefined);
+      const oid = r.stdout.trim();
+      return /^[0-9a-f]{40}$/i.test(oid) ? oid : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async checkoutRemote(result: SyncResult): Promise<void> {
     await git(["fetch", "origin", this.opts.branch], this.cwd);
     const changed = await this.remoteTreeFiles();
@@ -325,12 +337,34 @@ export class GitFileStationSyncEngine {
   }
 
   private async uploadBareRepoMirror(): Promise<void> {
+    await this.assertRemoteRefUnchangedBeforePublish();
     await this.ensureRemoteDirectoryTree();
     const files = listLocalFiles(this.remoteCachePath);
     for (const file of files) {
       const rel = file.relativePath;
       if (shouldSkipRemoteGitFile(rel)) continue;
       await this.fs.upload(joinRemotePath(this.opts.remotePath, dirnameRemotePath(rel)), basenameRemotePath(rel), toArrayBuffer(file.bytes), true);
+    }
+  }
+
+  private async assertRemoteRefUnchangedBeforePublish(): Promise<void> {
+    const current = await this.readRemoteBranchOidFromFileStation();
+    if (current === this.remoteBranchOidAtDownload) return;
+    throw new Error([
+      `Remote Git ref refs/heads/${this.opts.branch} changed during sync; refusing to publish a stale mirror.`,
+      `expected=${this.remoteBranchOidAtDownload ?? "<missing>"}`,
+      `actual=${current ?? "<missing>"}`,
+      "Retry sync to merge the newer remote state.",
+    ].join(" "));
+  }
+
+  private async readRemoteBranchOidFromFileStation(): Promise<string | undefined> {
+    try {
+      const bytes = new Uint8Array(await this.fs.download(joinRemotePath(this.opts.remotePath, `refs/heads/${this.opts.branch}`)));
+      const text = new TextDecoder().decode(bytes).trim();
+      return /^[0-9a-f]{40}$/i.test(text) ? text : undefined;
+    } catch {
+      return undefined;
     }
   }
 
