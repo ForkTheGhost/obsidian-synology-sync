@@ -283,7 +283,12 @@ describe("FileStation", () => {
       return fs;
     }
 
-    it("fails when File Station reports that the folder already exists", async () => {
+    function lastCreateFolderParams(): URLSearchParams {
+      const call = mockedRequestUrl.mock.calls[mockedRequestUrl.mock.calls.length - 1][0] as { url: string };
+      return new URL(call.url).searchParams;
+    }
+
+    it("fails on existing folder without forcing parent creation", async () => {
       const fs = makeFs();
       mockedRequestUrl.mockResolvedValueOnce({
         status: 200,
@@ -291,9 +296,30 @@ describe("FileStation", () => {
       });
 
       await expect(fs.createFolderStrict("/repo.git/.synology-sync/locks", "main.lock")).rejects.toBeInstanceOf(FileStationPathExistsError);
+      expect(mockedRequestUrl).toHaveBeenCalledWith(expect.objectContaining({
+        method: "GET",
+        throw: false,
+      }));
+      const params = lastCreateFolderParams();
+      expect(params.get("force_parent")).toBe("false");
+      expect(params.get("folder_path")).toBe(JSON.stringify(["/repo.git/.synology-sync/locks"]));
+      expect(params.get("name")).toBe(JSON.stringify(["main.lock"]));
     });
 
-    it("preserves legacy createFolder behavior by ignoring already-exists", async () => {
+    it("recognizes nested File Station already-exists detail codes", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        json: { success: false, error: { errors: [{ code: 1100 }] } },
+      });
+
+      await expect(fs.createFolderStrict("/repo.git/.synology-sync/locks", "main.lock")).rejects.toMatchObject({
+        name: "FileStationPathExistsError",
+        code: 1100,
+      });
+    });
+
+    it("preserves legacy createFolder behavior by forcing parents and ignoring already-exists", async () => {
       const fs = makeFs();
       mockedRequestUrl.mockResolvedValueOnce({
         status: 200,
@@ -301,6 +327,8 @@ describe("FileStation", () => {
       });
 
       await expect(fs.createFolder("/repo.git/.synology-sync/locks", "main.lock")).resolves.toBeUndefined();
+      const params = lastCreateFolderParams();
+      expect(params.get("force_parent")).toBe("true");
     });
   });
 

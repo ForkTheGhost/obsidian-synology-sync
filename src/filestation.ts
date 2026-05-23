@@ -74,6 +74,32 @@ function isLikelyHtmlResponse(error: unknown): boolean {
   return /invalid json/i.test(msg) || /unexpected token\s*</i.test(msg) || msg.includes("<!DOCTYPE") || msg.includes("<html");
 }
 
+function firstFileStationErrorCode(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+
+  const record = error as Record<string, unknown>;
+  const code = record.code;
+  if (typeof code === "number") return code;
+  if (typeof code === "string" && /^\d+$/.test(code)) return Number(code);
+
+  for (const value of Object.values(record)) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const nestedCode = firstFileStationErrorCode(item);
+        if (nestedCode !== undefined) return nestedCode;
+      }
+      continue;
+    }
+
+    if (value && typeof value === "object") {
+      const nestedCode = firstFileStationErrorCode(value);
+      if (nestedCode !== undefined) return nestedCode;
+    }
+  }
+
+  return undefined;
+}
+
 async function requestUrlWithTimeout(options: Parameters<typeof requestUrl>[0], timeoutMs: number, label: string): Promise<RequestUrlResponse> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -586,8 +612,10 @@ export class FileStation {
     await this.createFolderInternal(folderPath, name, true, false);
   }
 
-  async createFolderStrict(folderPath: string, name: string, forceParent: boolean = true): Promise<void> {
-    await this.createFolderInternal(folderPath, name, forceParent, true);
+  async createFolderStrict(folderPath: string, name: string): Promise<void> {
+    // Strict creation is intended for lock acquisition. Callers must create the
+    // parent directory separately so an existing target folder remains an error.
+    await this.createFolderInternal(folderPath, name, false, true);
   }
 
   private async createFolderInternal(folderPath: string, name: string, forceParent: boolean, failIfExists: boolean): Promise<void> {
@@ -601,9 +629,10 @@ export class FileStation {
         force_parent: forceParent ? "true" : "false",
       }),
       method: "GET",
+      throw: false,
     });
     const cfData = this.parseJson(resp, failIfExists ? "createFolderStrict" : "createFolder");
-    const errCode = cfData.error?.code;
+    const errCode = firstFileStationErrorCode(cfData.error);
     const alreadyExists = errCode === 1100 || errCode === 414;
     if (!cfData.success && alreadyExists && failIfExists) {
       throw new FileStationPathExistsError(`createFolderStrict failed because ${folderPath}/${name} already exists`, errCode);
