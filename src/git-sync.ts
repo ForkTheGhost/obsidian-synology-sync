@@ -60,6 +60,7 @@ class GitCommandError extends Error {
 }
 
 export { DEFAULT_GIT_EXCLUDES, OBSIDIAN_CONFIG_SYNC_POLICY, buildGitExcludes } from "./git-excludes";
+import type { ObsidianConfigSyncPolicy } from "./git-excludes";
 export type { ObsidianConfigOptIns, ObsidianConfigSyncPolicy } from "./git-excludes";
 
 export function describeObsidianConfigPolicy(policy: ObsidianConfigSyncPolicy): string {

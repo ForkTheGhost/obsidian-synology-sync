@@ -1,5 +1,6 @@
 import { TFile, TFolder, Vault } from "obsidian";
 import { FileStation } from "./filestation";
+import { withFileStationGitLease } from "./git-filestation-lease";
 import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
 import { buildGitExcludes, classifyGitConflict, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError } from "./git-sync";
@@ -18,6 +19,8 @@ export interface MobileGitFileStationSyncOptions {
   syncIdentityId: string;
   authorName: string;
   authorEmail: string;
+  configPolicy?: import("./git-excludes").ObsidianConfigSyncPolicy;
+  configOptIns?: import("./git-excludes").ObsidianConfigOptIns;
 }
 
 type FsData = Uint8Array;
@@ -36,7 +39,6 @@ type FsNode =
   | { type: "dir"; children: Map<string, FsNode>; mtimeMs: number; ctimeMs: number; mode: number }
   | { type: "file"; data: FsData; mtimeMs: number; ctimeMs: number; mode: number };
 
-const DEFAULT_GIT_EXCLUDES = buildGitExcludes();
 const WORKDIR = "/vault";
 const GITDIR = "/vault/.git";
 const textEncoder = new TextEncoder();
@@ -56,6 +58,7 @@ export class MobileGitFileStationSyncEngine {
   private opts: MobileGitFileStationSyncOptions;
   private memfs = new MemoryFs();
   private cache: Record<string, unknown> = {};
+  private gitExcludes: string[];
 
   constructor(vault: Vault, fs: FileStation, opts: MobileGitFileStationSyncOptions) {
     this.vault = vault;
@@ -67,6 +70,7 @@ export class MobileGitFileStationSyncEngine {
       authorName: opts.authorName.trim() || "Obsidian Synology Sync",
       authorEmail: opts.authorEmail.trim() || "synology-sync@local",
     };
+    this.gitExcludes = buildGitExcludes(this.opts.configPolicy, this.opts.configOptIns);
   }
 
   async sync(): Promise<SyncResult> {
@@ -145,8 +149,7 @@ export class MobileGitFileStationSyncEngine {
         await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(initialLocalFiles, result));
         if (result.conflicts.length > 0) {
           await this.runPhase("commit local conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
-          await this.runPhase("push local branch", () => this.pushWithRetry());
-          await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
+          await this.runPhase("publish with lease", () => this.publishWithLease());
         }
       }
       return result;
@@ -190,9 +193,8 @@ export class MobileGitFileStationSyncEngine {
       await this.runPhase("materialize pre-merge local copies", () => this.materializePreMergeLocalCopies(preMergeLocalChanged, beforeSnapshot, result));
       if (preMergeLocalChanged.size > 0) await this.runPhase("commit conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
     }
-    await this.runPhase("push local branch", () => this.pushWithRetry());
+    await this.runPhase("publish with lease", () => this.publishWithLease());
     await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
-    await this.runPhase("upload bare repo mirror", () => this.uploadBareRepoMirror());
     return result;
   }
 
@@ -378,7 +380,7 @@ export class MobileGitFileStationSyncEngine {
     return this.vault.getFiles().some((file) => {
       if (!(file instanceof TFile)) return false;
       if (file.path.startsWith(".obsidian/")) return false;
-      if (isGitIgnoredPath(file.path, DEFAULT_GIT_EXCLUDES)) return false;
+      if (isGitIgnoredPath(file.path, this.gitExcludes)) return false;
       return true;
     });
   }
@@ -574,20 +576,53 @@ export class MobileGitFileStationSyncEngine {
       .sort();
   }
 
-  private async pushWithRetry(): Promise<void> {
+  private async publishWithLease(): Promise<void> {
+    const expectedOldRef = await this.remoteRefOid();
+    await withFileStationGitLease(this.fs, {
+      remotePath: this.opts.remotePath,
+      branch: this.opts.branch,
+      owner: this.opts.syncIdentityId,
+      expectedOldRef,
+    }, async () => {
+      const afterLockRef = await this.remoteRefOid();
+      if (afterLockRef !== expectedOldRef) {
+        throw new Error(`Remote ref changed while acquiring lease for ${this.opts.branch}; aborting so the next sync can fetch and merge safely.`);
+      }
+      await this.pushWithRetry(expectedOldRef);
+      await this.uploadBareRepoMirror();
+    });
+  }
+
+  private async pushWithRetry(expectedOldRef?: string): Promise<void> {
     try {
-      await this.copyLocalBranchToRemote();
+      await this.copyLocalBranchToRemote(expectedOldRef);
     } catch (e) {
       debugLog(`[git-filestation-mobile] push failed, retrying merge once: ${(e as Error).message}`);
       await this.mergeRemote(false);
       const conflicts = await this.unmergedFiles();
       if (conflicts.length > 0) throw new Error("Push retry found merge conflicts; resolve them and sync again.");
-      await this.copyLocalBranchToRemote();
+      await this.copyLocalBranchToRemote(expectedOldRef);
     }
   }
 
-  private async copyLocalBranchToRemote(): Promise<void> {
+  private async remoteRefOid(): Promise<string | undefined> {
+    try {
+      return await git.resolveRef({ fs: this.memfs.client, gitdir: GITDIR, ref: `refs/heads/${this.opts.branch}` });
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async copyLocalBranchToRemote(expectedOldRef?: string): Promise<void> {
+    const currentRemote = await this.remoteRefOid();
+    if (currentRemote !== expectedOldRef) {
+      throw new Error(`Expected old remote ref ${expectedOldRef || "<none>"} but found ${currentRemote || "<none>"}; refusing to overwrite ${this.opts.branch}.`);
+    }
     const oid = await git.resolveRef({ fs: this.memfs.client, dir: WORKDIR, ref: "HEAD" });
+    // Mobile/File Station cannot perform an atomic conditional ref write on the
+    // NAS. The advisory lease plus this in-memory expected-old-ref check is the
+    // strongest safe boundary available until a real File Station CAS primitive
+    // is validated; if the downloaded remote ref changed in our cache, abort.
     await this.writeMemText(`${GITDIR}/refs/heads/${this.opts.branch}`, `${oid}\n`);
   }
 
@@ -686,7 +721,7 @@ export class MobileGitFileStationSyncEngine {
       .map((file) => file.path)
       .filter((path) => /(^|\/)\.git(\/|$)/.test(path))
       .map((path) => path.replace(/\/.git(\/.*)?$/, ""))
-      .filter((path) => path && !isGitIgnoredPath(path, DEFAULT_GIT_EXCLUDES));
+      .filter((path) => path && !isGitIgnoredPath(path, this.gitExcludes));
     return Array.from(new Set(found)).sort();
   }
 
@@ -802,14 +837,14 @@ export class MobileGitFileStationSyncEngine {
     const path = `${GITDIR}/info/exclude`;
     const prior = await this.readMemText(path).catch(() => "");
     const lines = prior.split(/\r?\n/);
-    const missing = DEFAULT_GIT_EXCLUDES.filter((line) => !lines.includes(line));
+    const missing = this.gitExcludes.filter((line) => !lines.includes(line));
     if (missing.length > 0) {
       await this.writeMemText(path, `${prior}${prior.endsWith("\n") || prior.length === 0 ? "" : "\n"}${missing.join("\n")}\n`);
     }
   }
 
   private isExcluded(path: string): boolean {
-    return path.startsWith(".git/") || isGitIgnoredPath(path, DEFAULT_GIT_EXCLUDES);
+    return path.startsWith(".git/") || isGitIgnoredPath(path, this.gitExcludes);
   }
 
   private async listWorkdirFiles(): Promise<string[]> {
@@ -1083,7 +1118,7 @@ function relativeRemotePath(base: string, path: string): string {
 
 
 function shouldSkipRemoteGitFile(path: string): boolean {
-  return path === "config" || path === "description" || path.endsWith(".lock") || path.startsWith("hooks/");
+  return path === "config" || path === "description" || path.endsWith(".lock") || path.startsWith("hooks/") || path.startsWith(".synology-sync/");
 }
 
 function basename(path: string): string {

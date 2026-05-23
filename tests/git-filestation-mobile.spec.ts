@@ -15,6 +15,8 @@ describe("MobileGitFileStationSyncEngine", () => {
         throw new Error("remote missing");
       }),
       createFolder: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
       upload: jest.fn(async (destFolder: string, fileName: string, bytes: ArrayBuffer) => {
         uploads.push({ destFolder, fileName, bytes });
       }),

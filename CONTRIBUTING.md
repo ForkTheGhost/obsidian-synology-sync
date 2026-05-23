@@ -56,3 +56,8 @@ One or two sentences describing what changed and why.
 Types: `feat`, `fix`, `docs`, `chore`, `decision`.
 
 `decision` entries document architectural or policy choices with no direct code change; preserve them long-term.
+
+
+## Review gate and smoke vault
+
+Run `npm run check` before opening a PR. For manual Obsidian validation, run `npm run smoke:vault -- /tmp/obsidian-synology-sync-smoke-vault`, open that disposable vault, enable the copied plugin, and test only against disposable NAS folders/repos. See `docs/SMOKE-VAULT.md`.
