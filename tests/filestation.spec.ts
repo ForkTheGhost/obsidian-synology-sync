@@ -356,9 +356,12 @@ describe("FileStation", () => {
       expect((err as FileStationApiError).code).toBe(119);
     });
 
-    it("does not treat unrelated nested code properties as the FileStation error code", async () => {
+    it("does not treat unrelated nested `code` properties as the FileStation error code", async () => {
       const fs = makeFs();
-      // The extractor intentionally only walks error.code and error.errors[].code.
+      // A future response shape might include a `code` inside an unrelated
+      // metadata field. The tightened extractor must only walk
+      // `error.code` and `error.errors[].code`, so this is a generic failure
+      // — not an already-exists.
       mockedRequestUrl.mockResolvedValueOnce({
         status: 200,
         json: { success: false, error: { code: 400, metadata: { code: 1100 } } },
