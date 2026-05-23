@@ -232,6 +232,32 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect((engine as unknown as { hiddenSystemVaultFilesAtStart: (paths: string[]) => string[] }).hiddenSystemVaultFilesAtStart([".obsidian/app.json", "note.md"])).toEqual([]);
   });
 
+  it("does not create conflict copies when pre-sync local bytes already match materialized remote bytes", async () => {
+    const vault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
+    const fs = { listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }), createFolder: jest.fn(async () => undefined), upload: jest.fn(async () => undefined) };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git", branch: "main", syncIdentityId: "ios-device", authorName: "Obsidian Synology Sync", authorEmail: "synology-sync@local",
+    });
+    const exposed = engine as unknown as {
+      memfs: { promises: { mkdir: (path: string, options?: { recursive?: boolean }) => Promise<void>; writeFile: (path: string, data: Uint8Array) => Promise<void>; readdir: (path: string) => Promise<string[]> } };
+      snapshotInitialLocalFileBytes: (paths: string[]) => Promise<Map<string, Uint8Array>>;
+      materializeInitialLocalCopies: (initialFiles: Map<string, Uint8Array>, result: { conflicts: string[] }) => Promise<void>;
+    };
+    await exposed.memfs.promises.mkdir("/vault/Folder", { recursive: true });
+    await exposed.memfs.promises.writeFile("/vault/Folder/note.md", new TextEncoder().encode("same remote bytes"));
+    const initial = await exposed.snapshotInitialLocalFileBytes(["Folder/note.md"]);
+
+    // Simulate checkout/materialization writing the same remote bytes back to the normal path.
+    await exposed.memfs.promises.writeFile("/vault/Folder/note.md", new TextEncoder().encode("same remote bytes"));
+
+    const result = { conflicts: [] as string[] };
+    await exposed.materializeInitialLocalCopies(initial, result);
+
+    const entries = await exposed.memfs.promises.readdir("/vault/Folder");
+    expect(entries.some((name) => /conflict ios-device/.test(name))).toBe(false);
+    expect(result.conflicts).toEqual([]);
+  });
+
   it("preserves original local bytes when non-empty first-pull path collides with remote", async () => {
     const vault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
     const fs = { listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }), createFolder: jest.fn(async () => undefined), upload: jest.fn(async () => undefined) };
