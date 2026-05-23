@@ -306,11 +306,11 @@ describe("FileStation", () => {
       expect(params.get("name")).toBe(JSON.stringify(["main.lock"]));
     });
 
-    it("recognizes nested File Station already-exists detail codes", async () => {
+    it("recognizes nested File Station already-exists detail codes under generic errors", async () => {
       const fs = makeFs();
       mockedRequestUrl.mockResolvedValueOnce({
         status: 200,
-        json: { success: false, error: { errors: [{ code: 1100 }] } },
+        json: { success: false, error: { code: 400, errors: [{ code: 1100 }] } },
       });
 
       await expect(fs.createFolderStrict("/repo.git/.synology-sync/locks", "main.lock")).rejects.toMatchObject({
