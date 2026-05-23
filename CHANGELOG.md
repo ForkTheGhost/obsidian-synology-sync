@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Git-over-File-Station preserved conflict copies are now content-stable, so repeated unchanged syncs do not create a new timestamped copy each run while new local content still gets a distinct preserved copy.
+- Git-over-File-Station publish now re-reads the NAS branch ref while holding the File Station lease and explicitly uploads Git objects before branch refs.
+
 ## 2026.0514.2
 
 ### Fixed

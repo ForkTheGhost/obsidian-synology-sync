@@ -319,6 +319,10 @@ export class GitFileStationSyncEngine {
       owner: this.opts.syncIdentityId,
       expectedOldRef,
     }, async () => {
+      const nasRef = await this.readRemoteBranchOidFromFileStation();
+      if (nasRef !== expectedOldRef) {
+        throw new Error(`Remote ref changed on File Station for ${this.opts.branch}; expected ${expectedOldRef || "<none>"} but found ${nasRef || "<none>"}. Retry sync to fetch and merge safely.`);
+      }
       const afterLockRef = await this.remoteRefOid();
       if (afterLockRef !== expectedOldRef) {
         throw new Error(`Remote ref changed while acquiring lease for ${this.opts.branch}; aborting so the next sync can fetch and merge safely.`);
@@ -332,6 +336,16 @@ export class GitFileStationSyncEngine {
     try {
       const r = await git(["--git-dir", this.remoteCachePath, "rev-parse", "--verify", `refs/heads/${this.opts.branch}`], undefined);
       return r.stdout.trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async readRemoteBranchOidFromFileStation(): Promise<string | undefined> {
+    try {
+      const bytes = new Uint8Array(await this.fs.download(joinRemotePath(this.opts.remotePath, `refs/heads/${this.opts.branch}`)));
+      const text = new TextDecoder().decode(bytes).trim();
+      return /^[0-9a-f]{40}$/i.test(text) ? text : undefined;
     } catch {
       return undefined;
     }
@@ -365,10 +379,11 @@ export class GitFileStationSyncEngine {
 
   private async uploadBareRepoMirror(): Promise<void> {
     await this.ensureRemoteDirectoryTree();
-    const files = listLocalFiles(this.remoteCachePath);
+    const files = listLocalFiles(this.remoteCachePath)
+      .filter((file) => !shouldSkipRemoteGitFile(file.relativePath))
+      .sort((a, b) => compareGitMirrorPublishPath(a.relativePath, b.relativePath, this.opts.branch));
     for (const file of files) {
       const rel = file.relativePath;
-      if (shouldSkipRemoteGitFile(rel)) continue;
       await this.fs.upload(joinRemotePath(this.opts.remotePath, dirnameRemotePath(rel)), basenameRemotePath(rel), toArrayBuffer(file.bytes), true);
     }
   }
@@ -555,6 +570,16 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 
 function shouldSkipRemoteGitFile(path: string): boolean {
   return path === "config" || path === "description" || path.endsWith(".lock") || path.startsWith("hooks/") || path.startsWith(".synology-sync/");
+}
+
+function compareGitMirrorPublishPath(a: string, b: string, branch: string): number {
+  const rank = (path: string): number => {
+    if (path === `refs/heads/${branch}`) return 3;
+    if (path.startsWith("refs/")) return 2;
+    if (path === "HEAD") return 1;
+    return 0;
+  };
+  return rank(a) - rank(b) || a.localeCompare(b);
 }
 
 function normalizeRemotePath(path: string): string {
