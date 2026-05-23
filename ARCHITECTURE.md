@@ -64,8 +64,9 @@ Sync operation model:
 - "Bring enough of the NAS bare repository state onto the device" means the minimum Git objects and refs needed to compute and publish the current sync safely. It does not mean cloning all historical objects when those objects are not needed for the operation.
 - The minimal transport set must be derived from Git object/ref reachability rules and documented Git behavior, not discovered by trial and error. Implementations should be backed by focused research into Git object graph requirements, shallow/partial fetch concepts, pack/object negotiation, ref update safety, and isomorphic-git constraints before optimizing the File Station transfer plan.
 - Change detection may use File Station metadata such as size and modification time, Git object IDs, file hashes, cached manifests, or another reliable fingerprint strategy. Metadata shortcuts must be conservative: if the client cannot prove an object/file is unchanged, it should verify or transfer rather than risk missing data.
-- Publishing order must be objects first, ref last. The final ref update must include an expected-old-ref check while the lease is held.
+- Publishing order must be objects first, ref last. The final ref update must include an expected-old-ref check while the lease is held, and clients must re-read the NAS branch ref before publishing so stale mirrors fail closed.
 - Releasing the lease is the final step after the ref update succeeds or after a safe abort/rollback path.
+- Preserved conflict-copy names must be stable for the same local content so repeat syncs do not create unbounded duplicate copies. New local content should still get a distinct preserved copy.
 
 ### Non-goals
 
