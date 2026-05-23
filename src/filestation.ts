@@ -33,6 +33,23 @@ export interface LoginResult {
   deviceToken?: string; // returned on first OTP login; save this for future logins
 }
 
+export class FileStationApiError extends Error {
+  code?: number;
+
+  constructor(message: string, code?: number) {
+    super(message);
+    this.name = "FileStationApiError";
+    this.code = code;
+  }
+}
+
+export class FileStationPathExistsError extends FileStationApiError {
+  constructor(message: string, code?: number) {
+    super(message, code);
+    this.name = "FileStationPathExistsError";
+  }
+}
+
 export type AuthPhase = "resolve_candidates" | "select_endpoint" | "start_login" | "classify_response" | "retry_without_token" | "prompt_otp" | "persist_replacement_token" | "repair_relay_session" | "fail";
 export type AuthEndpointKind = "direct" | "relay" | "manual" | "unknown";
 export type AuthResponseKind = "dsm_json_success" | "dsm_json_error" | "timeout" | "html_portal" | "network_error" | "unexpected_response";
@@ -62,6 +79,39 @@ const LOGIN_TIMEOUT_MS = 10000;
 function isLikelyHtmlResponse(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return /invalid json/i.test(msg) || /unexpected token\s*</i.test(msg) || msg.includes("<!DOCTYPE") || msg.includes("<html");
+}
+
+// DSM File Station errors use a documented top-level `error.code` and, for
+// batch operations, per-item details under `error.errors[].code`. Walk only
+// those paths so unrelated nested `code` fields cannot be mistaken for the
+// operation error.
+function toNumericCode(value: unknown): number | undefined {
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+  return undefined;
+}
+
+function findFileStationErrorCode(error: unknown, matches?: (code: number) => boolean): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+
+  const record = error as Record<string, unknown>;
+  const topCode = toNumericCode(record.code);
+  const nestedCodes: number[] = [];
+  if (Array.isArray(record.errors)) {
+    for (const item of record.errors) {
+      if (item && typeof item === "object") {
+        const code = toNumericCode((item as Record<string, unknown>).code);
+        if (code !== undefined) nestedCodes.push(code);
+      }
+    }
+  }
+
+  if (matches) {
+    if (topCode !== undefined && matches(topCode)) return topCode;
+    return nestedCodes.find(matches);
+  }
+
+  return topCode ?? nestedCodes[0];
 }
 
 async function requestUrlWithTimeout(options: Parameters<typeof requestUrl>[0], timeoutMs: number, label: string): Promise<RequestUrlResponse> {
@@ -573,6 +623,22 @@ export class FileStation {
   }
 
   async createFolder(folderPath: string, name: string): Promise<void> {
+    await this.createFolderInternal(folderPath, name, true, false);
+  }
+
+  // Strict create-if-absent intended as the lock-acquire primitive for the
+  // Git-backed File Station write path. Atomicity is assumed to be provided by
+  // DSM serializing concurrent CreateFolder calls with force_parent=false; this
+  // assumption is not yet validated by a multi-writer concurrency test, and the
+  // lease layer built on top must not treat it as a guarantee. Callers must
+  // ensure the parent directory exists separately so lock contention can be told
+  // apart from a missing lock directory via FileStationApiError.code.
+  async createFolderStrict(folderPath: string, name: string): Promise<void> {
+    await this.createFolderInternal(folderPath, name, false, true);
+  }
+
+  private async createFolderInternal(folderPath: string, name: string, forceParent: boolean, failIfExists: boolean): Promise<void> {
+    const label = failIfExists ? "createFolderStrict" : "createFolder";
     const resp = await requestUrl({
       url: this.url("", {
         api: "SYNO.FileStation.CreateFolder",
@@ -580,16 +646,27 @@ export class FileStation {
         method: "create",
         folder_path: JSON.stringify([folderPath]),
         name: JSON.stringify([name]),
-        force_parent: "true",
+        force_parent: forceParent ? "true" : "false",
       }),
       method: "GET",
+      throw: false,
     });
-    // Ignore "already exists" (1100) and "folder exists" (414) errors
-    const cfData = this.parseJson(resp, "createFolder");
-    const errCode = cfData.error?.code;
-    if (!cfData.success && errCode !== 1100 && errCode !== 414) {
-      throw new Error(`createFolder failed: ${JSON.stringify(cfData.error)}`);
+    const cfData = this.parseJson(resp, label);
+    if (cfData.success) return;
+
+    const errCode = findFileStationErrorCode(cfData.error, (code) => code === 1100 || code === 414);
+    const alreadyExists = errCode === 1100 || errCode === 414;
+    if (alreadyExists) {
+      if (failIfExists) {
+        throw new FileStationPathExistsError(`${label} failed because ${folderPath}/${name} already exists`, errCode);
+      }
+      // Legacy idempotent path: ignore "already exists" (1100) / "folder
+      // exists" (414) for non-strict callers.
+      return;
     }
+
+    const failureCode = findFileStationErrorCode(cfData.error);
+    throw new FileStationApiError(`${label} failed: ${JSON.stringify(cfData.error)}`, failureCode);
   }
 
   async delete(path: string): Promise<void> {

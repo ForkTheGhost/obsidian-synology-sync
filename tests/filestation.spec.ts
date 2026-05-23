@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { FileStation } from "../src/filestation";
+import { FileStation, FileStationApiError, FileStationPathExistsError } from "../src/filestation";
 
 const mockedRequestUrl = requestUrl as jest.Mock;
 
@@ -273,6 +273,101 @@ describe("FileStation", () => {
       });
 
       await expect(fs.listFolder("/root")).rejects.toThrow(/NAS returned an HTML page/);
+    });
+  });
+
+  describe("createFolderStrict", () => {
+    function makeFs(): FileStation {
+      const fs = new FileStation({ baseUrl: "https://nas.local:5001", username: "u", password: "p" });
+      (fs as unknown as { sid: string }).sid = "test-sid";
+      return fs;
+    }
+
+    function lastCreateFolderParams(): URLSearchParams {
+      const call = mockedRequestUrl.mock.calls[mockedRequestUrl.mock.calls.length - 1][0] as { url: string };
+      return new URL(call.url).searchParams;
+    }
+
+    it("fails on existing folder without forcing parent creation", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        json: { success: false, error: { code: 414 } },
+      });
+
+      await expect(fs.createFolderStrict("/repo.git/.synology-sync/locks", "main.lock")).rejects.toBeInstanceOf(FileStationPathExistsError);
+      expect(mockedRequestUrl).toHaveBeenCalledWith(expect.objectContaining({
+        method: "GET",
+        throw: false,
+      }));
+      const params = lastCreateFolderParams();
+      expect(params.get("force_parent")).toBe("false");
+      expect(params.get("folder_path")).toBe(JSON.stringify(["/repo.git/.synology-sync/locks"]));
+      expect(params.get("name")).toBe(JSON.stringify(["main.lock"]));
+    });
+
+    it("recognizes nested File Station already-exists detail codes under generic errors", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        json: { success: false, error: { code: 400, errors: [{ code: 1100 }] } },
+      });
+
+      await expect(fs.createFolderStrict("/repo.git/.synology-sync/locks", "main.lock")).rejects.toMatchObject({
+        name: "FileStationPathExistsError",
+        code: 1100,
+      });
+    });
+
+    it("preserves legacy createFolder behavior by forcing parents and ignoring already-exists", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        json: { success: false, error: { code: 414 } },
+      });
+
+      await expect(fs.createFolder("/repo.git/.synology-sync/locks", "main.lock")).resolves.toBeUndefined();
+      const params = lastCreateFolderParams();
+      expect(params.get("force_parent")).toBe("true");
+    });
+
+    it("throws FileStationApiError (not PathExists) when the parent directory is missing", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        json: { success: false, error: { code: 408 } },
+      });
+
+      const err = await fs.createFolderStrict("/missing/locks", "main.lock").catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(FileStationApiError);
+      expect(err).not.toBeInstanceOf(FileStationPathExistsError);
+      expect((err as FileStationApiError).code).toBe(408);
+    });
+
+    it("throws FileStationApiError with the surfaced code for other failure modes", async () => {
+      const fs = makeFs();
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        json: { success: false, error: { code: 119 } }, // 119 = sid expired
+      });
+
+      const err = await fs.createFolderStrict("/repo.git/.synology-sync/locks", "main.lock").catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(FileStationApiError);
+      expect((err as FileStationApiError).code).toBe(119);
+    });
+
+    it("does not treat unrelated nested code properties as the FileStation error code", async () => {
+      const fs = makeFs();
+      // The extractor intentionally only walks error.code and error.errors[].code.
+      mockedRequestUrl.mockResolvedValueOnce({
+        status: 200,
+        json: { success: false, error: { code: 400, metadata: { code: 1100 } } },
+      });
+
+      const err = await fs.createFolderStrict("/repo.git/.synology-sync/locks", "main.lock").catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(FileStationApiError);
+      expect(err).not.toBeInstanceOf(FileStationPathExistsError);
+      expect((err as FileStationApiError).code).toBe(400);
     });
   });
 
