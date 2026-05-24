@@ -6,7 +6,7 @@ This plugin supports File Station connections via QuickConnect or a direct Synol
 
 ## Sync modes
 
-### Simple file sync (single user)
+### Simple File Sync (Single User)
 
 Simple file sync uses Synology File Station as a file API for a human-readable NAS folder.
 
@@ -149,11 +149,11 @@ This plugin is not a general-purpose Git client and should not grow a separate f
 
 The settings UI should make the choice explicit with a Sync mode selector:
 
-- Simple file sync (single user) shows Remote folder path.
+- Simple File Sync (Single User) shows Remote folder path.
 - Git-bare-backed Sync shows NAS bare Git repo path.
 The settings UI should not present non-File-Station Git remotes as a primary sync mode.
 
-Remote folder path belongs only to Simple file sync. Git-bare-backed Sync mode must not require or imply it.
+Remote folder path belongs only to Simple File Sync (Single User). Git-bare-backed Sync mode must not require or imply it.
 
 ## Runtime and platform diagnostics
 
