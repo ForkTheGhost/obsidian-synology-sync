@@ -1,6 +1,6 @@
 # Architecture
 
-This plugin supports File Station connections via QuickConnect or a direct Synology address, with two intentionally different sync architectures layered on top: simple file sync or Git-backed sync over File Station. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync.
+This plugin supports File Station connections via QuickConnect or a direct Synology address, with two intentionally different sync architectures layered on top: simple file sync or Git-bare-backed Sync. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync.
 
 `README.md` is the user-facing explanation of this architecture. It should explain the sync-mode choice in simple terms, so a non-developer can decide which option to check and understand how that choice affects where their readable notes live. Build, test, and contribution instructions belong in `CONTRIBUTING.md`, not the README.
 
@@ -22,9 +22,9 @@ Behavior:
 - This is the default and mobile-friendly mode.
 - This mode is intended for single-user or simple workflows.
 
-### Git-backed sync over File Station / QuickConnect
+### Git-bare-backed Sync
 
-Git-backed File Station sync uses File Station/QuickConnect as the transport for a bare Git repository stored on the NAS.
+Git-bare-backed Sync uses File Station/QuickConnect as the transport for a bare Git repository stored on the NAS.
 
 Required configuration:
 
@@ -61,7 +61,7 @@ Bootstrap requirements:
 Sync operation model:
 
 - File Station is not Git protocol. The safe mental model is: bring enough of the NAS bare repository state onto the device, perform Git operations locally against the device vault/cache, then publish the resulting repository objects/ref update back to Synology through File Station.
-- Every Git-backed File Station sync that may write remote state must use the lock/lease protocol. The lease is not optional background protection; it is part of the write path.
+- Every Git-bare-backed Sync that may write remote state must use the lock/lease protocol. The lease is not optional background protection; it is part of the write path.
 - Any pre-lock listing must be limited to non-authoritative UI/preflight readiness only. Sync-authoritative NAS ref reads and object fetches happen after the lock/lease is acquired; cache reuse must fail closed if post-lock verification cannot prove the required objects match the locked NAS ref.
 - Local Git operations may use a persistent cache when available, but cache reuse must not skip remote ref verification under the lease.
 - Sync should be smart/incremental. Clients should avoid blindly downloading or uploading the entire repository on every run when safe change detection is available.
@@ -72,9 +72,9 @@ Sync operation model:
 - Releasing the lease is the final step after the ref update succeeds or after a safe abort/rollback path.
 - Preserved conflict-copy names must be stable for the same local content so repeat syncs do not create unbounded duplicate copies. New local content should still get a distinct preserved copy.
 
-#### Git-backed File Station sync flow
+#### Git-bare-backed Sync flow
 
-The Git-backed File Station flow has four distinct jobs: acquire the NAS sync lease, read/fetch remote Git refs and required objects from Synology into the Git cache, reconcile the local vault snapshot against that state, and publish any resulting Git commit back to the NAS bare repository before releasing the lease. Reading remote Git state must not materialize or check out remote files into the readable vault before the local vault snapshot. A successful mobile/local-write sync must include all four when local notes changed.
+The Git-bare-backed Sync flow has four distinct jobs: acquire the NAS sync lease, read/fetch remote Git refs and required objects from Synology into the Git cache, reconcile the local vault snapshot against that state, and publish any resulting Git commit back to the NAS bare repository before releasing the lease. Reading remote Git state must not materialize or check out remote files into the readable vault before the local vault snapshot. A successful mobile/local-write sync must include all four when local notes changed.
 
 ```mermaid
 flowchart LR
@@ -116,7 +116,7 @@ Operational sequence:
 - **Step 5: Compare local snapshot vs remote tree/index/cache.** Decide local-only, remote-only, changed, unchanged, or conflict using the pre-materialization local snapshot and the remote Git state.
 - **Step 6: Materialize remote-only changes.** Remote-only changes are not no-ops. They must be applied to the readable vault under the held lock/lease, then the lock may be released.
 - **Step 7: For local writes, commit locally, upload objects first, then update the NAS branch ref only if expected-old-ref still matches.** Publishing is not complete until the local change is staged/committed, the local ref/cache is updated, new objects are present in the NAS bare repository, and the NAS branch ref update succeeds while the lock is held.
-- **Step 8: Use Git-backed conflict handling when both sides changed.** Preserve stable conflict copies only when local bytes differ from the remote/tree result; do not create repeat copies for identical content.
+- **Step 8: Use Git-bare-backed Sync conflict handling when both sides changed.** Preserve stable conflict copies only when local bytes differ from the remote/tree result; do not create repeat copies for identical content.
 - **Step 9: Release the lock last.** The remote branch ref update, remote-only materialization, no-op verification, or safe abort determines when the lock can be released.
 
 Direct UNC or `/mnt` writes to the bare repo are admin/developer operations, not the supported user sync path. They must use the same lease and expected-old-ref discipline. A pre-push hook can be a helpful guardrail for those tools, but hooks are advisory and cannot replace the plugin's lease/ref safety.
@@ -143,17 +143,17 @@ Important invariant: after remote checkout/materialization, mere path existence 
 
 ### Non-goals
 
-This plugin is not a general-purpose Git client and should not grow a separate first-class path for non-File-Station Git remotes. Existing Obsidian Git plugins already serve normal Git remotes well. The Git-backed mode here exists specifically to use Synology File Station / QuickConnect as the transport.
+This plugin is not a general-purpose Git client and should not grow a separate first-class path for non-File-Station Git remotes. Existing Obsidian Git plugins already serve normal Git remotes well. The Git-bare-backed Sync mode here exists specifically to use Synology File Station / QuickConnect as the transport.
 
 ## Settings UI contract
 
 The settings UI should make the choice explicit with a Sync mode selector:
 
 - Simple file sync (single user) shows Remote folder path.
-- Git-backed sync over File Station / QuickConnect shows NAS bare Git repo path.
+- Git-bare-backed Sync shows NAS bare Git repo path.
 The settings UI should not present non-File-Station Git remotes as a primary sync mode.
 
-Remote folder path belongs only to Simple file sync. Git-backed File Station mode must not require or imply it.
+Remote folder path belongs only to Simple file sync. Git-bare-backed Sync mode must not require or imply it.
 
 ## Runtime and platform diagnostics
 
@@ -215,7 +215,7 @@ Design invariant:
 
 ## Git safety checks
 
-Git-backed modes must preflight unsafe local checkout conditions before staging or merging.
+Git-bare-backed Sync modes must preflight unsafe local checkout conditions before staging or merging.
 
 Required checks include:
 
@@ -227,7 +227,7 @@ Failures should be actionable errors, not raw Git crashes.
 
 ## Obsidian config policy
 
-Git-backed sync should protect volatile Obsidian configuration by default. Default excludes/policies should avoid syncing transient workspace/plugin state unless the user explicitly chooses a broader policy.
+Git-bare-backed Sync should protect volatile Obsidian configuration by default. Default excludes/policies should avoid syncing transient workspace/plugin state unless the user explicitly chooses a broader policy.
 
 The default policy is notes-oriented and should avoid surprising multi-device config churn.
 
@@ -267,7 +267,7 @@ Design constraints:
 
 ## File Station Git safety implementation notes
 
-Git-Backed Sync over File Station treats the NAS path as a bare Git repository transported through File Station, not as Git protocol.
+Git-bare-backed Sync treats the NAS path as a bare Git repository transported through File Station, not as Git protocol.
 
 ### Lease and ref safety
 
