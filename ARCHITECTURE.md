@@ -1,6 +1,6 @@
 # Architecture
 
-This plugin supports File Station connections via QuickConnect or a direct Synology address, with two intentionally different sync architectures layered on top: simple file sync or Git-bare-backed Sync. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync.
+This plugin supports File Station connections via QuickConnect or a direct Synology address, with two intentionally different sync architectures layered on top: Simple File Sync (Single User) or Git-bare-backed Sync. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync.
 
 `README.md` is the user-facing explanation of this architecture. It should explain the sync-mode choice in simple terms, so a non-developer can decide which option to check and understand how that choice affects where their readable notes live. Build, test, and contribution instructions belong in `CONTRIBUTING.md`, not the README.
 
