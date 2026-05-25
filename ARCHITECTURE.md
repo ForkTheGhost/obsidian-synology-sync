@@ -1,12 +1,12 @@
 # Architecture
 
-This plugin supports File Station connections via QuickConnect or a direct Synology address, with two intentionally different sync architectures layered on top: simple file sync or Git-backed sync over File Station. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync.
+This plugin supports File Station connections via QuickConnect or a direct Synology address, with two intentionally different sync architectures layered on top: Simple File Sync (Single User) or Git-bare-backed Sync (Multi-User). Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync. Code should enforce the same boundary with separate sync engines for Simple File Sync (Single User) and Git-bare-backed Sync (Multi-User); shared modules should be limited to File Station transport, diagnostics, and other mode-neutral utilities.
 
 `README.md` is the user-facing explanation of this architecture. It should explain the sync-mode choice in simple terms, so a non-developer can decide which option to check and understand how that choice affects where their readable notes live. Build, test, and contribution instructions belong in `CONTRIBUTING.md`, not the README.
 
 ## Sync modes
 
-### Simple file sync (single user)
+### Simple File Sync (Single User)
 
 Simple file sync uses Synology File Station as a file API for a human-readable NAS folder.
 
@@ -20,11 +20,11 @@ Behavior:
 - The NAS folder contains normal Markdown/assets that can be browsed directly.
 - Conflict handling is the plugin's file-level conflict strategy.
 - This is the default and mobile-friendly mode.
-- This mode is intended for single-user or simple workflows.
+- This mode is intended for single-user or simple workflows. The settings UI and README should steer multi-device or concurrent-editing users toward Git-bare-backed Sync (Multi-User) instead.
 
-### Git-backed sync over File Station / QuickConnect
+### Git-bare-backed Sync (Multi-User)
 
-Git-backed File Station sync uses File Station/QuickConnect as the transport for a bare Git repository stored on the NAS.
+Git-bare-backed Sync (Multi-User) uses File Station/QuickConnect as the transport for a bare Git repository stored on the NAS.
 
 Required configuration:
 
@@ -39,10 +39,13 @@ Behavior:
 
 - The NAS path is a bare Git repository, not a readable notes folder.
 - Human-readable notes live in each local checkout/vault.
-- The bare repository is the shared upstream for multi-user sync.
+- The bare repository is the shared upstream for multi-device Obsidian clients, such as two laptops, a phone, and a desktop that may all be online around the same time.
+- The supported product path is Obsidian clients publishing through this plugin over File Station/QuickConnect.
+- Native Git is an implementation detail against the local worktree/cache/bare mirror. It is not a supported remote transport surface.
+- UNC and `/mnt` direct-bare access is admin/developer tooling outside the mobile plugin contract. If such tooling writes to the bare repo, it must honor the same lease and expected-old-ref discipline or it can race plugin clients.
 - The picker/validation must only accept a bare Git repo shape: `HEAD`, `objects/`, and `refs/`.
-- On desktop runtimes with local filesystem access, this mode may use native Git against the local checkout.
-- On iOS/mobile runtimes without `getBasePath()`, this mode uses a pure-JS Git engine over Obsidian's vault APIs instead of desktop-only Node/native Git APIs.
+- On Obsidian plugin device runtimes where the vault adapter exposes `getBasePath()` and local filesystem access, such as desktops and laptops, this mode may use native Git against the local checkout/cache while still treating File Station/QuickConnect as the supported NAS transport.
+- On iOS/mobile or other Obsidian plugin runtimes without `getBasePath()`, this mode uses a pure-JS Git engine over Obsidian's vault APIs instead of desktop-only Node/native Git APIs. Mobile Git support must document practical repository/cache limits and fail with actionable guidance when repo size, packfile size, or storage quota exceeds what the runtime can safely handle.
 
 Bootstrap requirements:
 
@@ -56,31 +59,108 @@ Bootstrap requirements:
 
 Sync operation model:
 
+NAS operation terms:
+
+- **Read** means obtaining authoritative refs, objects, metadata, or file contents from Synology through File Station/QuickConnect.
+- **Sync** means reconciling the local vault/cache with the NAS state while preserving safety invariants.
+- **Write** means placing new objects, refs, lock files, or other state onto Synology through File Station/QuickConnect.
+
 - File Station is not Git protocol. The safe mental model is: bring enough of the NAS bare repository state onto the device, perform Git operations locally against the device vault/cache, then publish the resulting repository objects/ref update back to Synology through File Station.
-- Every Git-backed File Station sync that may write remote state must use the lock/lease protocol. The lease is not optional background protection; it is part of the write path.
-- A pre-lock fetch/listing may warm the local cache, but it is not authoritative. After acquiring the lease, the client must re-read the remote branch ref and either fetch any newly needed objects or abort/retry if the ref changed unexpectedly.
+- Every Git-bare-backed Sync (Multi-User) that may write remote state must use the lock/lease protocol. The lease is not optional background protection; it is part of the write path. Leases must include expiry metadata and a unique token/client identifier; stale leases may only be broken after expiry verification and must produce a visible log/notice so users can distinguish crash recovery from normal sync.
+- Any pre-lock listing must be limited to non-authoritative UI/preflight readiness only. Sync-authoritative NAS ref and object reads happen after the lock/lease is acquired; cache reuse must fail closed if post-lock verification cannot prove the required objects match the locked NAS ref.
 - Local Git operations may use a persistent cache when available, but cache reuse must not skip remote ref verification under the lease.
 - Sync should be smart/incremental. Clients should avoid blindly downloading or uploading the entire repository on every run when safe change detection is available.
-- "Bring enough of the NAS bare repository state onto the device" means the minimum Git objects and refs needed to compute and publish the current sync safely. It does not mean cloning all historical objects when those objects are not needed for the operation.
-- The minimal transport set must be derived from Git object/ref reachability rules and documented Git behavior, not discovered by trial and error. Implementations should be backed by focused research into Git object graph requirements, shallow/partial fetch concepts, pack/object negotiation, ref update safety, and isomorphic-git constraints before optimizing the File Station transfer plan.
-- Change detection may use File Station metadata such as size and modification time, Git object IDs, file hashes, cached manifests, or another reliable fingerprint strategy. Metadata shortcuts must be conservative: if the client cannot prove an object/file is unchanged, it should verify or transfer rather than risk missing data.
-- Publishing order must be objects first, ref last. The final ref update must include an expected-old-ref check while the lease is held, and clients must re-read the NAS branch ref before publishing so stale mirrors fail closed.
+- The minimal read set for a File Station transport is the Git files needed to identify and inspect the branch tip: read `HEAD`, then resolve the target branch from `refs/heads/<name>` or from `packed-refs` if the loose ref is absent. After resolving the tip commit, read its object at `objects/<sha[0:2]>/<sha[2:]>` and the tree/subtree/blob objects reachable from that commit that are needed to compare against the local vault snapshot. The client should read specific reachable objects, not copy all historical objects by default.
+- The minimal publish set is the new loose Git objects created by the sync: changed blob objects, updated tree objects, the new commit object, and finally the target branch ref such as `refs/heads/main`. Objects must be uploaded before the ref is updated, and the ref update must still use the lease/expected-old-ref safety rules.
+- If required objects are packed under `objects/pack/`, the client must either read the relevant pack index/data safely or fall back to a broader read/sync operation. Pack handling is an implementation detail, but it must fail closed rather than guessing that missing loose objects are absent from history. Mobile/pure-JS implementations must treat large or unsupported packfiles as an explicit blocked/needs-desktop-bootstrap state instead of exhausting memory or silently degrading correctness.
+- Change detection may use File Station metadata such as size and modification time, Git object IDs, file hashes, cached manifests, or another reliable fingerprint strategy. Metadata shortcuts must be conservative: if the client cannot prove an object/file is unchanged, it should verify or read/write the required data rather than risk missing data. A safe/full-sync fallback should exist for cold-start, cache-corruption, unsupported-pack, or diagnostic recovery cases where minimal-object sync cannot prove correctness.
+- Publishing order must be objects first, ref last. The final ref update must include an expected-old-ref check while the lease is held, and clients must re-read the NAS branch ref before publishing so stale mirrors fail closed. Ref publication should use File Station's safest available replacement primitive, such as upload-to-temp followed by server-side rename/move where supported, so readers never observe a partially written ref file. If the ref update times out or returns an ambiguous result, the client must keep the sync in an uncertain state until it re-reads the NAS ref and verifies whether the update landed.
 - Releasing the lease is the final step after the ref update succeeds or after a safe abort/rollback path.
-- Preserved conflict-copy names must be stable for the same local content so repeat syncs do not create unbounded duplicate copies. New local content should still get a distinct preserved copy.
+- Preserved conflict-copy names must be stable for the same local content so repeat syncs do not create unbounded duplicate copies. New local content should still get a distinct preserved copy. Conflict presentation should be user-friendly and preserve both versions; raw Git conflict markers should not be the only recovery surface for non-technical users.
+
+#### Git-bare-backed Sync (Multi-User) flow
+
+The Git-bare-backed Sync (Multi-User) flow has four distinct jobs: acquire the NAS sync lease, read NAS Git refs and required objects from Synology into the Git cache, reconcile the local vault snapshot against that state, and write any resulting Git commit back to the NAS bare repository before releasing the lease. Reading remote Git state must not materialize or check out remote files into the readable vault before the local vault snapshot. A successful mobile/local-write sync must include all four when local notes changed.
+
+```mermaid
+flowchart LR
+    C[Obsidian client\nlaptop/desktop/phone]
+    S[(Synology NAS\nbare Git repo + sync lock)]
+    L[Local Git cache/mirror\noptional]
+    V[Readable Obsidian vault\npre-materialization snapshot]
+    D{Compare snapshot\nvs remote tree/index/cache}
+    W{What changed?}
+    M[Materialize remote-only changes\ninto readable vault]
+    G[Create local Git commit\nupdate local ref/cache]
+    O[Upload objects first]
+    R[Update NAS branch ref\nonly if expected-old-ref matches]
+
+    C -- "1. create/acquire NAS lock\nabort/retry if already locked" --> S
+    C -- "2. quick HEAD/cache check\noptimization only; may no-op" --> L
+    C -- "3. read NAS HEAD/ref\n+ read required objects into cache\nno vault materialization" --> S
+    C -- "4. snapshot readable vault\nbefore checkout/materialization" --> V
+    L --> D
+    S --> D
+    V --> D
+    D -- "5. simple sync / conflict decision" --> W
+    W -- "no changes" --> Z[Release NAS lock]
+    W -- "remote-only changes" --> M
+    M --> Z
+    W -- "local-only or local changes" --> G
+    G --> O
+    O --> R
+    R --> Z
+    Z --> S
+```
+
+Operational sequence:
+
+- **Step 1: Create/acquire the NAS sync lock first.** Before doing sync work, create/place the File Station lock/lease on the NAS. If another client already holds it, abort/retry rather than racing. The lock remains held until publish succeeds or the run safely aborts.
+- **Step 2: Local cache/mirror HEAD preflight.** If a local Git cache/mirror exists, read its HEAD/ref and object availability as an optimization/readiness check. This can identify an obvious no-op or missing-object condition, but it is not final authority for writes.
+- **Step 3: Read NAS HEAD/ref through File Station.** The product authority is the NAS bare repo as observed through File Station/QuickConnect, not a stale local cache. This step may read required refs/objects into the Git cache, but it must not check out or materialize remote files into the readable Obsidian vault.
+- **Step 4: Snapshot the readable Obsidian vault before checkout/materialization.** The engine must remember local-only files and local file bytes before writing remote content into the vault/worktree. On platforms where vault listing and reads are not atomic, use a two-phase snapshot: list files, read/hash contents, then re-list or otherwise verify the snapshot did not change; retry or defer sync if the snapshot is unstable. If files change while a commit is being built, abort or defer that file to a later sync rather than committing an inconsistent snapshot.
+- **Step 5: Compare local snapshot vs remote tree/index/cache.** Decide local-only, remote-only, changed, unchanged, or conflict using the pre-materialization local snapshot and the remote Git state.
+- **Step 6: Materialize remote-only changes.** Remote-only changes are not no-ops. They must be applied to the readable vault under the held lock/lease, then the lock may be released.
+- **Step 7: For local writes, commit locally, upload objects first, then update the NAS branch ref only if expected-old-ref still matches.** Publishing is not complete until the local change is staged/committed, the local ref/cache is updated, new objects are present in the NAS bare repository, and the NAS branch ref update succeeds while the lock is held.
+- **Step 8: Use Git-bare-backed Sync conflict handling when both sides changed.** Preserve stable conflict copies only when local bytes differ from the remote/tree result; do not create repeat copies for identical content.
+- **Step 9: Release the lock last.** The remote branch ref update, remote-only materialization, no-op verification, or safe abort determines when the lock can be released.
+
+Direct UNC or `/mnt` writes to the bare repo are admin/developer operations, not the supported user sync path. They must use the same lease and expected-old-ref discipline. A pre-push hook can be a helpful guardrail for those tools, but hooks are advisory and cannot replace the plugin's lease/ref safety.
+
+```mermaid
+flowchart TD
+    A[Admin/dev direct-bare tooling\nUNC or /mnt only] --> H{honors NAS lease\nand expected-old-ref?}
+    H -- no --> B[Unsafe: can race\nObsidian plugin clients]
+    H -- yes --> P[Allowed as admin/dev operation]
+
+    C[Obsidian plugin client] --> L[Acquire NAS lease]
+    L --> R[Re-read NAS HEAD/ref]
+    R --> O[Upload objects first]
+    O --> F[Update ref if expected-old-ref matches]
+    F --> E[Release lease]
+```
+
+Acceptance invariants:
+
+- No checkout/materialization into the readable Obsidian vault before the local vault snapshot. Reading remote Git state before the snapshot means refs and required objects into the Git cache only.
+- A local-only note commit-back test is only proven by seeing the note staged/committed, the local ref updated, required objects uploaded to the NAS bare repo, and the NAS branch ref updated. A later sync that reports `0 uploaded` only proves reconciliation/no-op for that later run; it is not proof that the earlier local note was committed back.
+- Essential correctness invariants are non-negotiable: acquire/verify the lock before authoritative remote sync work, snapshot the readable vault before materialization, verify expected-old-ref before branch ref publication, upload objects before updating refs, and release the lease only after publish/remote materialization/no-op verification or safe abort. Admin/dev direct-bare discipline is advisory because the plugin cannot enforce it outside the plugin path.
+
+Important invariant: after remote checkout/materialization, mere path existence in the local worktree/vault is not proof that the file exists in the remote tree. New local files captured in the pre-sync snapshot must be compared against the remote tree or HEAD/index state, not against post-checkout local path existence alone. Otherwise a mobile-created note can be mistaken for "already remote" and never written back to Synology.
 
 ### Non-goals
 
-This plugin is not a general-purpose Git client and should not grow a separate first-class path for non-File-Station Git remotes. Existing Obsidian Git plugins already serve normal Git remotes well. The Git-backed mode here exists specifically to use Synology File Station / QuickConnect as the transport.
+This plugin is not a general-purpose Git client and should not grow a separate first-class path for non-File-Station Git remotes. Existing Obsidian Git plugins already serve normal Git remotes well. The Git-bare-backed Sync (Multi-User) mode here exists specifically to use Synology File Station / QuickConnect as the transport.
 
 ## Settings UI contract
 
 The settings UI should make the choice explicit with a Sync mode selector:
 
-- Simple file sync (single user) shows Remote folder path.
-- Git-backed sync over File Station / QuickConnect shows NAS bare Git repo path.
-The settings UI should not present non-File-Station Git remotes as a primary sync mode.
+- Single User (Simple File Sync) shows Remote folder path.
+- Multi User/Device (Git-bare-backed Sync) shows NAS bare Git repo path.
+The settings UI should not present non-File-Station Git remotes as a primary sync mode. It should also explain the mode choice in user terms: Single User (Simple File Sync) stores readable files on the NAS but is limited for concurrent multi-device use; Multi User/Device (Git-bare-backed Sync) is intended for multi-user/device safety but stores a Git repository on the NAS rather than directly browsable notes.
 
-Remote folder path belongs only to Simple file sync. Git-backed File Station mode must not require or imply it.
+Remote folder path belongs only to Simple File Sync (Single User). Git-bare-backed Sync (Multi-User) mode must not require or imply it.
 
 ## Runtime and platform diagnostics
 
@@ -138,11 +218,11 @@ Design invariant:
 - Relay HTML should not clear saved token; it should suggest repair relay flow or choosing another endpoint.
 - DSM 403/token rejection with saved token can clear for retry and/or prompt OTP.
 - OTP success with replacement token should persist the replacement token.
-- Logs and notices should use the same state names for support/debug parity.
+- Logs, notices, and debug UI should use the same state names for support/debug parity, so users do not see a generic login failure when the state machine is actually in `repair_relay_session` or another non-auth failure state.
 
 ## Git safety checks
 
-Git-backed modes must preflight unsafe local checkout conditions before staging or merging.
+Git-bare-backed Sync (Multi-User) modes must preflight unsafe local checkout conditions before staging or merging.
 
 Required checks include:
 
@@ -154,7 +234,7 @@ Failures should be actionable errors, not raw Git crashes.
 
 ## Obsidian config policy
 
-Git-backed sync should protect volatile Obsidian configuration by default. Default excludes/policies should avoid syncing transient workspace/plugin state unless the user explicitly chooses a broader policy.
+Git-bare-backed Sync should protect volatile Obsidian configuration by default. Default excludes/policies should avoid syncing transient workspace/plugin state unless the user explicitly chooses a broader policy.
 
 The default policy is notes-oriented and should avoid surprising multi-device config churn.
 
@@ -168,37 +248,31 @@ Acceptance considerations:
 
 - Works inside Obsidian iOS/mobile WebView storage constraints.
 - Does not rely on desktop-only `getBasePath()`, Node `fs`, or native Git.
-- Has a safe cache invalidation/rebuild path if IndexedDB data is missing or corrupt.
+- Has a startup cache health check and a safe invalidation/rebuild path if IndexedDB data is missing, evicted, quota-limited, or corrupt.
 - Does not leak vault path/host-identifying data in logs.
+- Persists at least the last-synced commit/ref identity and enough manifest/object metadata to reduce unnecessary mobile conflicts when a full persistent Git cache is unavailable.
 
-### Git history retention / compaction
+### Git history retention and packfile policy
 
-Long-running automatic sync can create many commits. The bare NAS repo can grow over time, especially with large binary attachments and frequent autosync commits. A follow-up should design an explicit, opt-in retention/compaction model instead of silently rewriting history.
-
-Possible policy shape:
-
-- Keep individual commits for the last 7 days.
-- Squash older daily history into daily snapshots for a short window.
-- Squash older daily snapshots into weekly snapshots for roughly 4 weeks.
-- Squash older weekly snapshots into monthly snapshots for roughly 6 months.
-- Preserve tags or checkpoint refs before destructive compaction.
+Long-running automatic sync can create many commits. The bare NAS repo can grow over time, especially with large binary attachments and frequent autosync commits. The default architecture should prefer client-side shallow/single-branch/minimal-object reads and persistent caches over rewriting shared history.
 
 Design constraints:
 
-- History rewriting must coordinate across devices so stale clients do not push old history back.
-- Compaction should never run while other clients may be mid-sync unless there is a lock/lease protocol.
-- Users need clear warnings that compaction trades fine-grained history for repo size/performance.
-- Explore lighter fetch/clone options first where possible, such as shallow/single-branch fetches, before introducing destructive squash/GC behavior.
-- Include NAS-side garbage collection/prune guidance where supported, because squashing alone does not reclaim object storage until unreachable objects are pruned.
+- Do not add automatic client-side history squashing/rewriting to the shared NAS bare repository as a normal sync behavior. Offline clients may still hold parents that a rewrite would remove, causing divergent history or stale force-push attempts.
+- Any destructive compaction or history rewrite must be an explicit admin/maintenance operation with all clients quiesced or coordinated by a stronger maintenance lock, and with clear warnings that it trades fine-grained history for repo size/performance.
+- Preserve tags or checkpoint refs before any destructive maintenance.
+- Include NAS-side garbage collection/prune guidance where supported, because rewriting alone does not reclaim object storage until unreachable objects are pruned.
+- Warn users/admins that `git gc`/repack on the NAS can move needed objects into `objects/pack/`; mobile clients must either support the resulting pack/index safely or report a clear bootstrap/desktop-maintenance requirement.
+- If the plugin initializes or owns a NAS bare repo, consider placing a small warning/README marker near the repo explaining that it is plugin-managed storage and should not be edited directly.
 
 
 ## File Station Git safety implementation notes
 
-Git-Backed Sync over File Station treats the NAS path as a bare Git repository transported through File Station, not as Git protocol.
+Git-bare-backed Sync treats the NAS path as a bare Git repository transported through File Station, not as Git protocol.
 
 ### Lease and ref safety
 
-A writer acquires an advisory lease under `.synology-sync/leases/<branch>.lock` using strict File Station create semantics (`force_parent=false`). Lease metadata records owner, branch, expected old ref, creation time, expiry, and a token. The lease reduces concurrent writers but is not the sole correctness guarantee: the publish path must still use expected-old-ref semantics and publish objects before refs. Desktop/native Git uses `--force-with-lease` against the local bare cache; mobile rechecks the downloaded remote ref before writing its cached ref and aborts if it changed.
+A writer acquires an advisory lease under `.synology-sync/leases/<branch>.lock` using strict File Station create semantics (`force_parent=false`). Lease metadata records owner, branch, expected old ref, creation time, expiry, and a token. After creating the lease, the client must re-read it and verify that the stored owner/token/branch/expected-ref metadata matches what it wrote before treating the lease as held. Stale-lease recovery must use expiry plus token/owner checks, avoid trusting wall-clock assumptions when possible, and log/notices when a stale lease is broken. The lease reduces concurrent writers but is not the sole correctness guarantee: the publish path must still use expected-old-ref semantics and publish objects before refs. Desktop/native Git uses `--force-with-lease` against the local bare cache; mobile rechecks the downloaded remote ref before writing its cached ref and aborts if it changed.
 
 ### Minimal transport and fingerprints
 
@@ -210,4 +284,4 @@ The default policy is Notes only: Markdown/assets sync by default and volatile/d
 
 ### Validation
 
-Release candidates should pass `npm run check` and the disposable smoke-vault workflow documented in `docs/SMOKE-VAULT.md`.
+Release candidates should pass `npm run check` and the disposable smoke-vault workflow documented in `docs/SMOKE-VAULT.md`. Git-bare-backed Sync tests should include concurrent lock acquisition, stale-lock recovery, network loss during object upload, ambiguous ref-update timeout, cache corruption/cold start, unsupported packfile fallback, non-atomic mobile snapshot retry, and direct-bare/ref mismatch detection.
