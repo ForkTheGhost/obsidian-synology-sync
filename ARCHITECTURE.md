@@ -1,6 +1,6 @@
 # Architecture
 
-This plugin supports File Station connections via QuickConnect or a direct Synology address, with two intentionally different sync architectures layered on top: Simple File Sync (Single User) or Git-bare-backed Sync. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync.
+This plugin supports File Station connections via QuickConnect or a direct Synology address, with two intentionally different sync architectures layered on top: Simple File Sync (Single User) or Git-bare-backed Sync. Settings, validation, logs, and support guidance should preserve this distinction instead of treating all modes as variants of one remote folder sync. Code should enforce the same boundary with separate sync engines for Simple File Sync (Single User) and Git-bare-backed Sync; shared modules should be limited to File Station transport, diagnostics, and other mode-neutral utilities.
 
 `README.md` is the user-facing explanation of this architecture. It should explain the sync-mode choice in simple terms, so a non-developer can decide which option to check and understand how that choice affects where their readable notes live. Build, test, and contribution instructions belong in `CONTRIBUTING.md`, not the README.
 
@@ -46,7 +46,7 @@ Behavior:
 - Git SSH/HTTPS remotes are intentionally not supported by this plugin. Users who want normal Git remotes should use a pure Git/Obsidian Git plugin instead.
 - The picker/validation must only accept a bare Git repo shape: `HEAD`, `objects/`, and `refs/`.
 - On desktop runtimes with local filesystem access, this mode may use native Git against the local checkout/cache while still treating File Station/QuickConnect as the supported NAS transport.
-- On iOS/mobile runtimes without `getBasePath()`, this mode uses a pure-JS Git engine over Obsidian's vault APIs instead of desktop-only Node/native Git APIs.
+- On iOS/mobile runtimes without `getBasePath()`, this mode uses a pure-JS Git engine over Obsidian's vault APIs instead of desktop-only Node/native Git APIs. Mobile Git support must document practical repository/cache limits and fail with actionable guidance when repo size, packfile size, or storage quota exceeds what the runtime can safely handle.
 
 Bootstrap requirements:
 
@@ -113,7 +113,7 @@ Operational sequence:
 - **Step 1: Create/acquire the NAS sync lock first.** Before doing sync work, create/place the File Station lock/lease on the NAS. If another client already holds it, abort/retry rather than racing. The lock remains held until publish succeeds or the run safely aborts.
 - **Step 2: Local cache/mirror HEAD preflight.** If a local Git cache/mirror exists, read its HEAD/ref and object availability as an optimization/readiness check. This can identify an obvious no-op or missing-object condition, but it is not final authority for writes.
 - **Step 3: Read NAS HEAD/ref through File Station.** The product authority is the NAS bare repo as observed through File Station/QuickConnect, not SSH/HTTPS Git remotes and not a stale local cache. This step may fetch required refs/objects into the Git cache, but it must not check out or materialize remote files into the readable Obsidian vault.
-- **Step 4: Snapshot the readable Obsidian vault before checkout/materialization.** The engine must remember local-only files and local file bytes before writing remote content into the vault/worktree.
+- **Step 4: Snapshot the readable Obsidian vault before checkout/materialization.** The engine must remember local-only files and local file bytes before writing remote content into the vault/worktree. On platforms where vault listing and reads are not atomic, use a two-phase snapshot: list files, read/hash contents, then re-list or otherwise verify the snapshot did not change; retry or defer sync if the snapshot is unstable.
 - **Step 5: Compare local snapshot vs remote tree/index/cache.** Decide local-only, remote-only, changed, unchanged, or conflict using the pre-materialization local snapshot and the remote Git state.
 - **Step 6: Materialize remote-only changes.** Remote-only changes are not no-ops. They must be applied to the readable vault under the held lock/lease, then the lock may be released.
 - **Step 7: For local writes, commit locally, upload objects first, then update the NAS branch ref only if expected-old-ref still matches.** Publishing is not complete until the local change is staged/committed, the local ref/cache is updated, new objects are present in the NAS bare repository, and the NAS branch ref update succeeds while the lock is held.
@@ -212,7 +212,7 @@ Design invariant:
 - Relay HTML should not clear saved token; it should suggest repair relay flow or choosing another endpoint.
 - DSM 403/token rejection with saved token can clear for retry and/or prompt OTP.
 - OTP success with replacement token should persist the replacement token.
-- Logs and notices should use the same state names for support/debug parity.
+- Logs, notices, and debug UI should use the same state names for support/debug parity, so users do not see a generic login failure when the state machine is actually in `repair_relay_session` or another non-auth failure state.
 
 ## Git safety checks
 
@@ -242,7 +242,7 @@ Acceptance considerations:
 
 - Works inside Obsidian iOS/mobile WebView storage constraints.
 - Does not rely on desktop-only `getBasePath()`, Node `fs`, or native Git.
-- Has a safe cache invalidation/rebuild path if IndexedDB data is missing or corrupt.
+- Has a startup cache health check and a safe invalidation/rebuild path if IndexedDB data is missing, evicted, quota-limited, or corrupt.
 - Does not leak vault path/host-identifying data in logs.
 
 ### Git history retention and packfile policy
@@ -264,7 +264,7 @@ Git-bare-backed Sync treats the NAS path as a bare Git repository transported th
 
 ### Lease and ref safety
 
-A writer acquires an advisory lease under `.synology-sync/leases/<branch>.lock` using strict File Station create semantics (`force_parent=false`). Lease metadata records owner, branch, expected old ref, creation time, expiry, and a token. The lease reduces concurrent writers but is not the sole correctness guarantee: the publish path must still use expected-old-ref semantics and publish objects before refs. Desktop/native Git uses `--force-with-lease` against the local bare cache; mobile rechecks the downloaded remote ref before writing its cached ref and aborts if it changed.
+A writer acquires an advisory lease under `.synology-sync/leases/<branch>.lock` using strict File Station create semantics (`force_parent=false`). Lease metadata records owner, branch, expected old ref, creation time, expiry, and a token. After creating the lease, the client must re-read it and verify that the stored owner/token/branch/expected-ref metadata matches what it wrote before treating the lease as held. The lease reduces concurrent writers but is not the sole correctness guarantee: the publish path must still use expected-old-ref semantics and publish objects before refs. Desktop/native Git uses `--force-with-lease` against the local bare cache; mobile rechecks the downloaded remote ref before writing its cached ref and aborts if it changed.
 
 ### Minimal transport and fingerprints
 
