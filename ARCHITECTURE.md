@@ -67,9 +67,9 @@ Sync operation model:
 - Sync should be smart/incremental. Clients should avoid blindly downloading or uploading the entire repository on every run when safe change detection is available.
 - The minimal read set for a File Station transport is the Git files needed to identify and inspect the branch tip: read `HEAD`, then resolve the target branch from `refs/heads/<name>` or from `packed-refs` if the loose ref is absent. After resolving the tip commit, read its object at `objects/<sha[0:2]>/<sha[2:]>` and the tree/subtree/blob objects reachable from that commit that are needed to compare against the local vault snapshot. The client should fetch specific reachable objects, not clone all historical objects by default.
 - The minimal publish set is the new loose Git objects created by the sync: changed blob objects, updated tree objects, the new commit object, and finally the target branch ref such as `refs/heads/main`. Objects must be uploaded before the ref is updated, and the ref update must still use the lease/expected-old-ref safety rules.
-- If required objects are packed under `objects/pack/`, the client must either read the relevant pack index/data safely or fall back to a broader transfer. Pack handling is an implementation detail, but it must fail closed rather than guessing that missing loose objects are absent from history.
+- If required objects are packed under `objects/pack/`, the client must either read the relevant pack index/data safely or fall back to a broader transfer. Pack handling is an implementation detail, but it must fail closed rather than guessing that missing loose objects are absent from history. Mobile/pure-JS implementations must treat large or unsupported packfiles as an explicit blocked/needs-desktop-bootstrap state instead of exhausting memory or silently degrading correctness.
 - Change detection may use File Station metadata such as size and modification time, Git object IDs, file hashes, cached manifests, or another reliable fingerprint strategy. Metadata shortcuts must be conservative: if the client cannot prove an object/file is unchanged, it should verify or transfer rather than risk missing data.
-- Publishing order must be objects first, ref last. The final ref update must include an expected-old-ref check while the lease is held, and clients must re-read the NAS branch ref before publishing so stale mirrors fail closed.
+- Publishing order must be objects first, ref last. The final ref update must include an expected-old-ref check while the lease is held, and clients must re-read the NAS branch ref before publishing so stale mirrors fail closed. Ref publication should use File Station's safest available replacement primitive, such as upload-to-temp followed by server-side rename/move where supported, so readers never observe a partially written ref file. If the ref update times out or returns an ambiguous result, the client must keep the sync in an uncertain state until it re-reads the NAS ref and verifies whether the update landed.
 - Releasing the lease is the final step after the ref update succeeds or after a safe abort/rollback path.
 - Preserved conflict-copy names must be stable for the same local content so repeat syncs do not create unbounded duplicate copies. New local content should still get a distinct preserved copy.
 
@@ -245,25 +245,17 @@ Acceptance considerations:
 - Has a safe cache invalidation/rebuild path if IndexedDB data is missing or corrupt.
 - Does not leak vault path/host-identifying data in logs.
 
-### Git history retention / compaction
+### Git history retention and packfile policy
 
-Long-running automatic sync can create many commits. The bare NAS repo can grow over time, especially with large binary attachments and frequent autosync commits. A follow-up should design an explicit, opt-in retention/compaction model instead of silently rewriting history.
-
-Possible policy shape:
-
-- Keep individual commits for the last 7 days.
-- Squash older daily history into daily snapshots for a short window.
-- Squash older daily snapshots into weekly snapshots for roughly 4 weeks.
-- Squash older weekly snapshots into monthly snapshots for roughly 6 months.
-- Preserve tags or checkpoint refs before destructive compaction.
+Long-running automatic sync can create many commits. The bare NAS repo can grow over time, especially with large binary attachments and frequent autosync commits. The default architecture should prefer client-side shallow/single-branch/minimal-object reads and persistent caches over rewriting shared history.
 
 Design constraints:
 
-- History rewriting must coordinate across devices so stale clients do not push old history back.
-- Compaction should never run while other clients may be mid-sync unless there is a lock/lease protocol.
-- Users need clear warnings that compaction trades fine-grained history for repo size/performance.
-- Explore lighter fetch/clone options first where possible, such as shallow/single-branch fetches, before introducing destructive squash/GC behavior.
-- Include NAS-side garbage collection/prune guidance where supported, because squashing alone does not reclaim object storage until unreachable objects are pruned.
+- Do not add automatic client-side history squashing/rewriting to the shared NAS bare repository as a normal sync behavior. Offline clients may still hold parents that a rewrite would remove, causing divergent history or stale force-push attempts.
+- Any destructive compaction or history rewrite must be an explicit admin/maintenance operation with all clients quiesced or coordinated by a stronger maintenance lock, and with clear warnings that it trades fine-grained history for repo size/performance.
+- Preserve tags or checkpoint refs before any destructive maintenance.
+- Include NAS-side garbage collection/prune guidance where supported, because rewriting alone does not reclaim object storage until unreachable objects are pruned.
+- Warn users/admins that `git gc`/repack on the NAS can move needed objects into `objects/pack/`; mobile clients must either support the resulting pack/index safely or report a clear bootstrap/desktop-maintenance requirement.
 
 
 ## File Station Git safety implementation notes
