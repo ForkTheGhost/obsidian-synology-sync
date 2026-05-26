@@ -57,8 +57,10 @@ export interface SynologySyncSettings {
   gitAuthorEmail: string;
   obsidianConfigPolicy: ObsidianConfigSyncPolicy;
   obsidianConfigOptIns: ObsidianConfigOptIns;
+  persistSyncLogToVaultNote: boolean;
 }
 
+export const LATEST_SYNC_LOG_NOTE_PATH = ".obsidian/plugins/synology-sync/latest-run.md";
 
 export function sanitizeSyncBackendForRuntime(
   settings: SynologySyncSettings,
@@ -101,6 +103,7 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   gitAuthorEmail: "synology-sync@local",
   obsidianConfigPolicy: "notes-only",
   obsidianConfigOptIns: {},
+  persistSyncLogToVaultNote: false,
 };
 
 // Legacy default that was shipped in releases prior to 2026.0505.1.
@@ -561,6 +564,16 @@ export class SynologySyncSettingTab extends PluginSettingTab {
 
     // Debug
     containerEl.createEl("h3", { text: "Troubleshooting" });
+
+    new Setting(containerEl)
+      .setName("Persist latest run log")
+      .setDesc(`Write the redacted latest sync transcript to ${LATEST_SYNC_LOG_NOTE_PATH}`)
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.persistSyncLogToVaultNote).onChange(async (value) => {
+          this.plugin.settings.persistSyncLogToVaultNote = value;
+          await this.plugin.saveSettings();
+        })
+      );
 
     new Setting(containerEl)
       .setName("Debug log")

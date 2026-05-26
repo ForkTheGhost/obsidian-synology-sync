@@ -3,8 +3,8 @@ import { FileStation, FileStationConfig, LoginResult } from "./filestation";
 import { resolveQuickConnect, resolveQuickConnectCandidates, probeQuickConnectCandidates, QCCandidate } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
-import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
-import { beginDebugSync, debugLog, endDebugSync, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics } from "./debug";
+import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, LATEST_SYNC_LOG_NOTE_PATH, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
+import { beginDebugSync, debugLog, endDebugSync, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics, redactSensitiveLogText } from "./debug";
 
 // UUID generator with fallbacks for older runtimes.
 // crypto.randomUUID requires iOS 15.4+ / Chromium 92+; we fall back through
@@ -323,6 +323,7 @@ export default class SynologySync extends Plugin {
         try { await fs.logout(); } catch { /* ignore */ }
       }
       endDebugSync();
+      await this.persistLatestSyncLog();
       this.syncing = false;
     }
   }
@@ -371,7 +372,49 @@ export default class SynologySync extends Plugin {
         try { await fs.logout(); } catch { /* ignore */ }
       }
       endDebugSync();
+      await this.persistLatestSyncLog();
       this.syncing = false;
+    }
+  }
+
+  private async persistLatestSyncLog(): Promise<void> {
+    if (!this.settings.persistSyncLogToVaultNote) return;
+
+    try {
+      const log = redactSensitiveLogText(getDebugLog());
+      const body = [
+        "# Synology Sync Latest Run",
+        "",
+        `Updated: ${new Date().toISOString()}`,
+        `Plugin version: ${this.manifest.version || "unknown"}`,
+        `Sync mode: ${this.settings.syncBackend}`,
+        "",
+        "```text",
+        log || "(no log entries)",
+        "```",
+        "",
+      ].join("\n");
+
+      await this.ensureAdapterFolder(LATEST_SYNC_LOG_NOTE_PATH);
+      await this.app.vault.adapter.write(LATEST_SYNC_LOG_NOTE_PATH, body);
+    } catch (e) {
+      console.warn("Synology Sync could not persist latest sync log:", e);
+    }
+  }
+
+  private async ensureAdapterFolder(path: string): Promise<void> {
+    const adapter = this.app.vault.adapter as typeof this.app.vault.adapter & {
+      exists?: (path: string) => Promise<boolean>;
+      mkdir?: (path: string) => Promise<void>;
+    };
+    if (typeof adapter.exists !== "function" || typeof adapter.mkdir !== "function") return;
+
+    const parts = path.split("/").slice(0, -1);
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (await adapter.exists(current)) continue;
+      await adapter.mkdir(current);
     }
   }
 

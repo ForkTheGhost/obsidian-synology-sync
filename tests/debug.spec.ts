@@ -1,4 +1,4 @@
-import { beginDebugSync, clearDebugLog, debugLog, endDebugSync, formatErrorForDebug, formatRuntimeDiagnostics, getDebugLog, getDebugLogSnippet, getRuntimeDiagnostics } from "../src/debug";
+import { beginDebugSync, clearDebugLog, debugLog, endDebugSync, formatErrorForDebug, formatRuntimeDiagnostics, getDebugLog, getDebugLogSnippet, getRuntimeDiagnostics, redactSensitiveLogText } from "../src/debug";
 
 describe("debug logging", () => {
   beforeEach(() => clearDebugLog());
@@ -21,6 +21,20 @@ describe("debug logging", () => {
     debugLog(`SYNC FAILED: ${formatErrorForDebug(new Error("boom"))}`);
 
     expect(getDebugLog()).toContain("SYNC FAILED: Error: boom");
+  });
+
+  it("redacts sensitive values before logs are persisted to a note", () => {
+    const redacted = redactSensitiveLogText(
+      "AUTH password=hunter2 sid=abc123 deviceToken=token123 url=/entry.cgi?passwd=secret&synotoken=syno",
+    );
+
+    expect(redacted).not.toContain("hunter2");
+    expect(redacted).not.toContain("abc123");
+    expect(redacted).not.toContain("token123");
+    expect(redacted).not.toContain("secret");
+    expect(redacted).toContain("password=***");
+    expect(redacted).toContain("sid=***");
+    expect(redacted).toContain("deviceToken=***");
   });
 
   it("generates runtime diagnostics in copied snippets when no runtime entry is in the log", () => {

@@ -51,6 +51,10 @@ describe("DEFAULT_SETTINGS", () => {
     expect(DEFAULT_SETTINGS.obsidianConfigPolicy).toBe("notes-only");
     expect(DEFAULT_SETTINGS.obsidianConfigOptIns).toEqual({});
   });
+
+  it("keeps persistent latest-run log disabled by default", () => {
+    expect(DEFAULT_SETTINGS.persistSyncLogToVaultNote).toBe(false);
+  });
 });
 
 describe("migrateLoadedSettings", () => {

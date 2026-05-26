@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## 2026.0526.2
+
+### Added
+
+- Add an optional persistent latest-run sync log at `.obsidian/plugins/synology-sync/latest-run.md` for debug handoff, with a final redaction pass before writing.
+
+### Fixed
+
+- Preserve remote history on metadata-less first sync: local-only additions are published, but same-path local/remote differences are kept as conflict-preserved copies instead of overwriting the NAS branch.
+- Materialize first-sync conflict-preserved copies back into the local vault immediately so users can see and recover their local edits after the first pull.
+
 ## 2026.0526.1
 
 ### Changed
