@@ -130,15 +130,18 @@ export class MobileGitFileStationSyncEngine {
     const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
 
     if (!localHadCommits && remoteHadCommits) {
-      await this.runPhase("index anchored local files", () => this.indexWorkdirFiles());
-      const firstSyncLocalChanged = await this.runPhase("detect local changes", () => this.changedFiles());
-      if (firstSyncLocalChanged.length > 0) {
+      const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
+      const firstSyncLocalAdditions = await this.runPhase("detect first-sync local additions", () => this.firstSyncLocalAdditions(workdirFilesAtStart, remoteFiles));
+      if (firstSyncLocalAdditions.length > 0) {
+        await this.runPhase("checkout remote", () => this.checkoutRemote());
+        await this.runPhase("restore first-sync local additions", () => this.restoreInitialLocalFiles(firstSyncLocalAdditions, initialLocalFiles));
+        await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(initialLocalFiles, result));
         await this.runPhase("commit local changes", () => this.commitLocalChanges(`Sync from ${this.opts.syncIdentityId}`, false));
-        result.uploaded.push(...firstSyncLocalChanged);
+        result.uploaded.push(...firstSyncLocalAdditions);
         await this.runPhase("publish with lease", () => this.publishWithLease());
+        await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
         return result;
       }
-      const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       if (!hadUserFilesAtStart) {
         if (hiddenSystemFilesAtStart.length > 0) debugLog(`[git-filestation-mobile] treating vault as empty except hidden system files: ${hiddenSystemFilesAtStart.join(", ")}`);
         await this.runPhase("checkout remote", () => this.checkoutRemote());
@@ -425,6 +428,13 @@ export class MobileGitFileStationSyncEngine {
     }
   }
 
+  private async firstSyncLocalAdditions(localFiles: string[], remoteFiles: string[]): Promise<string[]> {
+    const remote = new Set(remoteFiles.filter((path) => !this.isExcluded(path)));
+    return localFiles
+      .filter((path) => !this.isExcluded(path) && !remote.has(path))
+      .sort();
+  }
+
   private async changedFilesByPako(): Promise<string[]> {
     const [headOid, indexEntries, workdirFiles] = await Promise.all([
       this.resolveHeadOid(),
@@ -543,6 +553,14 @@ export class MobileGitFileStationSyncEngine {
       committer: { name: this.opts.authorName, email: this.opts.authorEmail },
       cache: this.cache,
     });
+  }
+
+  private async restoreInitialLocalFiles(paths: string[], initialFiles: Map<string, Uint8Array>): Promise<void> {
+    for (const path of paths) {
+      const bytes = initialFiles.get(path);
+      if (!bytes || this.isExcluded(path)) continue;
+      await this.writeMemFile(`${WORKDIR}/${path}`, bytes);
+    }
   }
 
   private async remoteChangedFiles(): Promise<string[]> {
