@@ -2,6 +2,115 @@ import { TFile, TFolder } from "obsidian";
 import { MobileGitFileStationSyncEngine } from "../src/git-filestation-mobile";
 
 describe("MobileGitFileStationSyncEngine", () => {
+  async function seededBareRemote(files: Record<string, string>): Promise<{
+    git: typeof import("isomorphic-git");
+    remote: Map<string, Uint8Array>;
+  }> {
+    const textEncoder = new TextEncoder();
+    const git = await import("isomorphic-git");
+    const seedVault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
+    const seedFs = { listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }), createFolder: jest.fn(async () => undefined), upload: jest.fn(async () => undefined) };
+    const seed = new MobileGitFileStationSyncEngine(seedVault as never, seedFs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "seed",
+      authorName: "Seed",
+      authorEmail: "seed@example.com",
+    }) as unknown as {
+      memfs: {
+        client: unknown;
+        promises: {
+          mkdir: (path: string, options?: { recursive?: boolean }) => Promise<void>;
+          writeFile: (path: string, data: Uint8Array | string) => Promise<void>;
+          readdir: (path: string) => Promise<string[]>;
+          lstat: (path: string) => Promise<{ isDirectory: () => boolean; isFile: () => boolean }>;
+          readFile: (path: string) => Promise<Uint8Array>;
+        };
+      };
+    };
+
+    await seed.memfs.promises.mkdir("/vault", { recursive: true });
+    await git.init({ fs: seed.memfs.client as never, dir: "/vault", defaultBranch: "main" });
+    for (const [path, content] of Object.entries(files)) {
+      const parent = path.split("/").slice(0, -1).join("/");
+      if (parent) await seed.memfs.promises.mkdir(`/vault/${parent}`, { recursive: true });
+      await seed.memfs.promises.writeFile(`/vault/${path}`, textEncoder.encode(content));
+      await git.add({ fs: seed.memfs.client as never, dir: "/vault", filepath: path });
+    }
+    await git.commit({ fs: seed.memfs.client as never, dir: "/vault", message: "seed remote", author: { name: "Seed", email: "seed@example.com" } });
+
+    const remote = new Map<string, Uint8Array>();
+    const collect = async (dir: string) => {
+      for (const name of await seed.memfs.promises.readdir(dir)) {
+        const abs = `${dir}/${name}`;
+        const stat = await seed.memfs.promises.lstat(abs);
+        if (stat.isDirectory()) await collect(abs);
+        else if (stat.isFile()) {
+          const bytes = await seed.memfs.promises.readFile(abs);
+          remote.set(`/homes/user/Obsidian/Test.git/${abs.slice("/vault/.git/".length)}`, new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+        }
+      }
+    };
+    await collect("/vault/.git");
+    return { git, remote };
+  }
+
+  function remoteBackedFileStation(remote: Map<string, Uint8Array>, uploaded: string[]) {
+    const textEncoder = new TextEncoder();
+    return {
+      listFolder: jest.fn(async (path: string) => Array.from(remote.keys())
+        .filter((p) => p.startsWith(`${path.replace(/\/$/, "")}/`))
+        .map((p) => p.slice(path.replace(/\/$/, "").length + 1).split("/")[0])
+        .filter((name, index, arr) => arr.indexOf(name) === index)
+        .map((name) => {
+          const child = `${path.replace(/\/$/, "")}/${name}`;
+          return { path: child, name, isdir: Array.from(remote.keys()).some((p) => p.startsWith(`${child}/`)) };
+        })),
+      download: jest.fn(async (path: string) => {
+        const bytes = remote.get(path) || textEncoder.encode("");
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }),
+      createFolder: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+      upload: jest.fn(async (destFolder: string, fileName: string, bytes: ArrayBuffer) => {
+        uploaded.push(`${destFolder}/${fileName}`);
+        remote.set(`${destFolder}/${fileName}`, new Uint8Array(bytes));
+      }),
+    };
+  }
+
+  function vaultWithFiles(files: Record<string, string>) {
+    const textEncoder = new TextEncoder();
+    const fileMap = new Map<string, TFile>();
+    const folders = new Set<string>();
+    const createdPaths: string[] = [];
+    for (const path of Object.keys(files)) {
+      const file = new TFile();
+      file.path = path;
+      fileMap.set(path, file);
+      const parts = path.split("/").slice(0, -1);
+      for (let i = 1; i <= parts.length; i++) folders.add(parts.slice(0, i).join("/"));
+    }
+    const vault = {
+      adapter: {},
+      getFiles: jest.fn(() => Array.from(fileMap.values())),
+      readBinary: jest.fn(async (file: TFile) => textEncoder.encode(files[file.path]).buffer),
+      getAbstractFileByPath: jest.fn((path: string) => {
+        if (fileMap.has(path)) return fileMap.get(path)!;
+        if (!folders.has(path)) return null;
+        const folder = new TFolder();
+        folder.path = path;
+        return folder;
+      }),
+      createFolder: jest.fn(async (path: string) => { folders.add(path); }),
+      createBinary: jest.fn(async (path: string) => { createdPaths.push(path); }),
+      modifyBinary: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+    };
+    return { vault, createdPaths };
+  }
+
   it("initializes the in-memory git filesystem and bootstraps an empty bare repo", async () => {
     const vault = {
       adapter: {},
@@ -641,6 +750,75 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(syncedFiles.some((path) => path.startsWith("Daily/2026-05-26 Tuesday (conflict windows-device "))).toBe(true);
     const createdPaths = vault.createBinary.mock.calls.map(([path]) => path);
     expect(createdPaths.some((path) => path.startsWith("Daily/2026-05-26 Tuesday (conflict windows-device "))).toBe(true);
+  });
+
+  it("publishes root and newly nested local-only first-sync files without conflict copies", async () => {
+    const { git, remote } = await seededBareRemote({ "RemoteOnly.md": "remote baseline\n" });
+    const { vault, createdPaths } = vaultWithFiles({
+      "RootLocal.md": "root local draft\n",
+      "Test Fixtures/New/Nested.md": "nested local draft\n",
+    });
+    const uploaded: string[] = [];
+    const fs = remoteBackedFileStation(remote, uploaded);
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "windows-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    const result = await engine.sync();
+
+    expect(result.errors).toEqual([]);
+    expect(result.conflicts).toEqual([]);
+    expect(result.uploaded).toEqual(expect.arrayContaining(["RootLocal.md", "Test Fixtures/New/Nested.md"]));
+    expect(result.downloaded).toContain("RemoteOnly.md");
+    expect(createdPaths.filter((path) => path.includes("(conflict windows-device "))).toEqual([]);
+    expect(uploaded.some((path) => path.endsWith("/refs/heads/main"))).toBe(true);
+    const syncedFiles = await git.listFiles({ fs: (engine as unknown as { memfs: { client: unknown } }).memfs.client as never, gitdir: "/vault/.git", ref: "refs/heads/main" });
+    expect(syncedFiles).toEqual(expect.arrayContaining(["RemoteOnly.md", "RootLocal.md", "Test Fixtures/New/Nested.md"]));
+    expect(syncedFiles.filter((path) => path.includes("(conflict windows-device "))).toEqual([]);
+  });
+
+  it("creates conflict copies only for root and nested same-path first-sync divergences", async () => {
+    const { git, remote } = await seededBareRemote({
+      "BRAT-log.md": "remote brat log\n",
+      "Test Fixtures/New/Nested.md": "remote nested note\n",
+      "RemoteOnly.md": "remote baseline\n",
+    });
+    const { vault, createdPaths } = vaultWithFiles({
+      "BRAT-log.md": "local brat log\n",
+      "Test Fixtures/New/Nested.md": "local nested note\n",
+      "LocalOnly.md": "local-only note\n",
+    });
+    const uploaded: string[] = [];
+    const fs = remoteBackedFileStation(remote, uploaded);
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "windows-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    const result = await engine.sync();
+
+    expect(result.errors).toEqual([]);
+    expect(result.uploaded).toContain("LocalOnly.md");
+    expect(result.uploaded).not.toContain("BRAT-log.md");
+    expect(result.uploaded).not.toContain("Test Fixtures/New/Nested.md");
+    expect(result.conflicts).toEqual(expect.arrayContaining(["BRAT-log.md", "Test Fixtures/New/Nested.md"]));
+    expect(result.conflicts).not.toContain("LocalOnly.md");
+
+    const syncedFiles = await git.listFiles({ fs: (engine as unknown as { memfs: { client: unknown } }).memfs.client as never, gitdir: "/vault/.git", ref: "refs/heads/main" });
+    expect(syncedFiles).toContain("BRAT-log.md");
+    expect(syncedFiles).toContain("Test Fixtures/New/Nested.md");
+    expect(syncedFiles).toContain("LocalOnly.md");
+    expect(syncedFiles.some((path) => /^BRAT-log \(conflict windows-device [0-9a-f]{12}\)\.md$/.test(path))).toBe(true);
+    expect(syncedFiles.some((path) => /^Test Fixtures\/New\/Nested \(conflict windows-device [0-9a-f]{12}\)\.md$/.test(path))).toBe(true);
+    expect(syncedFiles.some((path) => /^LocalOnly \(conflict windows-device [0-9a-f]{12}\)\.md$/.test(path))).toBe(false);
+    expect(createdPaths.filter((path) => path.includes("(conflict windows-device "))).toHaveLength(2);
   });
 
   it("overwrites already-existing vault files through adapter when Obsidian index is stale", async () => {
