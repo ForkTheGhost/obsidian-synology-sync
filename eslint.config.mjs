@@ -2,6 +2,11 @@ import tseslint from "typescript-eslint";
 import obsidianmd from "eslint-plugin-obsidianmd";
 import globals from "globals";
 import { globalIgnores } from "eslint/config";
+import { realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const configDir = realpathSync.native(dirname(fileURLToPath(import.meta.url)));
 
 const existingCodeCompatibilityRules = {
   "@typescript-eslint/no-base-to-string": "off",
@@ -37,8 +42,8 @@ export default tseslint.config(
         ...globals.browser,
       },
       parserOptions: {
-        project: "./tsconfig.eslint.json",
-        tsconfigRootDir: import.meta.dirname,
+        project: join(configDir, "tsconfig.eslint.json"),
+        tsconfigRootDir: configDir,
       },
     },
   },
