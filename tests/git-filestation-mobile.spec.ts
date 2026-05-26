@@ -639,6 +639,8 @@ describe("MobileGitFileStationSyncEngine", () => {
     const syncedFiles = await git.listFiles({ fs: (engine as unknown as { memfs: { client: unknown } }).memfs.client as never, gitdir: "/vault/.git", ref: "refs/heads/main" });
     expect(syncedFiles).toContain("Daily/2026-05-26 Tuesday.md");
     expect(syncedFiles.some((path) => path.startsWith("Daily/2026-05-26 Tuesday (conflict windows-device "))).toBe(true);
+    const createdPaths = vault.createBinary.mock.calls.map(([path]) => path);
+    expect(createdPaths.some((path) => path.startsWith("Daily/2026-05-26 Tuesday (conflict windows-device "))).toBe(true);
   });
 
   it("overwrites already-existing vault files through adapter when Obsidian index is stale", async () => {

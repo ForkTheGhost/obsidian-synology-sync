@@ -164,6 +164,7 @@ export class MobileGitFileStationSyncEngine {
         if (result.conflicts.length > 0) {
           await this.runPhase("commit local conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
           await this.runPhase("publish with lease", () => this.publishWithLease());
+          await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
         }
       }
       return result;
