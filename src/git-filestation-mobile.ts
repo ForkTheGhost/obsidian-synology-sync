@@ -89,6 +89,7 @@ export class MobileGitFileStationSyncEngine {
     const initialLocalFiles = hadLocalCommitsBeforeRemoteImport ? new Map<string, Uint8Array>() : await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
 
     await this.runPhase("download remote bare repo", () => this.downloadRemoteBareRepoIfPresent());
+    if (!hadLocalCommitsBeforeRemoteImport) await this.runPhase("anchor local branch to remote", () => this.anchorLocalBranchToRemoteIfNeeded());
     await this.runPhase("verify downloaded Git store", () => this.verifyDownloadedGitStore());
     await this.runPhase("ensure remote configured", () => this.ensureRemoteConfigured());
 
@@ -129,6 +130,14 @@ export class MobileGitFileStationSyncEngine {
     const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
 
     if (!localHadCommits && remoteHadCommits) {
+      await this.runPhase("index anchored local files", () => this.indexWorkdirFiles());
+      const firstSyncLocalChanged = await this.runPhase("detect local changes", () => this.changedFiles());
+      if (firstSyncLocalChanged.length > 0) {
+        await this.runPhase("commit local changes", () => this.commitLocalChanges(`Sync from ${this.opts.syncIdentityId}`, false));
+        result.uploaded.push(...firstSyncLocalChanged);
+        await this.runPhase("publish with lease", () => this.publishWithLease());
+        return result;
+      }
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       if (!hadUserFilesAtStart) {
         if (hiddenSystemFilesAtStart.length > 0) debugLog(`[git-filestation-mobile] treating vault as empty except hidden system files: ${hiddenSystemFilesAtStart.join(", ")}`);
@@ -392,6 +401,14 @@ export class MobileGitFileStationSyncEngine {
     await git.checkout({ fs: this.memfs.client, dir: WORKDIR, ref: this.opts.branch, force: true });
   }
 
+  private async anchorLocalBranchToRemoteIfNeeded(): Promise<void> {
+    if (!(await this.remoteHasCommits())) return;
+    const remoteOid = await this.remoteRefOid();
+    if (!remoteOid) return;
+    await this.writeMemText(`${GITDIR}/refs/heads/${this.opts.branch}`, `${remoteOid}\n`);
+    await git.branch({ fs: this.memfs.client, dir: WORKDIR, ref: this.opts.branch, checkout: true, force: true });
+  }
+
   private async changedFiles(): Promise<string[]> {
     try {
       const matrix = await git.statusMatrix({ fs: this.memfs.client, dir: WORKDIR, ignored: false, cache: this.cache });
@@ -500,11 +517,15 @@ export class MobileGitFileStationSyncEngine {
     return out;
   }
 
-  private async commitLocalChanges(message: string, allowEmpty: boolean): Promise<void> {
+  private async indexWorkdirFiles(): Promise<void> {
     const files = await this.listWorkdirFiles();
     for (const file of files) {
       if (!this.isExcluded(file)) await git.add({ fs: this.memfs.client, dir: WORKDIR, filepath: file, cache: this.cache });
     }
+  }
+
+  private async commitLocalChanges(message: string, allowEmpty: boolean): Promise<void> {
+    await this.indexWorkdirFiles();
 
     const tracked = await git.listFiles({ fs: this.memfs.client, dir: WORKDIR, cache: this.cache });
     for (const file of tracked) {
