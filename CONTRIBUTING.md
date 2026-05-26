@@ -14,7 +14,8 @@ Issues must identify:
 2. Create a branch: `feat/<short-name>`, `fix/<short-name>`, `docs/<short-name>`, or `chore/<short-name>`.
 3. Make the smallest focused change that satisfies the issue acceptance criteria.
 4. Run the relevant local checks:
-   - `npm exec jest -- --runInBand`
+   - `npm test -- --runInBand`
+   - `npm run lint`
    - `npm run build`
 5. Open a PR referencing the issue.
 
@@ -26,6 +27,8 @@ Install dependencies and build the plugin:
 
 ```bash
 npm install
+npm test -- --runInBand
+npm run lint
 npm run build        # production build
 npm run dev          # development build with sourcemaps
 ```
@@ -60,4 +63,6 @@ Types: `feat`, `fix`, `docs`, `chore`, `decision`.
 
 ## Review gate and smoke vault
 
-Run `npm run check` before opening a PR. For manual Obsidian validation, run `npm run smoke:vault -- /tmp/obsidian-synology-sync-smoke-vault`, open that disposable vault, enable the copied plugin, and test only against disposable NAS folders/repos. See `docs/SMOKE-VAULT.md`.
+Run `npm run check` before opening a PR; it runs the serial Jest suite, the ESLint gate, and the production build. The lint gate follows the Obsidian sample plugin flat-config pattern with local compatibility exclusions for existing code that is not being refactored in the current PR.
+
+For manual Obsidian validation, run `npm run smoke:vault -- /tmp/obsidian-synology-sync-smoke-vault`, open that disposable vault, enable the copied plugin, and test only against disposable NAS folders/repos. See `docs/SMOKE-VAULT.md`.
