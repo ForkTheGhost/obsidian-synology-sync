@@ -2,9 +2,16 @@
 
 ## [Unreleased]
 
-### chore: Add Obsidian lint gate (`pending`) - closes #15
+### Changed
 
-Add an ESLint flat config based on the Obsidian sample plugin pattern, wire `npm run lint` into the local check gate, and document the test/lint/build contributor workflow.
+- Route Git-bare-backed Sync through the pure-JS/isomorphic-git File Station engine on both desktop and mobile, matching the architecture contract.
+- Restore QuickConnect auth fallback breadth by keeping all ordered candidates after ping probing, so off-LAN relay-api candidates can still authenticate after portal/direct timeouts.
+- Update settings labels to `Single User (Simple File Sync)` and `Multi User/Device (Git-bare-backed Sync)`.
+
+### Added
+
+- Add an ESLint flat config based on the Obsidian sample plugin pattern, wire `npm run lint` into the local check gate, and document the test/lint/build contributor workflow.
+- Document conservative manual cleanup guidance for existing preserved conflict-copy files.
 
 ## 2026.0523.1
 

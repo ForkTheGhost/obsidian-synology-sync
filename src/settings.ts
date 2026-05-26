@@ -49,7 +49,7 @@ export interface SynologySyncSettings {
   // out-of-memory errors on mobile. 0 disables the limit. Default: 100.
   maxFileSizeMb: number;
 
-  // Git-backed File Station mode stores a real bare repo on the NAS and uses
+  // Git-bare-backed Sync stores a bare repo on the NAS and uses
   // File Station/QuickConnect as the transport.
   gitFileStationRepoPath: string;
   gitBranch: string;
@@ -300,11 +300,11 @@ export class SynologySyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Sync mode")
-      .setDesc("Connect to Synology File Station by QuickConnect or direct address, then choose simple file sync or Git-backed sync over File Station.")
+      .setDesc("Connect to Synology File Station by QuickConnect or direct address, then choose Single User or Multi User/Device sync.")
       .addDropdown((dd) =>
         dd
-          .addOption("filestation", "Simple File Sync over File Station")
-          .addOption("git-filestation", "Git-Backed Sync over File Station")
+          .addOption("filestation", "Single User (Simple File Sync)")
+          .addOption("git-filestation", "Multi User/Device (Git-bare-backed Sync)")
           .setValue(effectiveSyncBackend)
           .onChange(async (value: string) => {
             this.plugin.settings.syncBackend = value as SynologySyncSettings["syncBackend"];
@@ -316,7 +316,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
     if (effectiveSyncBackend === "filestation") {
       new Setting(containerEl)
         .setName("Remote folder path")
-        .setDesc("Required for Simple File Sync over File Station. Use a normal NAS folder containing readable Markdown files.")
+        .setDesc("Required for Single User (Simple File Sync). Use a normal NAS folder containing readable Markdown files.")
         .addText((text) =>
           text
             .setPlaceholder("/homes/username/Obsidian/MyVault")
@@ -345,7 +345,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
     if (effectiveSyncBackend === "git-filestation") {
       new Setting(containerEl)
         .setName("Bare repository path on NAS")
-        .setDesc("Required for Git-Backed Sync over File Station. Use a bare Git repository on Synology, such as MyVault.git; do not open this path as an Obsidian vault.")
+        .setDesc("Required for Multi User/Device (Git-bare-backed Sync). Use a bare Git repository on Synology, such as MyVault.git; do not open this path as an Obsidian vault.")
         .addText((text) =>
           text
             .setPlaceholder("/homes/username/Obsidian/MyVault.git")

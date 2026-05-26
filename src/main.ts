@@ -2,7 +2,6 @@ import { Plugin, Notice, Modal, App } from "obsidian";
 import { FileStation, FileStationConfig, LoginResult } from "./filestation";
 import { resolveQuickConnect, resolveQuickConnectCandidates, probeQuickConnectCandidates, QCCandidate } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
-import { GitFileStationSyncEngine } from "./git-filestation-sync";
 import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
 import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
 import { beginDebugSync, debugLog, endDebugSync, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics } from "./debug";
@@ -34,6 +33,16 @@ function generateSyncIdentityId(): string {
   const t = Date.now().toString(16);
   const r = () => Math.random().toString(16).slice(2, 10);
   return `${t}-${r()}-${r()}-${r()}`;
+}
+
+
+export function sameQuickConnectCandidate(a: QCCandidate, b: QCCandidate): boolean {
+  return a.host.toLowerCase() === b.host.toLowerCase() && a.port === b.port && a.https === b.https && a.kind === b.kind;
+}
+
+export function moveCandidateToFront(candidates: QCCandidate[], selected: QCCandidate): QCCandidate[] {
+  const rest = candidates.filter((candidate) => !sameQuickConnectCandidate(candidate, selected));
+  return [selected, ...rest];
 }
 
 export default class SynologySync extends Plugin {
@@ -162,17 +171,22 @@ export default class SynologySync extends Plugin {
     };
   }
 
+
+  private async prioritizedQuickConnectCandidates(quickConnectId: string): Promise<QCCandidate[]> {
+    const candidates = await resolveQuickConnectCandidates(quickConnectId);
+    const reachable = await probeQuickConnectCandidates(candidates);
+    if (reachable) return moveCandidateToFront(candidates, reachable);
+
+    const slowReachable = await probeQuickConnectCandidates(candidates, 30000);
+    if (slowReachable) return moveCandidateToFront(candidates, slowReachable);
+
+    return candidates;
+  }
+
   async getFileStation(): Promise<FileStation> {
     if (this.settings.connectionType === "quickconnect") {
       if (!this.settings.quickConnectId) throw new Error("QuickConnect ID not configured");
-      let candidates = await resolveQuickConnectCandidates(this.settings.quickConnectId);
-      const reachable = await probeQuickConnectCandidates(candidates);
-      if (!reachable) {
-        const slowReachable = await probeQuickConnectCandidates(candidates, 30000);
-        if (slowReachable) candidates = [slowReachable];
-      } else {
-        candidates = [reachable];
-      }
+      const candidates = await this.prioritizedQuickConnectCandidates(this.settings.quickConnectId);
       let lastError: unknown = null;
       for (let i = 0; i < candidates.length; i++) {
         const candidate = candidates[i];
@@ -327,9 +341,7 @@ export default class SynologySync extends Plugin {
     let fs: FileStation | null = null;
     try {
       fs = await this.getFileStation();
-      const hasDesktopBasePath = typeof (this.app.vault.adapter as unknown as { getBasePath?: unknown }).getBasePath === "function";
-      const Engine = hasDesktopBasePath ? GitFileStationSyncEngine : MobileGitFileStationSyncEngine;
-      const engine = new Engine(this.app.vault, fs, {
+      const engine = new MobileGitFileStationSyncEngine(this.app.vault, fs, {
         remotePath: this.settings.gitFileStationRepoPath,
         branch: this.settings.gitBranch,
         syncIdentityId: this.settings.syncIdentityId,
