@@ -68,6 +68,17 @@ export function redact(s: string | undefined, showChars: number = 4): string {
   return s.substring(0, showChars) + "***(" + s.length + " chars)";
 }
 
+const SENSITIVE_LOG_VALUE_PATTERNS = [
+  /\b(passwd|password|pwd|otp_code|sid|synotoken|syno_token|token|device[_-]?token|device[_-]?id)=([^&\s]+)/gi,
+  /\b(Bearer)\s+([A-Za-z0-9._~+/=-]+)/gi,
+];
+
+export function redactSensitiveLogText(text: string): string {
+  return SENSITIVE_LOG_VALUE_PATTERNS.reduce((redacted, pattern) => {
+    return redacted.replace(pattern, (_match, key: string) => `${key}=***`);
+  }, text);
+}
+
 
 export function formatErrorForDebug(error: unknown): string {
   if (error instanceof Error) {

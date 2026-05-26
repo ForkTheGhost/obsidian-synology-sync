@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## 2026.0526.2
+
+### Added
+
+- Add an optional persistent latest-run sync log at `.obsidian/plugins/synology-sync/latest-run.md` for debug handoff, with a final redaction pass before writing.
+
+### Fixed
+
+- Preserve remote history on metadata-less first sync: local-only additions are published, but same-path local/remote differences are kept as conflict-preserved copies instead of overwriting the NAS branch.
+- Materialize first-sync conflict-preserved copies back into the local vault immediately so users can see and recover their local edits after the first pull.
+
+## 2026.0526.1
+
+### Changed
+
+- Route Git-bare-backed Sync through the pure-JS/isomorphic-git File Station engine on both desktop and mobile, matching the architecture contract.
+- Restore QuickConnect auth fallback breadth by keeping all ordered candidates after ping probing, so off-LAN relay-api candidates can still authenticate after portal/direct timeouts.
+- Update settings labels to `Single User (Simple File Sync)` and `Multi User/Device (Git-bare-backed Sync)`.
+
+### Added
+
+- Add an ESLint flat config based on the Obsidian sample plugin pattern, wire `npm run lint` into the local check gate, and document the test/lint/build contributor workflow.
+- Document conservative manual cleanup guidance for existing preserved conflict-copy files.
+
 ## 2026.0523.1
 
 ### Fixed

@@ -89,6 +89,7 @@ export class MobileGitFileStationSyncEngine {
     const initialLocalFiles = hadLocalCommitsBeforeRemoteImport ? new Map<string, Uint8Array>() : await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
 
     await this.runPhase("download remote bare repo", () => this.downloadRemoteBareRepoIfPresent());
+    if (!hadLocalCommitsBeforeRemoteImport) await this.runPhase("anchor local branch to remote", () => this.anchorLocalBranchToRemoteIfNeeded());
     await this.runPhase("verify downloaded Git store", () => this.verifyDownloadedGitStore());
     await this.runPhase("ensure remote configured", () => this.ensureRemoteConfigured());
 
@@ -130,6 +131,17 @@ export class MobileGitFileStationSyncEngine {
 
     if (!localHadCommits && remoteHadCommits) {
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
+      const firstSyncLocalAdditions = await this.runPhase("detect first-sync local additions", () => this.firstSyncLocalAdditions(workdirFilesAtStart, remoteFiles));
+      if (firstSyncLocalAdditions.length > 0) {
+        await this.runPhase("checkout remote", () => this.checkoutRemote());
+        await this.runPhase("restore first-sync local additions", () => this.restoreInitialLocalFiles(firstSyncLocalAdditions, initialLocalFiles));
+        await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(initialLocalFiles, result));
+        await this.runPhase("commit local changes", () => this.commitLocalChanges(`Sync from ${this.opts.syncIdentityId}`, false));
+        result.uploaded.push(...firstSyncLocalAdditions);
+        await this.runPhase("publish with lease", () => this.publishWithLease());
+        await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
+        return result;
+      }
       if (!hadUserFilesAtStart) {
         if (hiddenSystemFilesAtStart.length > 0) debugLog(`[git-filestation-mobile] treating vault as empty except hidden system files: ${hiddenSystemFilesAtStart.join(", ")}`);
         await this.runPhase("checkout remote", () => this.checkoutRemote());
@@ -152,6 +164,7 @@ export class MobileGitFileStationSyncEngine {
         if (result.conflicts.length > 0) {
           await this.runPhase("commit local conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
           await this.runPhase("publish with lease", () => this.publishWithLease());
+          await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
         }
       }
       return result;
@@ -392,6 +405,14 @@ export class MobileGitFileStationSyncEngine {
     await git.checkout({ fs: this.memfs.client, dir: WORKDIR, ref: this.opts.branch, force: true });
   }
 
+  private async anchorLocalBranchToRemoteIfNeeded(): Promise<void> {
+    if (!(await this.remoteHasCommits())) return;
+    const remoteOid = await this.remoteRefOid();
+    if (!remoteOid) return;
+    await this.writeMemText(`${GITDIR}/refs/heads/${this.opts.branch}`, `${remoteOid}\n`);
+    await git.branch({ fs: this.memfs.client, dir: WORKDIR, ref: this.opts.branch, checkout: true, force: true });
+  }
+
   private async changedFiles(): Promise<string[]> {
     try {
       const matrix = await git.statusMatrix({ fs: this.memfs.client, dir: WORKDIR, ignored: false, cache: this.cache });
@@ -406,6 +427,13 @@ export class MobileGitFileStationSyncEngine {
       debugLog(`[git-filestation-mobile] statusMatrix failed with inflate error after Git store verification; using strict direct-pako status fallback: ${message}`);
       return this.changedFilesByPako();
     }
+  }
+
+  private async firstSyncLocalAdditions(localFiles: string[], remoteFiles: string[]): Promise<string[]> {
+    const remote = new Set(remoteFiles.filter((path) => !this.isExcluded(path)));
+    return localFiles
+      .filter((path) => !this.isExcluded(path) && !remote.has(path))
+      .sort();
   }
 
   private async changedFilesByPako(): Promise<string[]> {
@@ -500,11 +528,15 @@ export class MobileGitFileStationSyncEngine {
     return out;
   }
 
-  private async commitLocalChanges(message: string, allowEmpty: boolean): Promise<void> {
+  private async indexWorkdirFiles(): Promise<void> {
     const files = await this.listWorkdirFiles();
     for (const file of files) {
       if (!this.isExcluded(file)) await git.add({ fs: this.memfs.client, dir: WORKDIR, filepath: file, cache: this.cache });
     }
+  }
+
+  private async commitLocalChanges(message: string, allowEmpty: boolean): Promise<void> {
+    await this.indexWorkdirFiles();
 
     const tracked = await git.listFiles({ fs: this.memfs.client, dir: WORKDIR, cache: this.cache });
     for (const file of tracked) {
@@ -522,6 +554,14 @@ export class MobileGitFileStationSyncEngine {
       committer: { name: this.opts.authorName, email: this.opts.authorEmail },
       cache: this.cache,
     });
+  }
+
+  private async restoreInitialLocalFiles(paths: string[], initialFiles: Map<string, Uint8Array>): Promise<void> {
+    for (const path of paths) {
+      const bytes = initialFiles.get(path);
+      if (!bytes || this.isExcluded(path)) continue;
+      await this.writeMemFile(`${WORKDIR}/${path}`, bytes);
+    }
   }
 
   private async remoteChangedFiles(): Promise<string[]> {

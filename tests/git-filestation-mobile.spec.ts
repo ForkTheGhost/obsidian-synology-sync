@@ -1,4 +1,4 @@
-import { TFolder } from "obsidian";
+import { TFile, TFolder } from "obsidian";
 import { MobileGitFileStationSyncEngine } from "../src/git-filestation-mobile";
 
 describe("MobileGitFileStationSyncEngine", () => {
@@ -480,6 +480,167 @@ describe("MobileGitFileStationSyncEngine", () => {
     await expect((engine as unknown as { ensureVaultFolder: (path: string) => Promise<void> }).ensureVaultFolder("Folder/Sub")).resolves.toBeUndefined();
     expect(vault.createFolder).toHaveBeenCalledWith("Folder");
     expect(vault.createFolder).toHaveBeenCalledWith("Folder/Sub");
+  });
+
+  it("anchors downloaded remote history before publishing local-only files in a git-metadata-less vault", async () => {
+    const textEncoder = new TextEncoder();
+    const git = await import("isomorphic-git");
+    const seedVault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
+    const seedFs = { listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }), createFolder: jest.fn(async () => undefined), upload: jest.fn(async () => undefined) };
+    const seed = new MobileGitFileStationSyncEngine(seedVault as never, seedFs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git", branch: "main", syncIdentityId: "seed", authorName: "Seed", authorEmail: "seed@example.com",
+    }) as unknown as { memfs: { client: unknown; promises: { mkdir: (path: string, options?: { recursive?: boolean }) => Promise<void>; writeFile: (path: string, data: Uint8Array | string) => Promise<void>; readFile: (path: string) => Promise<Uint8Array>; } }; uploadBareRepoMirror: () => Promise<void> };
+    await seed.memfs.promises.mkdir("/vault", { recursive: true });
+    await git.init({ fs: seed.memfs.client as never, dir: "/vault", defaultBranch: "main" });
+    await seed.memfs.promises.writeFile("/vault/RemoteOnly.md", textEncoder.encode("keep me\n"));
+    await git.add({ fs: seed.memfs.client as never, dir: "/vault", filepath: "RemoteOnly.md" });
+    await git.commit({ fs: seed.memfs.client as never, dir: "/vault", message: "seed remote", author: { name: "Seed", email: "seed@example.com" } });
+
+    const remote = new Map<string, Uint8Array>();
+    const seedExposed = seed as unknown as { memfs: { promises: { readdir: (path: string) => Promise<string[]>; lstat: (path: string) => Promise<{ isDirectory: () => boolean; isFile: () => boolean }>; readFile: (path: string) => Promise<Uint8Array> } } };
+    const collect = async (dir: string) => {
+      for (const name of await seedExposed.memfs.promises.readdir(dir)) {
+        const abs = `${dir}/${name}`;
+        const stat = await seedExposed.memfs.promises.lstat(abs);
+        if (stat.isDirectory()) await collect(abs);
+        else if (stat.isFile()) {
+          const bytes = await seedExposed.memfs.promises.readFile(abs);
+          remote.set(`/homes/user/Obsidian/Test.git/${abs.slice("/vault/.git/".length)}`, new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+        }
+      }
+    };
+    await collect("/vault/.git");
+
+    const localFile = new TFile();
+    localFile.path = "Daily/2026-05-26 Tuesday.md";
+    const folders = new Set(["Daily"]);
+    const vault = {
+      adapter: {},
+      getFiles: jest.fn(() => [localFile]),
+      readBinary: jest.fn(async () => textEncoder.encode("# Test\n").buffer),
+      getAbstractFileByPath: jest.fn((path: string) => folders.has(path) ? new TFolder() : path === localFile.path ? localFile : null),
+      createFolder: jest.fn(async (path: string) => { folders.add(path); }),
+      createBinary: jest.fn(async () => undefined),
+      modifyBinary: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+    };
+    const uploaded: string[] = [];
+    const fs = {
+      listFolder: jest.fn(async (path: string) => Array.from(remote.keys())
+        .filter((p) => p.startsWith(`${path.replace(/\/$/, "")}/`))
+        .map((p) => p.slice(path.replace(/\/$/, "").length + 1).split("/")[0])
+        .filter((name, index, arr) => arr.indexOf(name) === index)
+        .map((name) => {
+          const child = `${path.replace(/\/$/, "")}/${name}`;
+          return { path: child, name, isdir: Array.from(remote.keys()).some((p) => p.startsWith(`${child}/`)) };
+        })),
+      download: jest.fn(async (path: string) => {
+        const bytes = remote.get(path) || textEncoder.encode("");
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }),
+      createFolder: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+      upload: jest.fn(async (destFolder: string, fileName: string, bytes: ArrayBuffer) => {
+        uploaded.push(`${destFolder}/${fileName}`);
+        remote.set(`${destFolder}/${fileName}`, new Uint8Array(bytes));
+      }),
+    };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git", branch: "main", syncIdentityId: "windows-device", authorName: "Obsidian Synology Sync", authorEmail: "synology-sync@local",
+    });
+
+    const result = await engine.sync();
+
+    expect(result.errors).toEqual([]);
+    expect(result.uploaded).toContain("Daily/2026-05-26 Tuesday.md");
+    expect(result.uploaded).not.toContain("RemoteOnly.md");
+    expect(result.downloaded).toContain("RemoteOnly.md");
+    expect(uploaded.some((path) => path.endsWith("/refs/heads/main"))).toBe(true);
+    expect(uploaded.some((path) => path.includes("/objects/"))).toBe(true);
+    const syncedFiles = await git.listFiles({ fs: (engine as unknown as { memfs: { client: unknown } }).memfs.client as never, gitdir: "/vault/.git", ref: "refs/heads/main" });
+    expect(syncedFiles).toContain("RemoteOnly.md");
+  });
+
+  it("preserves same-path first-sync differences as conflicts instead of overwriting remote history", async () => {
+    const textEncoder = new TextEncoder();
+    const git = await import("isomorphic-git");
+    const seedVault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
+    const seedFs = { listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }), createFolder: jest.fn(async () => undefined), upload: jest.fn(async () => undefined) };
+    const seed = new MobileGitFileStationSyncEngine(seedVault as never, seedFs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git", branch: "main", syncIdentityId: "seed", authorName: "Seed", authorEmail: "seed@example.com",
+    }) as unknown as { memfs: { client: unknown; promises: { mkdir: (path: string, options?: { recursive?: boolean }) => Promise<void>; writeFile: (path: string, data: Uint8Array | string) => Promise<void>; readFile: (path: string) => Promise<Uint8Array>; } }; };
+    await seed.memfs.promises.mkdir("/vault", { recursive: true });
+    await git.init({ fs: seed.memfs.client as never, dir: "/vault", defaultBranch: "main" });
+    await seed.memfs.promises.writeFile("/vault/Daily/2026-05-26 Tuesday.md", textEncoder.encode("# Remote\n"));
+    await git.add({ fs: seed.memfs.client as never, dir: "/vault", filepath: "Daily/2026-05-26 Tuesday.md" });
+    await git.commit({ fs: seed.memfs.client as never, dir: "/vault", message: "seed remote", author: { name: "Seed", email: "seed@example.com" } });
+
+    const remote = new Map<string, Uint8Array>();
+    const seedExposed = seed as unknown as { memfs: { promises: { readdir: (path: string) => Promise<string[]>; lstat: (path: string) => Promise<{ isDirectory: () => boolean; isFile: () => boolean }>; readFile: (path: string) => Promise<Uint8Array> } } };
+    const collect = async (dir: string) => {
+      for (const name of await seedExposed.memfs.promises.readdir(dir)) {
+        const abs = `${dir}/${name}`;
+        const stat = await seedExposed.memfs.promises.lstat(abs);
+        if (stat.isDirectory()) await collect(abs);
+        else if (stat.isFile()) {
+          const bytes = await seedExposed.memfs.promises.readFile(abs);
+          remote.set(`/homes/user/Obsidian/Test.git/${abs.slice("/vault/.git/".length)}`, new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+        }
+      }
+    };
+    await collect("/vault/.git");
+
+    const localFile = new TFile();
+    localFile.path = "Daily/2026-05-26 Tuesday.md";
+    const folders = new Set(["Daily"]);
+    const vault = {
+      adapter: {},
+      getFiles: jest.fn(() => [localFile]),
+      readBinary: jest.fn(async () => textEncoder.encode("# Test\n").buffer),
+      getAbstractFileByPath: jest.fn((path: string) => folders.has(path) ? new TFolder() : path === localFile.path ? localFile : null),
+      createFolder: jest.fn(async (path: string) => { folders.add(path); }),
+      createBinary: jest.fn(async () => undefined),
+      modifyBinary: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+    };
+    const uploaded: string[] = [];
+    const fs = {
+      listFolder: jest.fn(async (path: string) => Array.from(remote.keys())
+        .filter((p) => p.startsWith(`${path.replace(/\/$/, "")}/`))
+        .map((p) => p.slice(path.replace(/\/$/, "").length + 1).split("/")[0])
+        .filter((name, index, arr) => arr.indexOf(name) === index)
+        .map((name) => {
+          const child = `${path.replace(/\/$/, "")}/${name}`;
+          return { path: child, name, isdir: Array.from(remote.keys()).some((p) => p.startsWith(`${child}/`)) };
+        })),
+      download: jest.fn(async (path: string) => {
+        const bytes = remote.get(path) || textEncoder.encode("");
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }),
+      createFolder: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+      upload: jest.fn(async (destFolder: string, fileName: string, bytes: ArrayBuffer) => {
+        uploaded.push(`${destFolder}/${fileName}`);
+        remote.set(`${destFolder}/${fileName}`, new Uint8Array(bytes));
+      }),
+    };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git", branch: "main", syncIdentityId: "windows-device", authorName: "Obsidian Synology Sync", authorEmail: "synology-sync@local",
+    });
+
+    const result = await engine.sync();
+
+    expect(result.errors).toEqual([]);
+    expect(result.uploaded).not.toContain("Daily/2026-05-26 Tuesday.md");
+    expect(result.conflicts).toContain("Daily/2026-05-26 Tuesday.md");
+    expect(uploaded.some((path) => path.endsWith("/refs/heads/main"))).toBe(true);
+    const syncedFiles = await git.listFiles({ fs: (engine as unknown as { memfs: { client: unknown } }).memfs.client as never, gitdir: "/vault/.git", ref: "refs/heads/main" });
+    expect(syncedFiles).toContain("Daily/2026-05-26 Tuesday.md");
+    expect(syncedFiles.some((path) => path.startsWith("Daily/2026-05-26 Tuesday (conflict windows-device "))).toBe(true);
+    const createdPaths = vault.createBinary.mock.calls.map(([path]) => path);
+    expect(createdPaths.some((path) => path.startsWith("Daily/2026-05-26 Tuesday (conflict windows-device "))).toBe(true);
   });
 
   it("overwrites already-existing vault files through adapter when Obsidian index is stale", async () => {

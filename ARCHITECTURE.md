@@ -41,11 +41,11 @@ Behavior:
 - Human-readable notes live in each local checkout/vault.
 - The bare repository is the shared upstream for multi-device Obsidian clients, such as two laptops, a phone, and a desktop that may all be online around the same time.
 - The supported product path is Obsidian clients publishing through this plugin over File Station/QuickConnect.
-- Native Git is an implementation detail against the local worktree/cache/bare mirror. It is not a supported remote transport surface.
+- The supported product sync engine is the pure-JS/isomorphic-git File Station engine across desktop and mobile. Native Git/CLI is admin/developer tooling only, not the default plugin sync algorithm.
 - UNC and `/mnt` direct-bare access is admin/developer tooling outside the mobile plugin contract. If such tooling writes to the bare repo, it must honor the same lease and expected-old-ref discipline or it can race plugin clients.
 - The picker/validation must only accept a bare Git repo shape: `HEAD`, `objects/`, and `refs/`.
-- On Obsidian plugin device runtimes where the vault adapter exposes `getBasePath()` and local filesystem access, such as desktops and laptops, this mode may use native Git against the local checkout/cache while still treating File Station/QuickConnect as the supported NAS transport.
-- On iOS/mobile or other Obsidian plugin runtimes without `getBasePath()`, this mode uses a pure-JS Git engine over Obsidian's vault APIs instead of desktop-only Node/native Git APIs. Mobile Git support must document practical repository/cache limits and fail with actionable guidance when repo size, packfile size, or storage quota exceeds what the runtime can safely handle.
+- On Obsidian plugin device runtimes where the vault adapter exposes `getBasePath()` and local filesystem access, such as desktops and laptops, that access may improve cache/storage diagnostics, but the supported sync path still uses the pure-JS/isomorphic-git engine over File Station/QuickConnect.
+- On iOS/mobile or other Obsidian plugin runtimes without `getBasePath()`, the same pure-JS Git engine runs over Obsidian's vault APIs instead of desktop-only Node/native Git APIs. Mobile Git support must document practical repository/cache limits and fail with actionable guidance when repo size, packfile size, or storage quota exceeds what the runtime can safely handle.
 
 Bootstrap requirements:
 
@@ -272,7 +272,7 @@ Git-bare-backed Sync treats the NAS path as a bare Git repository transported th
 
 ### Lease and ref safety
 
-A writer acquires an advisory lease under `.synology-sync/leases/<branch>.lock` using strict File Station create semantics (`force_parent=false`). Lease metadata records owner, branch, expected old ref, creation time, expiry, and a token. After creating the lease, the client must re-read it and verify that the stored owner/token/branch/expected-ref metadata matches what it wrote before treating the lease as held. Stale-lease recovery must use expiry plus token/owner checks, avoid trusting wall-clock assumptions when possible, and log/notices when a stale lease is broken. The lease reduces concurrent writers but is not the sole correctness guarantee: the publish path must still use expected-old-ref semantics and publish objects before refs. Desktop/native Git uses `--force-with-lease` against the local bare cache; mobile rechecks the downloaded remote ref before writing its cached ref and aborts if it changed.
+A writer acquires an advisory lease under `.synology-sync/leases/<branch>.lock` using strict File Station create semantics (`force_parent=false`). Lease metadata records owner, branch, expected old ref, creation time, expiry, and a token. After creating the lease, the client must re-read it and verify that the stored owner/token/branch/expected-ref metadata matches what it wrote before treating the lease as held. Stale-lease recovery must use expiry plus token/owner checks, avoid trusting wall-clock assumptions when possible, and log/notices when a stale lease is broken. The lease reduces concurrent writers but is not the sole correctness guarantee: the publish path must still use expected-old-ref semantics and publish objects before refs. The pure-JS engine rechecks the downloaded remote ref before writing its cached ref and aborts if it changed. Any native Git/CLI admin tooling must provide equivalent expected-old-ref discipline, such as `--force-with-lease`, before writing to the NAS bare repo.
 
 ### Minimal transport and fingerprints
 
@@ -284,4 +284,6 @@ The default policy is Notes only: Markdown/assets sync by default and volatile/d
 
 ### Validation
 
-Release candidates should pass `npm run check` and the disposable smoke-vault workflow documented in `docs/SMOKE-VAULT.md`. Git-bare-backed Sync tests should include concurrent lock acquisition, stale-lock recovery, network loss during object upload, ambiguous ref-update timeout, cache corruption/cold start, unsupported packfile fallback, non-atomic mobile snapshot retry, and direct-bare/ref mismatch detection.
+Release candidates should pass `npm run check` and the disposable smoke-vault workflow documented in `docs/SMOKE-VAULT.md`. `npm run check` is the local quality gate for Jest, ESLint, and the production build. Git-bare-backed Sync tests should include concurrent lock acquisition, stale-lock recovery, network loss during object upload, ambiguous ref-update timeout, cache corruption/cold start, unsupported packfile fallback, non-atomic mobile snapshot retry, and direct-bare/ref mismatch detection.
+
+The ESLint gate uses a flat config based on `obsidianmd/obsidian-sample-plugin` and loads `eslint-plugin-obsidianmd`. Existing-code compatibility exclusions are kept in `eslint.config.mjs` so lint adoption stays focused on tooling correctness first; tighten those exclusions in follow-up PRs when the affected code is intentionally refactored.
