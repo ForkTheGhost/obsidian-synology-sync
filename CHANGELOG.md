@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 2026.0526.1
+
 ### Changed
 
 - Route Git-bare-backed Sync through the pure-JS/isomorphic-git File Station engine on both desktop and mobile, matching the architecture contract.
