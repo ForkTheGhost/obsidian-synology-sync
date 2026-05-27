@@ -216,7 +216,7 @@ export default class SynologySync extends Plugin {
 
 
   private async prioritizedQuickConnectCandidates(quickConnectId: string): Promise<QCCandidate[]> {
-    const candidates = await resolveQuickConnectCandidates(quickConnectId, this.settings.debugQuickConnectResolution);
+    const candidates = await resolveQuickConnectCandidates(quickConnectId, this.settings.debugLogEnabled);
     const freshCachedCandidates = freshCachedQuickConnectCandidates(this.settings.quickConnectCandidateCache || [], quickConnectId);
     if (freshCachedCandidates.length > 0) {
       debugLog(`QC: trying ${freshCachedCandidates.length} cached working candidate(s) before rediscovery probes`);
@@ -227,7 +227,7 @@ export default class SynologySync extends Plugin {
       this.settings.quickConnectCandidateCache || [],
       quickConnectId,
     );
-    if (this.settings.debugQuickConnectResolution) {
+    if (this.settings.debugLogEnabled) {
       debugLog(`QC: working-candidate cache entries=${(this.settings.quickConnectCandidateCache || []).length} candidates_after_cache=${cachedCandidates.length}`);
       cachedCandidates.forEach((candidate, i) => debugLog(`QC: priority [${i}] ${candidateUrl(candidate)} (${candidate.kind})`));
     }
@@ -267,7 +267,7 @@ export default class SynologySync extends Plugin {
     }
     retained.sort((a, b) => b.lastSuccessAt - a.lastSuccessAt || b.successCount - a.successCount);
     this.settings.quickConnectCandidateCache = retained.slice(0, QUICKCONNECT_CANDIDATE_CACHE_LIMIT);
-    if (this.settings.debugQuickConnectResolution) {
+    if (this.settings.debugLogEnabled) {
       debugLog(`QC: working-candidate cache ${success ? "recorded success" : "recorded failure"} ${candidateUrl(candidate)} entries=${this.settings.quickConnectCandidateCache.length}`);
     }
     await this.saveSettings();
