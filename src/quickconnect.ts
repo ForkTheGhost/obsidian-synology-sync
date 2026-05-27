@@ -188,7 +188,7 @@ async function requestTunnelServerInfo(quickConnectId: string, results: QCServer
   return [];
 }
 
-export async function resolveQuickConnectCandidates(quickConnectId: string): Promise<QCCandidate[]> {
+export async function resolveQuickConnectCandidates(quickConnectId: string, debugResolution = false): Promise<QCCandidate[]> {
   debugLog(`QC: resolving "${quickConnectId}"`);
   const normalizedQuickConnectId = normalizeQuickConnectId(quickConnectId);
   const body = buildServerInfoBody(quickConnectId);
@@ -222,6 +222,34 @@ export async function resolveQuickConnectCandidates(quickConnectId: string): Pro
   // SmartDNS hostnames have valid wildcard certs under *.direct.quickconnect.to,
   // so HTTPS works without self-signed cert errors (even for LAN IPs).
   const candidates: QCCandidate[] = [];
+
+  results.forEach((info, index) => {
+    if (!debugResolution) return;
+    const svc = info.service || {} as QCServerInfo["service"];
+    const srv = info.server || {} as QCServerInfo["server"];
+    const dns = info.smartdns;
+    debugLog([
+      `QC: server-info[${index}] fields`,
+      `errno=${info.errno ?? 0}`,
+      `command=${info.command || "(unset)"}`,
+      `relay_region=${info.env?.relay_region ? "present" : "absent"}`,
+      `service.port=${svc.port || "absent"}`,
+      `service.ext_port=${svc.ext_port || "absent"}`,
+      `service.relay_port=${svc.relay_port || "absent"}`,
+      `service.relay_dn=${svc.relay_dn ? "present" : "absent"}`,
+      `service.relay_ip=${svc.relay_ip ? "present" : "absent"}`,
+      `service.relay_dualstack=${svc.relay_dualstack ? "present" : "absent"}`,
+      `service.https_ip=${svc.https_ip ? "present" : "absent"}`,
+      `service.https_port=${svc.https_port || "absent"}`,
+      `smartdns.host=${dns?.host ? "present" : "absent"}`,
+      `smartdns.external=${dns?.external ? "present" : "absent"}`,
+      `smartdns.lan=${dns?.lan?.length || 0}`,
+      `server.fqdn=${srv.fqdn && srv.fqdn !== "NULL" ? "present" : "absent"}`,
+      `server.ddns=${srv.ddns && srv.ddns !== "NULL" ? "present" : "absent"}`,
+      `server.interface=${srv.interface?.length || 0}`,
+      `server.external=${srv.external?.ip && srv.external.ip !== "0.0.0.0" ? "present" : "absent"}`,
+    ].join(" "));
+  });
 
   for (const info of results) {
     if (info.errno) continue;
@@ -308,7 +336,7 @@ export async function resolveQuickConnectCandidates(quickConnectId: string): Pro
   }
 
   debugLog(`QC: ${candidates.length} candidates built`);
-  candidates.forEach((c, i) => debugLog(`QC:   [${i}] ${c.https ? "https" : "http"}://${c.host}:${c.port}`));
+  candidates.forEach((c, i) => debugLog(`QC:   [${i}] ${c.https ? "https" : "http"}://${c.host}:${c.port} (${c.kind})`));
 
   return candidates;
 }
