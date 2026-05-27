@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## 2026.0527.2
+
+### Added
+
+- Cache recently successful QuickConnect endpoints and try known-working candidates before rediscovery/probe ordering, with stale entries expiring automatically.
+- Add a Troubleshooting setting for sanitized QuickConnect resolution diagnostics, including relay/server-info field presence and candidate-cache decisions.
+
+
 ## 2026.0527.1
 
 ### Fixed
