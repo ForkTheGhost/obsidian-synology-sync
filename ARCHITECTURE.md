@@ -121,7 +121,7 @@ Operational sequence:
 - **Step 4: Snapshot the readable Obsidian vault before checkout/materialization.** The engine must remember local-only files and local file bytes before writing remote content into the vault/worktree. On platforms where vault listing and reads are not atomic, use a two-phase snapshot: list files, read/hash contents, then re-list or otherwise verify the snapshot did not change; retry or defer sync if the snapshot is unstable. If files change while a commit is being built, abort or defer that file to a later sync rather than committing an inconsistent snapshot.
 - **Step 5: Compare local snapshot vs remote tree/index/cache.** Decide local-only, remote-only, changed, unchanged, or conflict using the pre-materialization local snapshot and the remote Git state.
 - **Step 6: Materialize remote-only changes.** Remote-only changes are not no-ops. They must be applied to the readable vault under the held lock/lease, then the lock may be released.
-- **Step 7: For local writes, commit locally, upload objects first, then update the NAS branch ref only if expected-old-ref still matches.** Publishing is not complete until the local change is staged/committed, the local ref/cache is updated, new objects are present in the NAS bare repository, and the NAS branch ref update succeeds while the lock is held.
+- **Step 7: For local writes, commit locally, upload objects first, then update the NAS branch ref only if expected-old-ref still matches.** Publishing is not complete until the local change is staged/committed, the local ref/cache is updated, new objects are present in the NAS bare repository, and the NAS branch ref update succeeds while the lock is held. Automatic sync commit messages should identify the runtime that produced the commit, using the same privacy-preserving fields as the debug `RUNTIME:` line rather than only an opaque device UUID. This makes later bare-repo forensics and conflict attribution possible without logging raw hostnames or filesystem paths.
 - **Step 8: Use Git-bare-backed Sync conflict handling when both sides changed.** Preserve stable conflict copies only when local bytes differ from the remote/tree result; do not create repeat copies for identical content.
 - **Step 9: Release the lock last.** The remote branch ref update, remote-only materialization, no-op verification, or safe abort determines when the lock can be released.
 
@@ -240,17 +240,34 @@ The default policy is notes-oriented and should avoid surprising multi-device co
 
 ## Roadmap / open design items
 
-### Persistent mobile Git cache
+### Persistent mobile Git cache and staging worktree
 
-The first mobile Git-over-File-Station implementation uses an in-memory filesystem because Obsidian mobile does not expose a normal desktop filesystem path to plugins. A follow-up should evaluate `@isomorphic-git/lightning-fs` / IndexedDB as a persistent mobile cache so repeated syncs do not need to reconstruct the Git working state from the vault and NAS bare repo every run.
+The first mobile Git-over-File-Station implementation uses an in-memory filesystem because Obsidian mobile does not expose a normal desktop filesystem path to plugins. A follow-up should evaluate a plugin-owned persistent Git cache/staging area, such as `@isomorphic-git/lightning-fs` / IndexedDB or another Obsidian-mobile-safe store, so repeated syncs do not need to reconstruct the Git working state from the vault and NAS bare repo every run.
+
+The preferred long-term model is to materialize remote Git state into the plugin-owned cache/staging worktree, not directly into the live readable Obsidian vault. Each sync should snapshot the live vault, read/verify the NAS ref under the lease, materialize or reuse the remote tree in staging, compare the live snapshot against the staged remote tree, and then apply only the final decisions back to the live vault. This keeps remote checkout/materialization from being a destructive intermediate operation in the user's vault and reduces first-sync/recovery log spam such as per-file "already matches remote; no conflict copy needed" messages.
+
+The local cache marker should be separate from the NAS lease. The NAS lease is remote, shared, temporary concurrency control for write permission. The local cache marker is private, persistent device state that decides whether the plugin-owned cache can be reused. Neither the lease nor the cache marker proves the live vault can be overwritten; overwrite safety still comes from the current live-vault snapshot compared with the staged remote tree.
+
+A plugin-owned cache marker should record enough information to validate cache reuse, for example:
+
+- cache schema version
+- sync mode and branch
+- privacy-preserving NAS repo identity hash, not the raw NAS path if avoidable
+- last verified NAS remote ref and local cache ref
+- cache completeness state, such as `complete`, `partial`, or `needs-rebuild`
+- runtime/host fingerprint fields consistent with the debug `RUNTIME:` line
+- last successful sync/publish timestamp and plugin version
 
 Acceptance considerations:
 
 - Works inside Obsidian iOS/mobile WebView storage constraints.
 - Does not rely on desktop-only `getBasePath()`, Node `fs`, or native Git.
-- Has a startup cache health check and a safe invalidation/rebuild path if IndexedDB data is missing, evicted, quota-limited, or corrupt.
-- Does not leak vault path/host-identifying data in logs.
+- Uses the plugin-owned cache/staging area for remote materialization and diffing before touching the live vault.
+- Has a startup cache health check and a safe invalidation/rebuild path if persisted data is missing, evicted, quota-limited, or corrupt.
+- Does not leak vault path/host-identifying data in logs, cache markers, or commit messages.
 - Persists at least the last-synced commit/ref identity and enough manifest/object metadata to reduce unnecessary mobile conflicts when a full persistent Git cache is unavailable.
+- Excludes the plugin-owned cache/staging area from user sync content unconditionally, even when broader Obsidian configuration sync is enabled.
+- Provides a user-visible clear/rebuild-cache recovery path for storage pressure or corrupt cache state.
 
 ### Git history retention and packfile policy
 
