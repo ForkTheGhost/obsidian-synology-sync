@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { resolveQuickConnect } from "../src/quickconnect";
+import { resolveQuickConnect, resolveQuickConnectCandidates } from "../src/quickconnect";
 
 const mockedRequestUrl = requestUrl as jest.Mock;
 
@@ -29,6 +29,70 @@ function quickConnectResponse() {
         smartdns: {
           host: "EXAMPLE-NAS.direct.quickconnect.to",
           external: "external.example-nas.direct.quickconnect.to",
+          lan: ["192-0-2-10.EXAMPLE-NAS.direct.quickconnect.to"],
+        },
+      },
+    ],
+  };
+}
+
+function quickConnectResponseWithoutRelay() {
+  return {
+    status: 200,
+    json: [
+      {
+        command: "get_server_info",
+        env: {
+          relay_region: "us",
+          control_host: "example.control.quickconnect.to",
+        },
+        server: {
+          serverID: "Example-NAS",
+          interface: [{ ip: "192.0.2.10" }],
+          external: { ip: "198.51.100.20" },
+        },
+        service: {
+          port: 5001,
+          ext_port: 0,
+          pingpong: "DISCONNECTED",
+          pingpong_desc: [],
+        },
+        smartdns: {
+          host: "EXAMPLE-NAS.direct.quickconnect.to",
+          external: "syn4-opaque-198-51-100-20.EXAMPLE-NAS.direct.quickconnect.to",
+          lan: ["192-0-2-10.EXAMPLE-NAS.direct.quickconnect.to"],
+        },
+      },
+    ],
+  };
+}
+
+function quickConnectTunnelResponse() {
+  return {
+    status: 200,
+    json: [
+      {
+        command: "request_tunnel",
+        env: {
+          relay_region: "us5",
+          control_host: "example.control.quickconnect.to",
+        },
+        server: {
+          serverID: "Example-NAS",
+          interface: [{ ip: "192.0.2.10" }],
+          external: { ip: "198.51.100.20" },
+        },
+        service: {
+          port: 5001,
+          ext_port: 0,
+          relay_ip: "198.51.100.30",
+          relay_dualstack: "synr-us5.EXAMPLE-NAS.direct.quickconnect.to",
+          relay_dn: "synr-us5.EXAMPLE-NAS.direct.quickconnect.to",
+          relay_port: 32836,
+        },
+        smartdns: {
+          host: "EXAMPLE-NAS.direct.quickconnect.to",
+          external: "syn4-opaque-198-51-100-20.EXAMPLE-NAS.direct.quickconnect.to",
           lan: ["192-0-2-10.EXAMPLE-NAS.direct.quickconnect.to"],
         },
       },
@@ -100,6 +164,47 @@ describe("resolveQuickConnect", () => {
       url: "https://relay-api.example.quickconnect.to:443/webman/pingpong.cgi?action=cors&quickconnect=true",
       method: "GET",
       throw: false,
+    });
+  });
+
+  it("requests tunnel metadata when server-info omits relay API fields", async () => {
+    mockedRequestUrl
+      .mockResolvedValueOnce(quickConnectResponseWithoutRelay())
+      .mockResolvedValueOnce(quickConnectTunnelResponse());
+
+    const candidates = await resolveQuickConnectCandidates("Example-NAS");
+
+    expect(mockedRequestUrl).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      url: "https://example.control.quickconnect.to/Serv.php",
+      method: "POST",
+    }));
+    expect(candidates).toContainEqual({
+      host: "synr-us5.EXAMPLE-NAS.direct.quickconnect.to",
+      port: 32836,
+      https: true,
+      kind: "relay-api",
+    });
+  });
+
+  it("uses request_tunnel relay API when direct 5001 candidates fail", async () => {
+    mockedRequestUrl.mockImplementation((opts: { url: string }) => {
+      if (opts.url === "https://global.quickconnect.to/Serv.php") {
+        return Promise.resolve(quickConnectResponseWithoutRelay());
+      }
+      if (opts.url === "https://example.control.quickconnect.to/Serv.php") {
+        return Promise.resolve(quickConnectTunnelResponse());
+      }
+      if (opts.url === "https://synr-us5.EXAMPLE-NAS.direct.quickconnect.to:32836/webman/pingpong.cgi?action=cors&quickconnect=true") {
+        return Promise.resolve({ status: 200, json: { success: true } });
+      }
+      return Promise.resolve({ status: 404, json: { success: false } });
+    });
+
+    await expect(resolveQuickConnect("Example-NAS")).resolves.toEqual({
+      host: "synr-us5.EXAMPLE-NAS.direct.quickconnect.to",
+      port: 32836,
+      https: true,
+      relay: undefined,
     });
   });
 
