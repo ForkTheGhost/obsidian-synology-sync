@@ -4,24 +4,25 @@ import { debugLog } from "./debug";
 
 interface QCServerInfo {
   command: string;
-  env: {
-    relay_region: string;
-    control_host: string;
+  env?: {
+    relay_region?: string;
+    control_host?: string;
   };
-  server: {
-    serverID: string;
-    interface: Array<{ ip: string; ipv6?: Array<{ address: string }> }>;
-    external: { ip: string; ipv6?: string };
+  server?: {
+    serverID?: string;
+    interface?: Array<{ ip: string; ipv6?: Array<{ address: string }> }>;
+    external?: { ip?: string; ipv6?: string };
     fqdn?: string;
     ddns?: string;
   };
-  service: {
-    port: number;
-    ext_port: number;
+  service?: {
+    port?: number;
+    ext_port?: number;
     relay_ip?: string;
     relay_port?: number;
     relay_dualstack?: string;
     relay_dn?: string;
+    relay_ipv6?: string;
     https_ip?: string;
     https_port?: number;
   };
@@ -46,8 +47,11 @@ export interface QCCandidate extends ResolvedNAS {
 }
 
 const LOOKUP_TIMEOUT_MS = 10000;
+const REQUEST_TUNNEL_TIMEOUT_MS = 10000;
 const PING_FAST_TIMEOUT_MS = 5000;
 const PING_SLOW_TIMEOUT_MS = 30000;
+const QUICKCONNECT_SERVER_INFO_IDS = ["dsm_portal_https", "dsm_portal"];
+const QUICKCONNECT_TUNNEL_IDS = ["dsm_portal_https", "mainapp_https"];
 
 function normalizeQuickConnectId(quickConnectId: string): string {
   return quickConnectId.trim().toLowerCase();
@@ -71,6 +75,57 @@ function toResolvedNAS(candidate: QCCandidate): ResolvedNAS {
   };
 }
 
+function buildServerInfoBody(quickConnectId: string): string {
+  return JSON.stringify(QUICKCONNECT_SERVER_INFO_IDS.map((id) => ({
+    version: 1,
+    command: "get_server_info",
+    stop_when_error: false,
+    stop_when_success: false,
+    id,
+    serverID: quickConnectId,
+    is_gofile: false,
+  })));
+}
+
+function buildRequestTunnelBody(quickConnectId: string, id: string): string {
+  return JSON.stringify([{
+    version: 1,
+    command: "request_tunnel",
+    stop_when_error: false,
+    stop_when_success: true,
+    id,
+    serverID: quickConnectId,
+    is_gofile: false,
+    path: "/",
+  }]);
+}
+
+function hasServerInfoShape(info: QCServerInfo): boolean {
+  return !info.errno && !!info.service && !!info.server && !!info.env?.control_host;
+}
+
+function hasRelayApiFields(info: QCServerInfo): boolean {
+  return !!info.service?.relay_port && !!(
+    info.service.relay_dualstack ||
+    info.service.relay_dn ||
+    info.service.relay_ip ||
+    info.service.relay_ipv6
+  );
+}
+
+function serviceKeys(info: QCServerInfo): string {
+  return info.service ? Object.keys(info.service).sort().join(",") : "(none)";
+}
+
+function uniqueControlHosts(results: QCServerInfo[]): string[] {
+  const hosts: string[] = [];
+  for (const info of results) {
+    const host = info.env?.control_host;
+    if (host && !hosts.includes(host)) hosts.push(host);
+  }
+  return hosts;
+}
+
 async function requestUrlWithTimeout(
   request: Parameters<typeof requestUrl>[0],
   timeoutMs: number,
@@ -89,29 +144,54 @@ async function requestUrlWithTimeout(
   }
 }
 
+async function requestTunnelServerInfo(quickConnectId: string, results: QCServerInfo[]): Promise<QCServerInfo[]> {
+  if (results.some(hasRelayApiFields)) return [];
+
+  const useful = results.filter(hasServerInfoShape);
+  for (const info of useful) {
+    debugLog(`QC: server-info has no relay API fields (controlHost=${info.env?.control_host ? "present" : "missing"} relayRegion=${info.env?.relay_region || "(missing)"} serviceKeys=${serviceKeys(info)})`);
+  }
+
+  const controlHosts = uniqueControlHosts(useful);
+  if (controlHosts.length === 0) {
+    debugLog("QC: cannot request QuickConnect relay tunnel; server-info did not include a control host");
+    return [];
+  }
+
+  for (const controlHost of controlHosts) {
+    for (const id of QUICKCONNECT_TUNNEL_IDS) {
+      debugLog(`QC: requesting relay tunnel metadata from ${controlHost} (${id})`);
+      try {
+        const resp = await requestUrlWithTimeout({
+          url: `https://${controlHost}/Serv.php`,
+          method: "POST",
+          body: buildRequestTunnelBody(quickConnectId, id),
+          headers: { "Content-Type": "application/json" },
+        }, REQUEST_TUNNEL_TIMEOUT_MS, "QuickConnect request_tunnel lookup timed out");
+
+        const tunnelResults: QCServerInfo[] = resp.json;
+        if (!Array.isArray(tunnelResults) || tunnelResults.length === 0) {
+          debugLog("QC: relay tunnel metadata returned an empty response");
+          continue;
+        }
+        if (tunnelResults.some(hasRelayApiFields)) {
+          debugLog("QC: relay tunnel metadata includes relay API fields");
+          return tunnelResults;
+        }
+        debugLog(`QC: relay tunnel metadata did not include relay API fields (serviceKeys=${tunnelResults.map(serviceKeys).join(";")})`);
+      } catch (e) {
+        debugLog(`QC: relay tunnel metadata lookup failed: ${(e as Error).message}`);
+      }
+    }
+  }
+
+  return [];
+}
+
 export async function resolveQuickConnectCandidates(quickConnectId: string): Promise<QCCandidate[]> {
   debugLog(`QC: resolving "${quickConnectId}"`);
   const normalizedQuickConnectId = normalizeQuickConnectId(quickConnectId);
-  const body = JSON.stringify([
-    {
-      version: 1,
-      command: "get_server_info",
-      stop_when_error: false,
-      stop_when_success: false,
-      id: "dsm_portal_https",
-      serverID: quickConnectId,
-      is_gofile: false,
-    },
-    {
-      version: 1,
-      command: "get_server_info",
-      stop_when_error: false,
-      stop_when_success: false,
-      id: "dsm_portal",
-      serverID: quickConnectId,
-      is_gofile: false,
-    },
-  ]);
+  const body = buildServerInfoBody(quickConnectId);
 
   debugLog("QC: requesting server info from global.quickconnect.to");
   let resp: RequestUrlResponse;
@@ -128,9 +208,14 @@ export async function resolveQuickConnectCandidates(quickConnectId: string): Pro
   }
   debugLog("QC: server-info response received");
 
-  const results: QCServerInfo[] = resp.json;
+  let results: QCServerInfo[] = resp.json;
   if (!results || results.length === 0) {
     throw new Error("QuickConnect returned empty response");
+  }
+
+  const tunnelResults = await requestTunnelServerInfo(quickConnectId, results);
+  if (tunnelResults.length > 0) {
+    results = [...tunnelResults, ...results];
   }
 
   // Build candidate list ordered by preference.
@@ -142,6 +227,7 @@ export async function resolveQuickConnectCandidates(quickConnectId: string): Pro
     if (info.errno) continue;
     const svc = info.service;
     const srv = info.server;
+    if (!svc || !srv) continue;
     const dns = info.smartdns;
 
     // 1. Regional QuickConnect portal host. This is the same hostname Synology
@@ -157,7 +243,7 @@ export async function resolveQuickConnectCandidates(quickConnectId: string): Pro
 
     // 2. SmartDNS LAN hostnames (best: valid cert + LAN speed)
     //    e.g. 192-168-1-201.MY-NAS.direct.quickconnect.to
-    if (dns?.lan) {
+    if (dns?.lan && svc.port) {
       for (const lanHost of dns.lan) {
         addCandidate(candidates, { host: lanHost, port: svc.port, https: true, kind: "api" });
       }
@@ -170,7 +256,7 @@ export async function resolveQuickConnectCandidates(quickConnectId: string): Pro
     }
 
     // 4. SmartDNS base host (fallback)
-    if (dns?.host) {
+    if (dns?.host && svc.port) {
       addCandidate(candidates, { host: dns.host, port: svc.port, https: true, kind: "api" });
     }
 
@@ -181,6 +267,7 @@ export async function resolveQuickConnectCandidates(quickConnectId: string): Pro
       if (svc.relay_dualstack) addCandidate(candidates, { host: svc.relay_dualstack, port: svc.relay_port, https: true, kind: "relay-api" });
       if (svc.relay_dn) addCandidate(candidates, { host: svc.relay_dn, port: svc.relay_port, https: true, kind: "relay-api" });
       if (svc.relay_ip) addCandidate(candidates, { host: svc.relay_ip, port: svc.relay_port, https: true, kind: "relay-api" });
+      if (svc.relay_ipv6) addCandidate(candidates, { host: svc.relay_ipv6, port: svc.relay_port, https: true, kind: "relay-api" });
     }
 
     // 6. HTTPS relay / portal-provided API tunnel fallback.
@@ -199,7 +286,7 @@ export async function resolveQuickConnectCandidates(quickConnectId: string): Pro
     }
 
     // 8. Raw LAN IPs over HTTP (no cert needed, but unencrypted)
-    if (srv.interface) {
+    if (srv.interface && svc.port) {
       for (const iface of srv.interface) {
         if (iface.ip) {
           addCandidate(candidates, { host: iface.ip, port: svc.port, https: false, kind: "api" });

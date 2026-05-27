@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 2026.0527.1
+
+### Fixed
+
+- Restore off-LAN QuickConnect relay API discovery by requesting Synology tunnel metadata when initial server-info omits `relay_port` fields, so iPhone sync can try `synr-*:<relay_port>` routes without opening inbound DSM port `5001`.
+- Add regression coverage for the off-LAN QuickConnect shape where direct `:5001` candidates fail but a request-tunnel relay API candidate is present and succeeds.
+
 ## 2026.0526.2
 
 ### Added
