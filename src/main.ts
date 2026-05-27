@@ -3,7 +3,7 @@ import { FileStation, FileStationConfig, LoginResult } from "./filestation";
 import { resolveQuickConnect, resolveQuickConnectCandidates, probeQuickConnectCandidates, QCCandidate } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
-import { SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, LATEST_SYNC_LOG_NOTE_PATH, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
+import { CachedQuickConnectCandidate, SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, LATEST_SYNC_LOG_NOTE_PATH, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
 import { beginDebugSync, debugLog, endDebugSync, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics, redactSensitiveLogText } from "./debug";
 
 // UUID generator with fallbacks for older runtimes.
@@ -43,6 +43,49 @@ export function sameQuickConnectCandidate(a: QCCandidate, b: QCCandidate): boole
 export function moveCandidateToFront(candidates: QCCandidate[], selected: QCCandidate): QCCandidate[] {
   const rest = candidates.filter((candidate) => !sameQuickConnectCandidate(candidate, selected));
   return [selected, ...rest];
+}
+
+const QUICKCONNECT_CANDIDATE_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const QUICKCONNECT_CANDIDATE_CACHE_LIMIT = 5;
+
+function candidateUrl(candidate: QCCandidate): string {
+  return `${candidate.https ? "https" : "http"}://${candidate.host}:${candidate.port}`;
+}
+
+function normalizedQuickConnectId(id: string): string {
+  return id.trim().toLowerCase();
+}
+
+export function prioritizeCachedQuickConnectCandidates(
+  discovered: QCCandidate[],
+  cached: CachedQuickConnectCandidate[],
+  quickConnectId: string,
+  now = Date.now(),
+): QCCandidate[] {
+  const normalizedId = normalizedQuickConnectId(quickConnectId);
+  const fresh = freshCachedQuickConnectCandidates(cached, normalizedId, now);
+
+  const out: QCCandidate[] = [];
+  for (const candidate of [...fresh, ...discovered]) {
+    if (!out.some((existing) => sameQuickConnectCandidate(existing, candidate))) out.push(candidate);
+  }
+  return out;
+}
+
+export function freshCachedQuickConnectCandidates(
+  cached: CachedQuickConnectCandidate[],
+  quickConnectId: string,
+  now = Date.now(),
+): QCCandidate[] {
+  const normalizedId = normalizedQuickConnectId(quickConnectId);
+  return cached
+    .filter((entry) => normalizedQuickConnectId(entry.quickConnectId) === normalizedId)
+    .filter((entry) => now - entry.lastSuccessAt <= QUICKCONNECT_CANDIDATE_CACHE_TTL_MS)
+    .sort((a, b) => {
+      if (b.lastSuccessAt !== a.lastSuccessAt) return b.lastSuccessAt - a.lastSuccessAt;
+      return b.successCount - a.successCount;
+    })
+    .map((entry) => entry.candidate);
 }
 
 export default class SynologySync extends Plugin {
@@ -173,14 +216,61 @@ export default class SynologySync extends Plugin {
 
 
   private async prioritizedQuickConnectCandidates(quickConnectId: string): Promise<QCCandidate[]> {
-    const candidates = await resolveQuickConnectCandidates(quickConnectId);
-    const reachable = await probeQuickConnectCandidates(candidates);
-    if (reachable) return moveCandidateToFront(candidates, reachable);
+    const candidates = await resolveQuickConnectCandidates(quickConnectId, this.settings.debugQuickConnectResolution);
+    const freshCachedCandidates = freshCachedQuickConnectCandidates(this.settings.quickConnectCandidateCache || [], quickConnectId);
+    if (freshCachedCandidates.length > 0) {
+      debugLog(`QC: trying ${freshCachedCandidates.length} cached working candidate(s) before rediscovery probes`);
+      return prioritizeCachedQuickConnectCandidates(candidates, this.settings.quickConnectCandidateCache || [], quickConnectId);
+    }
+    const cachedCandidates = prioritizeCachedQuickConnectCandidates(
+      candidates,
+      this.settings.quickConnectCandidateCache || [],
+      quickConnectId,
+    );
+    if (this.settings.debugQuickConnectResolution) {
+      debugLog(`QC: working-candidate cache entries=${(this.settings.quickConnectCandidateCache || []).length} candidates_after_cache=${cachedCandidates.length}`);
+      cachedCandidates.forEach((candidate, i) => debugLog(`QC: priority [${i}] ${candidateUrl(candidate)} (${candidate.kind})`));
+    }
+    const candidatesToProbe = cachedCandidates;
+    const reachable = await probeQuickConnectCandidates(candidatesToProbe);
+    if (reachable) return moveCandidateToFront(candidatesToProbe, reachable);
 
-    const slowReachable = await probeQuickConnectCandidates(candidates, 30000);
-    if (slowReachable) return moveCandidateToFront(candidates, slowReachable);
+    const slowReachable = await probeQuickConnectCandidates(candidatesToProbe, 30000);
+    if (slowReachable) return moveCandidateToFront(candidatesToProbe, slowReachable);
 
-    return candidates;
+    return candidatesToProbe;
+  }
+
+  private async recordQuickConnectCandidateResult(quickConnectId: string, candidate: QCCandidate, success: boolean): Promise<void> {
+    const now = Date.now();
+    const normalizedId = normalizedQuickConnectId(quickConnectId);
+    const retained = (this.settings.quickConnectCandidateCache || [])
+      .filter((entry) => normalizedQuickConnectId(entry.quickConnectId) === normalizedId || now - entry.lastSuccessAt <= QUICKCONNECT_CANDIDATE_CACHE_TTL_MS)
+      .filter((entry) => now - entry.lastSuccessAt <= QUICKCONNECT_CANDIDATE_CACHE_TTL_MS);
+    const existing = retained.find((entry) => normalizedQuickConnectId(entry.quickConnectId) === normalizedId && sameQuickConnectCandidate(entry.candidate, candidate));
+    if (existing) {
+      existing.lastTriedAt = now;
+      if (success) {
+        existing.lastSuccessAt = now;
+        existing.successCount += 1;
+      } else {
+        existing.lastFailureAt = now;
+      }
+    } else if (success) {
+      retained.push({
+        candidate,
+        quickConnectId: normalizedId,
+        successCount: 1,
+        lastSuccessAt: now,
+        lastTriedAt: now,
+      });
+    }
+    retained.sort((a, b) => b.lastSuccessAt - a.lastSuccessAt || b.successCount - a.successCount);
+    this.settings.quickConnectCandidateCache = retained.slice(0, QUICKCONNECT_CANDIDATE_CACHE_LIMIT);
+    if (this.settings.debugQuickConnectResolution) {
+      debugLog(`QC: working-candidate cache ${success ? "recorded success" : "recorded failure"} ${candidateUrl(candidate)} entries=${this.settings.quickConnectCandidateCache.length}`);
+    }
+    await this.saveSettings();
   }
 
   async getFileStation(): Promise<FileStation> {
@@ -196,6 +286,7 @@ export default class SynologySync extends Plugin {
         try {
           const result = await fs.login();
           debugLog(`QC: authenticated candidate [${i}] ${config.baseUrl}`);
+          await this.recordQuickConnectCandidateResult(this.settings.quickConnectId, candidate, true);
           if (result.deviceToken && result.deviceToken !== this.settings.deviceToken) {
             this.settings.deviceId = result.deviceId;
             this.settings.deviceToken = result.deviceToken;
@@ -205,6 +296,7 @@ export default class SynologySync extends Plugin {
         } catch (e) {
           lastError = e;
           debugLog(`QC: candidate [${i}] failed: ${(e as Error).message}`);
+          await this.recordQuickConnectCandidateResult(this.settings.quickConnectId, candidate, false);
           try { await fs.logout(); } catch { /* ignore */ }
         }
       }

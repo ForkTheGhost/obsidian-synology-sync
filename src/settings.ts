@@ -4,6 +4,16 @@ import { resolveQuickConnect } from "./quickconnect";
 import { getDebugLog, getDebugLogSnippet, clearDebugLog, subscribeDebugLog } from "./debug";
 import { FileStation, FileInfo } from "./filestation";
 import type { ObsidianConfigOptIns, ObsidianConfigSyncPolicy } from "./git-excludes";
+import type { QCCandidate } from "./quickconnect";
+
+export interface CachedQuickConnectCandidate {
+  candidate: QCCandidate;
+  quickConnectId: string;
+  successCount: number;
+  lastSuccessAt: number;
+  lastTriedAt?: number;
+  lastFailureAt?: number;
+}
 
 export interface SynologySyncSettings {
   syncBackend: "filestation" | "git-filestation";
@@ -57,6 +67,8 @@ export interface SynologySyncSettings {
   gitAuthorEmail: string;
   obsidianConfigPolicy: ObsidianConfigSyncPolicy;
   obsidianConfigOptIns: ObsidianConfigOptIns;
+  debugQuickConnectResolution: boolean;
+  quickConnectCandidateCache: CachedQuickConnectCandidate[];
   persistSyncLogToVaultNote: boolean;
 }
 
@@ -103,6 +115,8 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   gitAuthorEmail: "synology-sync@local",
   obsidianConfigPolicy: "notes-only",
   obsidianConfigOptIns: {},
+  debugQuickConnectResolution: false,
+  quickConnectCandidateCache: [],
   persistSyncLogToVaultNote: false,
 };
 
@@ -117,6 +131,14 @@ const LEGACY_TOMBSTONE_JITTER_MS = 30000;
  */
 export function migrateLoadedSettings(settings: SynologySyncSettings): boolean {
   let changed = false;
+  if (!Array.isArray(settings.quickConnectCandidateCache)) {
+    settings.quickConnectCandidateCache = [];
+    changed = true;
+  }
+  if (typeof settings.debugQuickConnectResolution !== "boolean") {
+    settings.debugQuickConnectResolution = false;
+    changed = true;
+  }
   if (settings.tombstoneJitterMs === LEGACY_TOMBSTONE_JITTER_MS) {
     settings.tombstoneJitterMs = DEFAULT_SETTINGS.tombstoneJitterMs;
     changed = true;
@@ -571,6 +593,16 @@ export class SynologySyncSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.persistSyncLogToVaultNote).onChange(async (value) => {
           this.plugin.settings.persistSyncLogToVaultNote = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Debug QuickConnect resolution")
+      .setDesc("Log sanitized QuickConnect server-info field presence and working-candidate cache decisions. Useful for off-LAN relay troubleshooting.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.debugQuickConnectResolution).onChange(async (value) => {
+          this.plugin.settings.debugQuickConnectResolution = value;
           await this.plugin.saveSettings();
         })
       );
