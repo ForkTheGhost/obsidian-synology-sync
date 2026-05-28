@@ -142,8 +142,11 @@ export class FileStation {
     return this.lastAuthState;
   }
 
-  private endpointKind(): AuthEndpointKind {
-    return this.config.quickConnectRelay ? "relay" : "direct";
+  endpointKind(): AuthEndpointKind {
+    if (this.config.quickConnectRelay) return "relay";
+    if (/\.quickconnect\.to(?::|$)|\.direct\.quickconnect\.to(?::|$)/i.test(this.config.baseUrl)) return "direct";
+    if (/^https?:\/\//i.test(this.config.baseUrl)) return "manual";
+    return "unknown";
   }
 
   private setAuthState(state: AuthState): AuthState {
@@ -533,18 +536,25 @@ export class FileStation {
     // the declared content length. Only fall back to one-byte text
     // reconstruction when arrayBuffer length is wrong; decoding arbitrary Git
     // object bytes as text can corrupt high-bit bytes while preserving length.
-    const resp = await requestUrl({
-      url: this.url("", {
-        api: "SYNO.FileStation.Download",
-        version: "2",
-        method: "download",
-        path: filePath,
-        mode: "download",
-      }),
-      method: "GET",
-      headers: { "Accept-Encoding": "identity" },
-      throw: false,
-    });
+    const started = Date.now();
+    let resp: RequestUrlResponse;
+    try {
+      resp = await requestUrl({
+        url: this.url("", {
+          api: "SYNO.FileStation.Download",
+          version: "2",
+          method: "download",
+          path: filePath,
+          mode: "download",
+        }),
+        method: "GET",
+        headers: { "Accept-Encoding": "identity" },
+        throw: false,
+      });
+    } catch (e) {
+      debugLog(`download failed before response path=${filePath} endpoint=${this.endpointKind()} elapsedMs=${Date.now() - started} error=${(e as Error).message}`);
+      throw e;
+    }
     if (resp.status !== 200) {
       throw new Error(`download failed for ${filePath}: HTTP ${resp.status}`);
     }
@@ -557,6 +567,9 @@ export class FileStation {
 
     const contentLength = Number(headers?.["content-length"] ?? headers?.["Content-Length"]);
     const bodyBytes = new Uint8Array(resp.arrayBuffer);
+    if (bodyBytes.byteLength >= 1024 * 1024 || Date.now() - started > 10_000) {
+      debugLog(`download complete path=${filePath} endpoint=${this.endpointKind()} status=${resp.status} bytes=${bodyBytes.byteLength} contentLength=${Number.isFinite(contentLength) ? contentLength : "absent"} elapsedMs=${Date.now() - started} contentType=${ct || "absent"}`);
+    }
     if (!Number.isFinite(contentLength) || bodyBytes.byteLength === contentLength) {
       return resp.arrayBuffer;
     }

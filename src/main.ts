@@ -1,6 +1,6 @@
 import { Plugin, Notice, Modal, App } from "obsidian";
 import { FileStation, FileStationConfig, LoginResult } from "./filestation";
-import { resolveQuickConnect, resolveQuickConnectCandidates, probeQuickConnectCandidates, QCCandidate } from "./quickconnect";
+import { compareQuickConnectCandidates, resolveQuickConnect, resolveQuickConnectCandidates, probeQuickConnectCandidates, QCCandidate } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
 import { CachedQuickConnectCandidate, SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, LATEST_SYNC_LOG_NOTE_PATH, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
@@ -66,10 +66,19 @@ export function prioritizeCachedQuickConnectCandidates(
   const fresh = freshCachedQuickConnectCandidates(cached, normalizedId, now);
 
   const out: QCCandidate[] = [];
-  for (const candidate of [...fresh, ...discovered]) {
-    if (!out.some((existing) => sameQuickConnectCandidate(existing, candidate))) out.push(candidate);
+  // Cache is a memory hint, not a transport policy. Keep rediscovered LAN/direct
+  // candidates ahead of stale-but-successful relay entries, then use recency only
+  // inside the same candidate class. This preserves the speed benefit without
+  // making an old relay win on local Wi-Fi.
+  for (const candidate of [...discovered, ...fresh]) {
+    const discoveredMatch = discovered.find((existing) => sameQuickConnectCandidate(existing, candidate));
+    const enriched = { ...candidate, source: candidate.source ?? discoveredMatch?.source };
+    if (!out.some((existing) => sameQuickConnectCandidate(existing, enriched))) out.push(enriched);
   }
-  return out;
+  return out
+    .map((candidate, index) => ({ candidate, index }))
+    .sort((a, b) => compareQuickConnectCandidates(a.candidate, b.candidate) || a.index - b.index)
+    .map((entry) => entry.candidate);
 }
 
 export function freshCachedQuickConnectCandidates(
@@ -219,8 +228,7 @@ export default class SynologySync extends Plugin {
     const candidates = await resolveQuickConnectCandidates(quickConnectId, this.settings.debugLogEnabled);
     const freshCachedCandidates = freshCachedQuickConnectCandidates(this.settings.quickConnectCandidateCache || [], quickConnectId);
     if (freshCachedCandidates.length > 0) {
-      debugLog(`QC: trying ${freshCachedCandidates.length} cached working candidate(s) before rediscovery probes`);
-      return prioritizeCachedQuickConnectCandidates(candidates, this.settings.quickConnectCandidateCache || [], quickConnectId);
+      debugLog(`QC: found ${freshCachedCandidates.length} fresh cached working candidate(s); merging with rediscovered candidates by source priority`);
     }
     const cachedCandidates = prioritizeCachedQuickConnectCandidates(
       candidates,
@@ -229,7 +237,7 @@ export default class SynologySync extends Plugin {
     );
     if (this.settings.debugLogEnabled) {
       debugLog(`QC: working-candidate cache entries=${(this.settings.quickConnectCandidateCache || []).length} candidates_after_cache=${cachedCandidates.length}`);
-      cachedCandidates.forEach((candidate, i) => debugLog(`QC: priority [${i}] ${candidateUrl(candidate)} (${candidate.kind})`));
+      cachedCandidates.forEach((candidate, i) => debugLog(`QC: priority [${i}] ${candidateUrl(candidate)} (${candidate.kind}${candidate.source ? ` source=${candidate.source}` : ""})`));
     }
     const candidatesToProbe = cachedCandidates;
     const reachable = await probeQuickConnectCandidates(candidatesToProbe);

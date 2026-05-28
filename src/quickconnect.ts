@@ -44,6 +44,7 @@ export interface ResolvedNAS {
 
 export interface QCCandidate extends ResolvedNAS {
   kind: "portal" | "api" | "relay-api";
+  source?: "portal" | "smartdns-lan" | "smartdns-external" | "smartdns-host" | "relay-dualstack" | "relay-dn" | "relay-ip" | "relay-ipv6" | "https-ip" | "fqdn" | "ddns" | "raw-lan" | "raw-external";
 }
 
 const LOOKUP_TIMEOUT_MS = 10000;
@@ -124,6 +125,55 @@ function uniqueControlHosts(results: QCServerInfo[]): string[] {
     if (host && !hosts.includes(host)) hosts.push(host);
   }
   return hosts;
+}
+
+function redactIpList(values: Array<string | undefined> | undefined): string {
+  if (!values || values.length === 0) return "(none)";
+  return values.filter(Boolean).map((value) => {
+    const raw = String(value);
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(raw)) return raw.replace(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/, "$1.$2.$3.x");
+    return raw.replace(/^(\d+-\d+-\d+)-\d+(\..*)$/i, "$1-x$2");
+  }).join(",");
+}
+
+function isPrivateIpv4(ip: string | undefined): boolean {
+  if (!ip) return false;
+  const parts = ip.split(".").map((p) => Number(p));
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false;
+  return parts[0] === 10 || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) || (parts[0] === 192 && parts[1] === 168) || (parts[0] === 169 && parts[1] === 254);
+}
+
+function candidateSourceRank(candidate: QCCandidate): number {
+  switch (candidate.source) {
+    case "smartdns-lan": return 0;
+    case "raw-lan": return 1;
+    case "smartdns-external": return 2;
+    case "smartdns-host": return 3;
+    case "fqdn":
+    case "ddns": return 4;
+    case "relay-dualstack":
+    case "relay-dn":
+    case "relay-ip":
+    case "relay-ipv6": return 5;
+    case "https-ip": return 6;
+    case "portal": return 7;
+    case "raw-external": return 8;
+    default:
+      if (candidate.kind === "relay-api") return 5;
+      if (candidate.kind === "portal") return 7;
+      return 4;
+  }
+}
+
+export function compareQuickConnectCandidates(a: QCCandidate, b: QCCandidate): number {
+  return candidateSourceRank(a) - candidateSourceRank(b);
+}
+
+function stableSortCandidates(candidates: QCCandidate[]): QCCandidate[] {
+  return candidates
+    .map((candidate, index) => ({ candidate, index }))
+    .sort((a, b) => compareQuickConnectCandidates(a.candidate, b.candidate) || a.index - b.index)
+    .map((entry) => entry.candidate);
 }
 
 async function requestUrlWithTimeout(
@@ -228,26 +278,35 @@ export async function resolveQuickConnectCandidates(quickConnectId: string, debu
     const svc = info.service || {} as QCServerInfo["service"];
     const srv = info.server || {} as QCServerInfo["server"];
     const dns = info.smartdns;
+    const interfaceIps = srv.interface?.map((iface) => iface.ip) || [];
+    const privateInterfaceCount = interfaceIps.filter(isPrivateIpv4).length;
+    const lanDnsPrivateHintCount = (dns?.lan || []).filter((host) => /(^|\.)\d+-\d+-\d+-\d+\./.test(host) || /^192-168-|^10-|^172-(1[6-9]|2\d|3[01])-/.test(host)).length;
     debugLog([
       `QC: server-info[${index}] fields`,
       `errno=${info.errno ?? 0}`,
       `command=${info.command || "(unset)"}`,
-      `relay_region=${info.env?.relay_region ? "present" : "absent"}`,
+      `relay_region=${info.env?.relay_region || "absent"}`,
+      `control_host=${info.env?.control_host ? "present" : "absent"}`,
       `service.port=${svc.port || "absent"}`,
       `service.ext_port=${svc.ext_port || "absent"}`,
       `service.relay_port=${svc.relay_port || "absent"}`,
-      `service.relay_dn=${svc.relay_dn ? "present" : "absent"}`,
-      `service.relay_ip=${svc.relay_ip ? "present" : "absent"}`,
-      `service.relay_dualstack=${svc.relay_dualstack ? "present" : "absent"}`,
-      `service.https_ip=${svc.https_ip ? "present" : "absent"}`,
+      `service.relay_dn=${svc.relay_dn || "absent"}`,
+      `service.relay_ip=${redactIpList([svc.relay_ip])}`,
+      `service.relay_dualstack=${svc.relay_dualstack || "absent"}`,
+      `service.relay_ipv6=${svc.relay_ipv6 ? "present" : "absent"}`,
+      `service.https_ip=${redactIpList([svc.https_ip])}`,
       `service.https_port=${svc.https_port || "absent"}`,
-      `smartdns.host=${dns?.host ? "present" : "absent"}`,
-      `smartdns.external=${dns?.external ? "present" : "absent"}`,
-      `smartdns.lan=${dns?.lan?.length || 0}`,
-      `server.fqdn=${srv.fqdn && srv.fqdn !== "NULL" ? "present" : "absent"}`,
-      `server.ddns=${srv.ddns && srv.ddns !== "NULL" ? "present" : "absent"}`,
-      `server.interface=${srv.interface?.length || 0}`,
-      `server.external=${srv.external?.ip && srv.external.ip !== "0.0.0.0" ? "present" : "absent"}`,
+      `smartdns.host=${dns?.host || "absent"}`,
+      `smartdns.external=${dns?.external || "absent"}`,
+      `smartdns.lan_count=${dns?.lan?.length || 0}`,
+      `smartdns.lan=${redactIpList(dns?.lan)}`,
+      `server.fqdn=${srv.fqdn && srv.fqdn !== "NULL" ? srv.fqdn : "absent"}`,
+      `server.ddns=${srv.ddns && srv.ddns !== "NULL" ? srv.ddns : "absent"}`,
+      `server.interface_count=${srv.interface?.length || 0}`,
+      `server.private_interface_count=${privateInterfaceCount}`,
+      `server.interface_ips=${redactIpList(interfaceIps)}`,
+      `server.external=${redactIpList([srv.external?.ip && srv.external.ip !== "0.0.0.0" ? srv.external.ip : undefined])}`,
+      `wifi_lan_hint=${privateInterfaceCount > 0 || lanDnsPrivateHintCount > 0 ? "available_lan_candidates" : "none_from_server_info"}`,
     ].join(" "));
   });
 
@@ -266,6 +325,7 @@ export async function resolveQuickConnectCandidates(quickConnectId: string, debu
         port: 443,
         https: true,
         kind: "portal",
+        source: "portal",
       });
     }
 
@@ -273,51 +333,51 @@ export async function resolveQuickConnectCandidates(quickConnectId: string, debu
     //    e.g. 192-168-1-201.MY-NAS.direct.quickconnect.to
     if (dns?.lan && svc.port) {
       for (const lanHost of dns.lan) {
-        addCandidate(candidates, { host: lanHost, port: svc.port, https: true, kind: "api" });
+        addCandidate(candidates, { host: lanHost, port: svc.port, https: true, kind: "api", source: "smartdns-lan" });
       }
     }
 
     // 3. SmartDNS external hostname (valid cert + WAN)
     if (dns?.external) {
       const port = svc.ext_port || svc.port;
-      addCandidate(candidates, { host: dns.external, port, https: true, kind: "api" });
+      addCandidate(candidates, { host: dns.external, port, https: true, kind: "api", source: "smartdns-external" });
     }
 
     // 4. SmartDNS base host (fallback)
     if (dns?.host && svc.port) {
-      addCandidate(candidates, { host: dns.host, port: svc.port, https: true, kind: "api" });
+      addCandidate(candidates, { host: dns.host, port: svc.port, https: true, kind: "api", source: "smartdns-host" });
     }
 
     // 5. QuickConnect relay API tunnel. This is different from the browser
     // portal host. Remote clients often cannot reach any direct endpoint, but
     // File Station APIs can still work through the relay_ip/relay_port tunnel.
     if (svc.relay_port) {
-      if (svc.relay_dualstack) addCandidate(candidates, { host: svc.relay_dualstack, port: svc.relay_port, https: true, kind: "relay-api" });
-      if (svc.relay_dn) addCandidate(candidates, { host: svc.relay_dn, port: svc.relay_port, https: true, kind: "relay-api" });
-      if (svc.relay_ip) addCandidate(candidates, { host: svc.relay_ip, port: svc.relay_port, https: true, kind: "relay-api" });
-      if (svc.relay_ipv6) addCandidate(candidates, { host: svc.relay_ipv6, port: svc.relay_port, https: true, kind: "relay-api" });
+      if (svc.relay_dualstack) addCandidate(candidates, { host: svc.relay_dualstack, port: svc.relay_port, https: true, kind: "relay-api", source: "relay-dualstack" });
+      if (svc.relay_dn) addCandidate(candidates, { host: svc.relay_dn, port: svc.relay_port, https: true, kind: "relay-api", source: "relay-dn" });
+      if (svc.relay_ip) addCandidate(candidates, { host: svc.relay_ip, port: svc.relay_port, https: true, kind: "relay-api", source: "relay-ip" });
+      if (svc.relay_ipv6) addCandidate(candidates, { host: svc.relay_ipv6, port: svc.relay_port, https: true, kind: "relay-api", source: "relay-ipv6" });
     }
 
     // 6. HTTPS relay / portal-provided API tunnel fallback.
     if (svc.https_ip && svc.https_port) {
-      addCandidate(candidates, { host: svc.https_ip, port: svc.https_port, https: true, kind: "api" });
+      addCandidate(candidates, { host: svc.https_ip, port: svc.https_port, https: true, kind: "api", source: "https-ip" });
     }
 
     // 7. FQDN / DDNS
     if (srv.fqdn && srv.fqdn !== "NULL") {
       const port = svc.ext_port || svc.port;
-      addCandidate(candidates, { host: srv.fqdn, port, https: true, kind: "api" });
+      addCandidate(candidates, { host: srv.fqdn, port, https: true, kind: "api", source: "fqdn" });
     }
     if (srv.ddns && srv.ddns !== "NULL") {
       const port = svc.ext_port || svc.port;
-      addCandidate(candidates, { host: srv.ddns, port, https: true, kind: "api" });
+      addCandidate(candidates, { host: srv.ddns, port, https: true, kind: "api", source: "ddns" });
     }
 
     // 8. Raw LAN IPs over HTTP (no cert needed, but unencrypted)
     if (srv.interface && svc.port) {
       for (const iface of srv.interface) {
         if (iface.ip) {
-          addCandidate(candidates, { host: iface.ip, port: svc.port, https: false, kind: "api" });
+          addCandidate(candidates, { host: iface.ip, port: svc.port, https: false, kind: "api", source: "raw-lan" });
         }
       }
     }
@@ -326,7 +386,7 @@ export async function resolveQuickConnectCandidates(quickConnectId: string, debu
     if (srv.external?.ip && srv.external.ip !== "0.0.0.0") {
       const port = svc.ext_port || svc.port;
       if (port) {
-        addCandidate(candidates, { host: srv.external.ip, port, https: false, kind: "api" });
+        addCandidate(candidates, { host: srv.external.ip, port, https: false, kind: "api", source: "raw-external" });
       }
     }
   }
@@ -335,10 +395,11 @@ export async function resolveQuickConnectCandidates(quickConnectId: string, debu
     throw new Error(`QuickConnect could not resolve "${quickConnectId}"`);
   }
 
-  debugLog(`QC: ${candidates.length} candidates built`);
-  candidates.forEach((c, i) => debugLog(`QC:   [${i}] ${c.https ? "https" : "http"}://${c.host}:${c.port} (${c.kind})`));
+  const orderedCandidates = stableSortCandidates(candidates);
+  debugLog(`QC: ${orderedCandidates.length} candidates built`);
+  orderedCandidates.forEach((c, i) => debugLog(`QC:   [${i}] ${c.https ? "https" : "http"}://${c.host}:${c.port} (${c.kind}${c.source ? ` source=${c.source}` : ""})`));
 
-  return candidates;
+  return orderedCandidates;
 }
 
 async function pingCandidate(candidate: QCCandidate, timeoutMs: number): Promise<boolean> {
