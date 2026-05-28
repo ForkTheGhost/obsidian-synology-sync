@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 2026.0528.1
+
+### Added
+
+- Add source-labeled QuickConnect route diagnostics for server-info fields, LAN hints, candidate ordering, probe outcomes, selected endpoint source/kind, and File Station endpoint kind.
+- Add File Station mobile Git download diagnostics for remote repo listing counts, thresholded per-file progress, bytes, elapsed time, and failure location.
+- Add adversarial QuickConnect tests for request-tunnel relay metadata, stale relay cache vs rediscovered LAN/direct routes, portal fallback ordering, and hanging LAN candidate fallback.
+
+### Changed
+
+- Treat cached successful QuickConnect candidates as a hint instead of a try-first policy, preserving direct/LAN priority when fresh candidates are rediscovered.
+- Replace the narrow QuickConnect debug toggle with a general Debug log setting for data-driven transport decisions.
+
 ## 2026.0527.2
 
 ### Added

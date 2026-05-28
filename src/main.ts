@@ -289,11 +289,12 @@ export default class SynologySync extends Plugin {
       for (let i = 0; i < candidates.length; i++) {
         const candidate = candidates[i];
         const config = this.configFromQuickConnectCandidate(candidate);
-        debugLog(`QC: trying candidate [${i}] ${config.baseUrl} (${candidate.kind})`);
+        debugLog(`QC: trying candidate [${i}] ${config.baseUrl} (${candidate.kind}${candidate.source ? ` source=${candidate.source}` : ""})`);
         const fs = new FileStation(config);
+        debugLog(`QC: candidate [${i}] endpoint kind=${fs.endpointKind()}`);
         try {
           const result = await fs.login();
-          debugLog(`QC: authenticated candidate [${i}] ${config.baseUrl}`);
+          debugLog(`QC: authenticated candidate [${i}] ${config.baseUrl} (${candidate.kind}${candidate.source ? ` source=${candidate.source}` : ""}) endpoint=${fs.endpointKind()}`);
           await this.recordQuickConnectCandidateResult(this.settings.quickConnectId, candidate, true);
           if (result.deviceToken && result.deviceToken !== this.settings.deviceToken) {
             this.settings.deviceId = result.deviceId;
@@ -303,7 +304,7 @@ export default class SynologySync extends Plugin {
           return fs;
         } catch (e) {
           lastError = e;
-          debugLog(`QC: candidate [${i}] failed: ${(e as Error).message}`);
+          debugLog(`QC: candidate [${i}] failed (${candidate.kind}${candidate.source ? ` source=${candidate.source}` : ""}) endpoint=${fs.endpointKind()}: ${(e as Error).message}`);
           await this.recordQuickConnectCandidateResult(this.settings.quickConnectId, candidate, false);
           try { await fs.logout(); } catch { /* ignore */ }
         }
