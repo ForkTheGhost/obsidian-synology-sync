@@ -5,6 +5,7 @@
 ### Fixed
 
 - Replace the mobile Git-over-File-Station whole-bare-repo mirror with targeted `HEAD`, branch ref/`packed-refs`, and reachable loose-object reads, cache validated loose Git objects under `.obsidian/plugins/synology-sync/git-cache/v1`, and explicitly block on packfiles until mobile pack handling lands.
+- Hold the Git-over-File-Station lease across authoritative remote ref/object reads, remote materialization, and publish; verify `expectedOldRef` in lease metadata; and add a plugin cache marker so mobile object cache reuse is branch/repo scoped and rebuildable.
 
 ## 2026.0528.2
 

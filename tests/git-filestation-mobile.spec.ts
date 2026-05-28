@@ -121,6 +121,9 @@ describe("MobileGitFileStationSyncEngine", () => {
     const { vault } = vaultWithFiles({});
     const uploaded: string[] = [];
     const fs = remoteBackedFileStation(remote, uploaded);
+    const order: string[] = [];
+    fs.createFolderStrict.mockImplementation(async () => { order.push("lease"); });
+    vault.createBinary.mockImplementation(async (path: string) => { order.push(`materialize:${path}`); });
     const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
       remotePath: "/homes/user/Obsidian/Test.git",
       branch: "main",
@@ -133,6 +136,8 @@ describe("MobileGitFileStationSyncEngine", () => {
 
     expect(result.errors).toEqual([]);
     expect(result.downloaded).toContain("RemoteOnly.md");
+    expect(order.indexOf("lease")).toBeGreaterThanOrEqual(0);
+    expect(order.findIndex((entry) => entry.startsWith("materialize:"))).toBeGreaterThan(order.indexOf("lease"));
     expect(fs.listFolder).not.toHaveBeenCalled();
     const downloaded = fs.download.mock.calls.map(([path]) => path);
     expect(downloaded).toContain("/homes/user/Obsidian/Test.git/HEAD");
@@ -184,6 +189,7 @@ describe("MobileGitFileStationSyncEngine", () => {
     };
     const oid = "a".repeat(40);
     const textEncoder = new TextEncoder();
+    let leaseMetadata = "";
     const fs = {
       listFolder: jest.fn(async (path: string) => {
         if (path.endsWith("objects/pack")) return [
@@ -194,12 +200,17 @@ describe("MobileGitFileStationSyncEngine", () => {
       }),
       listAllFiles: jest.fn(async () => []),
       download: jest.fn(async (path: string) => {
+        if (path.endsWith("lease.json")) return textEncoder.encode(leaseMetadata).buffer;
         if (path.endsWith("/HEAD")) return textEncoder.encode("ref: refs/heads/main\n").buffer;
         if (path.endsWith("/refs/heads/main")) return textEncoder.encode(`${oid}\n`).buffer;
         throw new Error("loose object missing");
       }),
       createFolder: jest.fn(async () => undefined),
-      upload: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+      upload: jest.fn(async (_dest: string, name: string, content: ArrayBuffer) => {
+        if (name === "lease.json") leaseMetadata = new TextDecoder().decode(new Uint8Array(content));
+      }),
     };
 
     const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
@@ -902,6 +913,7 @@ describe("MobileGitFileStationSyncEngine", () => {
     await first.sync();
 
     expect(writtenCachePaths.some((path) => path.startsWith(".obsidian/plugins/synology-sync/git-cache/v1/objects/"))).toBe(true);
+    expect(writtenCachePaths).toContain(".obsidian/plugins/synology-sync/git-cache/v1/cache-marker.json");
     const firstDownloads = fs.download.mock.calls.map(([path]) => path);
     expect(firstDownloads.some((path) => path.includes("/objects/"))).toBe(true);
 

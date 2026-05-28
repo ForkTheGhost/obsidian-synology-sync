@@ -53,6 +53,28 @@ describe("FileStationGitLease", () => {
     expect(fs.delete).not.toHaveBeenCalled();
   });
 
+  it("refuses a lease when re-read metadata has a mismatched expected old ref", async () => {
+    let metadata = "";
+    const fs = {
+      createFolder: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => undefined),
+      upload: jest.fn(async (_dest: string, _name: string, content: ArrayBuffer) => {
+        const actual = JSON.parse(new TextDecoder().decode(new Uint8Array(content)));
+        metadata = JSON.stringify({ ...actual, expectedOldRef: "different-ref" });
+      }),
+      download: jest.fn(async () => new TextEncoder().encode(metadata).buffer),
+      delete: jest.fn(async () => undefined),
+    };
+
+    await expect(withFileStationGitLease(fs as never, {
+      remotePath: "/repo.git",
+      branch: "main",
+      owner: "device-a",
+      expectedOldRef: "abc123",
+    }, async () => undefined)).rejects.toThrow(/metadata verification failed/);
+    expect(fs.delete).not.toHaveBeenCalled();
+  });
+
   it("recovers an expired lease only after reading and verifying metadata", async () => {
     let strictCalls = 0;
     const prior = { owner: "old-device", branch: "main", createdAt: new Date(0).toISOString(), expiresAt: new Date(1000).toISOString(), token: "old" };

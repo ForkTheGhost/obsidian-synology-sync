@@ -140,7 +140,12 @@ export class FileStationGitLease {
     const fs = this.fs as unknown as { download?: (path: string) => Promise<ArrayBuffer> };
     if (typeof fs.download !== "function") return;
     const actual = await this.readMetadata();
-    if (actual.token !== expected.token || actual.owner !== expected.owner || actual.branch !== expected.branch) {
+    if (
+      actual.token !== expected.token ||
+      actual.owner !== expected.owner ||
+      actual.branch !== expected.branch ||
+      (actual.expectedOldRef || undefined) !== (expected.expectedOldRef || undefined)
+    ) {
       throw new Error(`Git lease metadata verification failed for ${this.leaseDir}; refusing to sync without a verified lease token.`);
     }
   }

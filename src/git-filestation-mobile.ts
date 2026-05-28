@@ -51,6 +51,21 @@ const GITDIR = "/vault/.git";
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const MOBILE_GIT_OBJECT_CACHE_ROOT = ".obsidian/plugins/synology-sync/git-cache/v1";
+const MOBILE_GIT_CACHE_MARKER_PATH = `${MOBILE_GIT_OBJECT_CACHE_ROOT}/cache-marker.json`;
+const MOBILE_GIT_CACHE_SCHEMA_VERSION = 1;
+
+type MobileGitCacheMarker = {
+  schemaVersion: number;
+  mode: "git-filestation";
+  branch: string;
+  remoteIdentity: string;
+  lastVerifiedRemoteRef?: string;
+  completeness: "partial" | "needs-rebuild";
+  runtimeId: string;
+  updatedAt: string;
+  pluginVersion?: string;
+  reason?: string;
+};
 
 /**
  * Browser/mobile Git-over-File-Station engine.
@@ -68,6 +83,9 @@ export class MobileGitFileStationSyncEngine {
   private cache: Record<string, unknown> = {};
   private gitExcludes: string[];
   private remoteBranchOidAtDownload: string | undefined;
+  private syncLeaseHeld = false;
+  private syncLeaseExpectedOldRef: string | undefined;
+  private mobileCacheMarker: MobileGitCacheMarker | undefined;
 
   constructor(vault: Vault, fs: FileStation, opts: MobileGitFileStationSyncOptions) {
     this.vault = vault;
@@ -95,7 +113,28 @@ export class MobileGitFileStationSyncEngine {
     const workdirFilesAtStart = await this.listWorkdirFiles();
     const hiddenSystemFilesAtStart = this.hiddenSystemVaultFilesAtStart(workdirFilesAtStart);
     const initialLocalFiles = hadLocalCommitsBeforeRemoteImport ? new Map<string, Uint8Array>() : await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
+    const expectedOldRefHint = await this.runPhase("preflight remote ref", () => this.readRemoteBranchOidFromFileStation());
 
+    return await this.withAuthoritativeSyncLease(result, expectedOldRefHint, async () => this.syncUnderHeldLease(
+      result,
+      hadLocalCommitsBeforeRemoteImport,
+      hadUserFilesAtStart,
+      workdirFilesAtStart,
+      hiddenSystemFilesAtStart,
+      initialLocalFiles,
+      expectedOldRefHint,
+    ));
+  }
+
+  private async syncUnderHeldLease(
+    result: SyncResult,
+    hadLocalCommitsBeforeRemoteImport: boolean,
+    hadUserFilesAtStart: boolean,
+    workdirFilesAtStart: string[],
+    hiddenSystemFilesAtStart: string[],
+    initialLocalFiles: Map<string, Uint8Array>,
+    expectedOldRefHint: string | undefined,
+  ): Promise<SyncResult> {
     await this.runPhase("fetch remote Git state", () => this.fetchRemoteGitStateIfPresent());
     if (!hadLocalCommitsBeforeRemoteImport) await this.runPhase("anchor local branch to remote", () => this.anchorLocalBranchToRemoteIfNeeded());
     await this.runPhase("verify downloaded Git store", () => this.verifyDownloadedGitStore());
@@ -104,6 +143,9 @@ export class MobileGitFileStationSyncEngine {
     const remoteHadCommits = await this.remoteHasCommits();
     const localHadCommits = hadLocalCommitsBeforeRemoteImport;
     this.remoteBranchOidAtDownload = remoteHadCommits ? await this.remoteRefOid() : undefined;
+    if ((this.remoteBranchOidAtDownload || undefined) !== (expectedOldRefHint || undefined)) {
+      throw new Error(`Remote ref changed while acquiring Git-over-File-Station lease for ${this.opts.branch}; expected ${expectedOldRefHint || "<none>"} but found ${this.remoteBranchOidAtDownload || "<none>"}. Retry sync to fetch and merge safely.`);
+    }
 
     const invalidRemotePaths = await this.runPhase("inspect remote tree", () => this.invalidRemotePathsForLocalCheckout());
     if (invalidRemotePaths.length > 0) {
@@ -230,6 +272,29 @@ export class MobileGitFileStationSyncEngine {
       debugLog(`[git-filestation-mobile] phase failed: ${phase}: ${(e as Error).message}`);
       throw e;
     }
+  }
+
+  private async withAuthoritativeSyncLease<T>(result: SyncResult, expectedOldRef: string | undefined, fn: () => Promise<T>): Promise<T> {
+    return await withFileStationGitLease(this.fs, {
+      remotePath: this.opts.remotePath,
+      branch: this.opts.branch,
+      owner: this.opts.syncIdentityId,
+      expectedOldRef,
+    }, async () => {
+      this.syncLeaseHeld = true;
+      this.syncLeaseExpectedOldRef = expectedOldRef;
+      let completed = false;
+      debugLog(`[git-filestation-mobile] authoritative File Station lease held branch=${this.opts.branch} expected=${expectedOldRef || "<none>"}`);
+      try {
+        const value = await fn();
+        completed = true;
+        return value;
+      } finally {
+        this.syncLeaseHeld = false;
+        this.syncLeaseExpectedOldRef = undefined;
+        if (completed && result.errors.length === 0) await this.writeMobileGitCacheMarker(this.remoteBranchOidAtDownload, "partial", "sync completed");
+      }
+    });
   }
 
   private async verifyDownloadedGitStore(): Promise<void> {
@@ -446,6 +511,7 @@ export class MobileGitFileStationSyncEngine {
   private async readCachedRemoteLooseObject(oid: string, rel: string): Promise<Uint8Array | undefined> {
     const adapter = this.mobileGitCacheAdapter();
     if (typeof adapter.readBinary !== "function") return undefined;
+    if (!(await this.mobileGitCacheCanReuse())) return undefined;
     const cachePath = remoteGitObjectCachePath(rel);
 
     try {
@@ -456,6 +522,7 @@ export class MobileGitFileStationSyncEngine {
       return bytes;
     } catch (e) {
       debugLog(`[git-filestation-mobile] remote git object cache miss/invalid rel=${rel}: ${(e as Error).message}`);
+      await this.writeMobileGitCacheMarker(this.remoteBranchOidAtDownload, "needs-rebuild", `invalid cached object ${rel}`);
       return undefined;
     }
   }
@@ -472,6 +539,61 @@ export class MobileGitFileStationSyncEngine {
     } catch (e) {
       debugLog(`[git-filestation-mobile] remote git object cache store skipped rel=${rel}: ${(e as Error).message}`);
     }
+  }
+
+  private async mobileGitCacheCanReuse(): Promise<boolean> {
+    const marker = await this.readMobileGitCacheMarker();
+    if (!marker) return false;
+    if (marker.schemaVersion !== MOBILE_GIT_CACHE_SCHEMA_VERSION) return false;
+    if (marker.mode !== "git-filestation") return false;
+    if (marker.branch !== this.opts.branch) return false;
+    if (marker.remoteIdentity !== this.remoteCacheIdentity()) return false;
+    if (marker.completeness === "needs-rebuild") return false;
+    return true;
+  }
+
+  private async readMobileGitCacheMarker(): Promise<MobileGitCacheMarker | undefined> {
+    if (this.mobileCacheMarker) return this.mobileCacheMarker;
+    const adapter = this.mobileGitCacheAdapter();
+    if (typeof adapter.readBinary !== "function") return undefined;
+    try {
+      if (typeof adapter.exists === "function" && !(await adapter.exists(MOBILE_GIT_CACHE_MARKER_PATH, true))) return undefined;
+      const bytes = new Uint8Array(await adapter.readBinary(MOBILE_GIT_CACHE_MARKER_PATH));
+      const marker = JSON.parse(textDecoder.decode(bytes)) as MobileGitCacheMarker;
+      this.mobileCacheMarker = marker;
+      return marker;
+    } catch (e) {
+      debugLog(`[git-filestation-mobile] remote git cache marker unreadable; cache will rebuild: ${(e as Error).message}`);
+      return undefined;
+    }
+  }
+
+  private async writeMobileGitCacheMarker(lastVerifiedRemoteRef: string | undefined, completeness: MobileGitCacheMarker["completeness"], reason: string): Promise<void> {
+    const adapter = this.mobileGitCacheAdapter();
+    if (typeof adapter.writeBinary !== "function") return;
+    const marker: MobileGitCacheMarker = {
+      schemaVersion: MOBILE_GIT_CACHE_SCHEMA_VERSION,
+      mode: "git-filestation",
+      branch: this.opts.branch,
+      remoteIdentity: this.remoteCacheIdentity(),
+      lastVerifiedRemoteRef,
+      completeness,
+      runtimeId: this.opts.syncIdentityId,
+      updatedAt: new Date().toISOString(),
+      reason,
+    };
+    try {
+      await this.ensureAdapterFolder(dirnameVaultPath(MOBILE_GIT_CACHE_MARKER_PATH));
+      await adapter.writeBinary(MOBILE_GIT_CACHE_MARKER_PATH, bytesToArrayBuffer(textEncoder.encode(JSON.stringify(marker, null, 2))));
+      this.mobileCacheMarker = marker;
+      debugLog(`[git-filestation-mobile] remote git cache marker ${completeness} ref=${lastVerifiedRemoteRef || "<none>"} reason=${reason}`);
+    } catch (e) {
+      debugLog(`[git-filestation-mobile] remote git cache marker write skipped: ${(e as Error).message}`);
+    }
+  }
+
+  private remoteCacheIdentity(): string {
+    return `fnv1a:${fnv1a32(textEncoder.encode(`${this.opts.remotePath}\n${this.opts.branch}`))}`;
   }
 
   private async ensureAdapterFolder(path: string): Promise<void> {
@@ -776,12 +898,7 @@ export class MobileGitFileStationSyncEngine {
 
   private async publishWithLease(): Promise<void> {
     const expectedOldRef = this.remoteBranchOidAtDownload;
-    await withFileStationGitLease(this.fs, {
-      remotePath: this.opts.remotePath,
-      branch: this.opts.branch,
-      owner: this.opts.syncIdentityId,
-      expectedOldRef,
-    }, async () => {
+    const publish = async () => {
       const nasRef = await this.readRemoteBranchOidFromFileStation();
       if (nasRef !== expectedOldRef) {
         throw new Error(`Remote ref changed on File Station for ${this.opts.branch}; expected ${expectedOldRef || "<none>"} but found ${nasRef || "<none>"}. Retry sync to fetch and merge safely.`);
@@ -790,7 +907,23 @@ export class MobileGitFileStationSyncEngine {
       const newRef = await this.remoteRefOid();
       await this.uploadBareRepoMirror(expectedOldRef, true);
       await this.publishBranchRefLast(newRef);
-    });
+      await this.writeMobileGitCacheMarker(newRef, "partial", "published ref");
+    };
+
+    if (this.syncLeaseHeld) {
+      if ((this.syncLeaseExpectedOldRef || undefined) !== (expectedOldRef || undefined)) {
+        throw new Error(`Held Git-over-File-Station lease expected ${this.syncLeaseExpectedOldRef || "<none>"} but publish expected ${expectedOldRef || "<none>"}; refusing to publish under mismatched lease metadata.`);
+      }
+      await publish();
+      return;
+    }
+
+    await withFileStationGitLease(this.fs, {
+      remotePath: this.opts.remotePath,
+      branch: this.opts.branch,
+      owner: this.opts.syncIdentityId,
+      expectedOldRef,
+    }, publish);
   }
 
   private async pushWithRetry(): Promise<void> {
