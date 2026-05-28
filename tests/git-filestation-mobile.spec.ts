@@ -112,30 +112,32 @@ describe("MobileGitFileStationSyncEngine", () => {
   }
 
 
-  it("aborts mobile sync before downloading very large loose-object remotes", async () => {
-    const vault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
-    const files = Array.from({ length: 6 }, (_, i) => ({
-      path: `/homes/user/Obsidian/Test.git/objects/aa/${String(i).padStart(38, "0")}`,
-      name: String(i),
-      isdir: false,
-    }));
-    const fs = {
-      listFolder: jest.fn(async (path: string) => path.endsWith("Test.git") ? files : []),
-      download: jest.fn(async () => new ArrayBuffer(0)),
-      createFolder: jest.fn(async () => undefined),
-      upload: jest.fn(async () => undefined),
-    };
+  it("fetches only reachable remote Git objects instead of mirroring unrelated loose objects", async () => {
+    const { remote } = await seededBareRemote({ "RemoteOnly.md": "remote baseline\n" });
+    for (let i = 0; i < 20; i++) {
+      const suffix = i.toString(16).padStart(38, "0");
+      remote.set(`/homes/user/Obsidian/Test.git/objects/ff/${suffix}`, new Uint8Array([1, 2, 3]));
+    }
+    const { vault } = vaultWithFiles({});
+    const uploaded: string[] = [];
+    const fs = remoteBackedFileStation(remote, uploaded);
     const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
       remotePath: "/homes/user/Obsidian/Test.git",
       branch: "main",
       syncIdentityId: "ios-device",
       authorName: "Obsidian Synology Sync",
       authorEmail: "synology-sync@local",
-      mobileDownloadGuard: { maxFiles: 5 },
     });
 
-    await expect(engine.sync()).rejects.toThrow(/remote bare repo has 6 downloadable Git files/);
-    expect(fs.download).not.toHaveBeenCalled();
+    const result = await engine.sync();
+
+    expect(result.errors).toEqual([]);
+    expect(result.downloaded).toContain("RemoteOnly.md");
+    expect(fs.listFolder).not.toHaveBeenCalled();
+    const downloaded = fs.download.mock.calls.map(([path]) => path);
+    expect(downloaded).toContain("/homes/user/Obsidian/Test.git/HEAD");
+    expect(downloaded).toContain("/homes/user/Obsidian/Test.git/refs/heads/main");
+    expect(downloaded.some((path) => path.includes("/objects/ff/"))).toBe(false);
   });
 
   it("initializes the in-memory git filesystem and bootstraps an empty bare repo", async () => {
@@ -174,30 +176,28 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(uploads.some((u) => u.fileName === "HEAD")).toBe(true);
     expect(uploads.some((u) => u.destFolder.endsWith("refs/heads") && u.fileName === "main")).toBe(true);
   });
-  it("fails before status fallback when a downloaded pack has a bad trailer checksum", async () => {
+  it("blocks packed remote objects until mobile packfile reads are implemented", async () => {
     const vault = {
       adapter: {},
       getFiles: jest.fn(() => []),
       getAbstractFileByPath: jest.fn(() => null),
     };
-    const pack = new Uint8Array(32);
-    pack.set([0x50, 0x41, 0x43, 0x4b]);
-    pack[7] = 2;
-    const idx = new Uint8Array(8 + 256 * 4 + 40);
-    idx.set([0xff, 0x74, 0x4f, 0x63]);
-    idx[7] = 2;
+    const oid = "a".repeat(40);
+    const textEncoder = new TextEncoder();
     const fs = {
       listFolder: jest.fn(async (path: string) => {
-        if (path.endsWith("Test.git")) return [{ path: `${path}/objects`, name: "objects", isdir: true }];
-        if (path.endsWith("objects")) return [{ path: `${path}/pack`, name: "pack", isdir: true }];
         if (path.endsWith("objects/pack")) return [
-          { path: `${path}/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pack`, name: "pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pack", isdir: false },
-          { path: `${path}/pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx`, name: "pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx", isdir: false },
+          { path: `${path}/pack-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.pack`, name: "pack-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.pack", isdir: false },
+          { path: `${path}/pack-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.idx`, name: "pack-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.idx", isdir: false },
         ];
         return [];
       }),
       listAllFiles: jest.fn(async () => []),
-      download: jest.fn(async (path: string) => path.endsWith(".pack") ? pack.buffer : idx.buffer),
+      download: jest.fn(async (path: string) => {
+        if (path.endsWith("/HEAD")) return textEncoder.encode("ref: refs/heads/main\n").buffer;
+        if (path.endsWith("/refs/heads/main")) return textEncoder.encode(`${oid}\n`).buffer;
+        throw new Error("loose object missing");
+      }),
       createFolder: jest.fn(async () => undefined),
       upload: jest.fn(async () => undefined),
     };
@@ -210,7 +210,7 @@ describe("MobileGitFileStationSyncEngine", () => {
       authorEmail: "synology-sync@local",
     });
 
-    await expect(engine.sync()).rejects.toThrow(/pack trailer SHA mismatch/);
+    await expect(engine.sync()).rejects.toThrow(/packfiles under objects\/pack/);
   });
 
   it("returns Buffer for binary reads when isomorphic-git passes an options object", async () => {
@@ -867,6 +867,60 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(vault.createBinary).toHaveBeenCalledWith(".obsidian/app.json", expect.any(ArrayBuffer));
     expect(vault.adapter.writeBinary).toHaveBeenCalledWith(".obsidian/app.json", expect.any(ArrayBuffer));
     expect(Array.from(written.get(".obsidian/app.json") || [])).toEqual([123, 125]);
+  });
+
+  it("reuses validated plugin Git object cache instead of re-downloading content-addressed objects", async () => {
+    const { remote } = await seededBareRemote({ "RemoteOnly.md": "remote baseline\n" });
+    const cache = new Map<string, Uint8Array>();
+    const folders = new Set<string>();
+    const writtenCachePaths: string[] = [];
+    const uploaded: string[] = [];
+    const fs = remoteBackedFileStation(remote, uploaded);
+    const adapter = {
+      exists: jest.fn(async (path: string) => cache.has(path) || folders.has(path)),
+      mkdir: jest.fn(async (path: string) => { folders.add(path); }),
+      readBinary: jest.fn(async (path: string) => {
+        const bytes = cache.get(path);
+        if (!bytes) throw new Error("missing cache");
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }),
+      writeBinary: jest.fn(async (path: string, data: ArrayBuffer) => {
+        writtenCachePaths.push(path);
+        cache.set(path, new Uint8Array(data));
+      }),
+    };
+
+    const firstVault = { ...vaultWithFiles({}).vault, adapter };
+    const first = new MobileGitFileStationSyncEngine(firstVault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    await first.sync();
+
+    expect(writtenCachePaths.some((path) => path.startsWith(".obsidian/plugins/synology-sync/git-cache/v1/objects/"))).toBe(true);
+    const firstDownloads = fs.download.mock.calls.map(([path]) => path);
+    expect(firstDownloads.some((path) => path.includes("/objects/"))).toBe(true);
+
+    fs.download.mockClear();
+    const secondVault = { ...vaultWithFiles({}).vault, adapter };
+    const second = new MobileGitFileStationSyncEngine(secondVault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    await second.sync();
+
+    const secondDownloads = fs.download.mock.calls.map(([path]) => path);
+    expect(secondDownloads).toContain("/homes/user/Obsidian/Test.git/HEAD");
+    expect(secondDownloads).toContain("/homes/user/Obsidian/Test.git/refs/heads/main");
+    expect(secondDownloads.some((path) => path.includes("/objects/"))).toBe(false);
   });
 
 

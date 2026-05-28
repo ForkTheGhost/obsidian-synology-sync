@@ -453,7 +453,6 @@ export default class SynologySync extends Plugin {
         authorEmail: this.settings.gitAuthorEmail,
         configPolicy: this.settings.obsidianConfigPolicy,
         configOptIns: this.settings.obsidianConfigOptIns,
-        mobileDownloadGuard: { maxFiles: 1500 },
       });
 
       const result = await engine.sync();

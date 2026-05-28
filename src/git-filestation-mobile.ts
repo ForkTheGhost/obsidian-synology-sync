@@ -21,7 +21,6 @@ export interface MobileGitFileStationSyncOptions {
   authorEmail: string;
   configPolicy?: import("./git-excludes").ObsidianConfigSyncPolicy;
   configOptIns?: import("./git-excludes").ObsidianConfigOptIns;
-  mobileDownloadGuard?: { maxFiles: number; maxBytes?: number };
 }
 
 type FsData = Uint8Array;
@@ -40,11 +39,18 @@ type FsNode =
   | { type: "dir"; children: Map<string, FsNode>; mtimeMs: number; ctimeMs: number; mode: number }
   | { type: "file"; data: FsData; mtimeMs: number; ctimeMs: number; mode: number };
 
+type MobileGitCacheAdapter = {
+  exists?: (path: string, sensitive?: boolean) => Promise<boolean>;
+  mkdir?: (path: string) => Promise<void>;
+  readBinary?: (path: string) => Promise<ArrayBuffer>;
+  writeBinary?: (path: string, data: ArrayBuffer) => Promise<void>;
+};
+
 const WORKDIR = "/vault";
 const GITDIR = "/vault/.git";
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
-const DEFAULT_MOBILE_REMOTE_GIT_FILE_GUARD = 1500;
+const MOBILE_GIT_OBJECT_CACHE_ROOT = ".obsidian/plugins/synology-sync/git-cache/v1";
 
 /**
  * Browser/mobile Git-over-File-Station engine.
@@ -90,7 +96,7 @@ export class MobileGitFileStationSyncEngine {
     const hiddenSystemFilesAtStart = this.hiddenSystemVaultFilesAtStart(workdirFilesAtStart);
     const initialLocalFiles = hadLocalCommitsBeforeRemoteImport ? new Map<string, Uint8Array>() : await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
 
-    await this.runPhase("download remote bare repo", () => this.downloadRemoteBareRepoIfPresent());
+    await this.runPhase("fetch remote Git state", () => this.fetchRemoteGitStateIfPresent());
     if (!hadLocalCommitsBeforeRemoteImport) await this.runPhase("anchor local branch to remote", () => this.anchorLocalBranchToRemoteIfNeeded());
     await this.runPhase("verify downloaded Git store", () => this.verifyDownloadedGitStore());
     await this.runPhase("ensure remote configured", () => this.ensureRemoteConfigured());
@@ -111,7 +117,7 @@ export class MobileGitFileStationSyncEngine {
       return result;
     }
 
-    // Important: after downloading the remote bare repo into .git, HEAD may be
+    // Important: after fetching remote Git state into .git, HEAD may be
     // resolvable even though the mobile workdir has not been populated yet.
     // Treat an empty Obsidian/workdir + existing remote as a pure first pull and
     // materialize the remote tree before status/merge logic can mistake missing
@@ -292,89 +298,204 @@ export class MobileGitFileStationSyncEngine {
     await git.setConfig({ fs: this.memfs.client, dir: WORKDIR, path: `branch.${this.opts.branch}.merge`, value: `refs/heads/${this.opts.branch}` });
   }
 
-  private async downloadRemoteBareRepoIfPresent(): Promise<void> {
-    let files;
+  private async fetchRemoteGitStateIfPresent(): Promise<void> {
+    let headText: string;
     try {
-      files = await this.listAllRemoteGitFilesStrict(this.opts.remotePath);
+      headText = await this.downloadRemoteGitText("HEAD");
     } catch (e) {
-      const message = (e as Error).message;
-      if (!message.startsWith(`Could not list remote Git folder ${this.opts.remotePath}:`)) throw e;
-      debugLog(`[git-filestation-mobile] remote bare repo not found or unreadable; will initialize: ${message}`);
+      debugLog(`[git-filestation-mobile] remote Git HEAD not found or unreadable; will initialize: ${(e as Error).message}`);
       return;
     }
 
-    const downloadable = files.filter((file) => {
-      if (file.isdir) return false;
-      const rel = relativeRemotePath(this.opts.remotePath, file.path);
-      return !!rel && !shouldSkipRemoteGitFile(rel);
-    });
-    debugLog(`[git-filestation-mobile] remote bare repo listing files=${files.length} downloadable=${downloadable.length}`);
-    this.assertRemoteGitDownloadWithinMobileGuard(downloadable);
+    await this.writeMemText(`${GITDIR}/HEAD`, headText.endsWith("\n") ? headText : `${headText}\n`);
+    const branchOid = await this.resolveRemoteBranchOid(headText);
+    if (!branchOid) {
+      debugLog(`[git-filestation-mobile] remote Git state has no branch ref for ${this.opts.branch}; will initialize branch`);
+      return;
+    }
 
-    let downloaded = 0;
-    let bytes = 0;
-    for (const file of downloadable) {
-      const rel = relativeRemotePath(this.opts.remotePath, file.path);
-      const started = Date.now();
-      try {
-        const data = new Uint8Array(await this.fs.download(file.path));
-        await this.writeMemFile(`${GITDIR}/${rel}`, data);
-        downloaded++;
-        bytes += data.byteLength;
-        if (downloaded <= 5 || data.byteLength >= 1024 * 1024 || downloaded % 25 === 0) {
-          debugLog(`[git-filestation-mobile] downloaded remote git file ${downloaded}/${downloadable.length} rel=${rel} bytes=${data.byteLength} elapsedMs=${Date.now() - started} totalBytes=${bytes}`);
+    await this.writeMemText(`${GITDIR}/refs/heads/${this.opts.branch}`, `${branchOid}\n`);
+    const fetched = await this.fetchReachableRemoteLooseObjects(branchOid);
+    debugLog(`[git-filestation-mobile] remote minimal git fetch complete branch=${this.opts.branch} oid=${branchOid.slice(0, 12)} objects=${fetched.objects} commits=${fetched.commits} trees=${fetched.trees} blobs=${fetched.blobs} bytes=${fetched.bytes}`);
+  }
+
+  private async resolveRemoteBranchOid(headText: string): Promise<string | undefined> {
+    const loose = await this.tryDownloadRemoteGitText(`refs/heads/${this.opts.branch}`);
+    const looseOid = parseGitOid(loose);
+    if (looseOid) return looseOid;
+
+    const packedRefs = await this.tryDownloadRemoteGitText("packed-refs");
+    const packedOid = packedRefs ? parsePackedRefsForBranch(packedRefs, this.opts.branch) : undefined;
+    if (packedRefs && packedOid) {
+      await this.writeMemText(`${GITDIR}/packed-refs`, packedRefs.endsWith("\n") ? packedRefs : `${packedRefs}\n`);
+      return packedOid;
+    }
+
+    const directHeadOid = parseDirectHeadOid(headText);
+    return directHeadOid;
+  }
+
+  private async fetchReachableRemoteLooseObjects(commitOid: string): Promise<{ objects: number; commits: number; trees: number; blobs: number; bytes: number }> {
+    const seen = new Set<string>();
+    const stats = { objects: 0, commits: 0, trees: 0, blobs: 0, bytes: 0 };
+
+    const visit = async (oid: string): Promise<void> => {
+      if (seen.has(oid)) return;
+      seen.add(oid);
+
+      const rel = `objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
+      const { type, object, bytes } = await this.downloadRemoteLooseObject(oid, rel);
+      stats.objects++;
+      stats.bytes += bytes.byteLength;
+
+      if (type === "commit") {
+        stats.commits++;
+        const commit = parseGitCommitObject(object, oid);
+        await visit(commit.tree);
+        return;
+      }
+
+      if (type === "tree") {
+        stats.trees++;
+        for (const entry of parseGitTreeObject(object, oid)) {
+          if (entry.type === "commit") {
+            throw new Error(`Git-over-File-Station mobile sync cannot materialize submodule/gitlink entry ${entry.path}; nested Git repositories are unsupported.`);
+          }
+          await visit(entry.oid);
         }
+        return;
+      }
+
+      if (type === "blob") {
+        stats.blobs++;
+        return;
+      }
+
+      throw new Error(`Git-over-File-Station mobile sync cannot read unsupported Git object type ${type} oid=${oid}`);
+    };
+
+    await visit(commitOid);
+    return stats;
+  }
+
+  private async downloadRemoteLooseObject(oid: string, rel: string): Promise<{ type: string; object: Uint8Array; bytes: Uint8Array }> {
+    if (await this.pathExists(`${GITDIR}/${rel}`)) {
+      const bytes = await this.readMemBytes(`${GITDIR}/${rel}`);
+      const unwrapped = unwrapGitLooseObjectBytes(bytes, oid, rel);
+      return { ...unwrapped, bytes };
+    }
+
+    const cached = await this.readCachedRemoteLooseObject(oid, rel);
+    if (cached) {
+      await this.writeMemFile(`${GITDIR}/${rel}`, cached);
+      const unwrapped = unwrapGitLooseObjectBytes(cached, oid, rel);
+      return { ...unwrapped, bytes: cached };
+    }
+
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.downloadRemoteGitBytes(rel);
+    } catch (e) {
+      if (await this.remoteHasPackfiles()) {
+        throw new Error(`Git-over-File-Station mobile sync cannot fetch required object ${oid} as a loose object because the NAS Git store has packfiles under objects/pack. Mobile File Station packfile reads are not implemented yet; run a desktop/admin bootstrap that leaves required objects loose, or use desktop Git-backed sync until pack handling lands. Original error: ${(e as Error).message}`);
+      }
+      throw new Error(`Git-over-File-Station mobile sync could not fetch required loose object ${oid} at ${rel}: ${(e as Error).message}`);
+    }
+
+    let unwrapped: { type: string; object: Uint8Array };
+    try {
+      unwrapped = unwrapGitLooseObjectBytes(bytes, oid, rel);
+    } catch (e) {
+      throw new Error(`remote Git loose object failed oid=${oid} path=${rel} bytes=${bytes.byteLength} prefix32=${hexPrefix(bytes, 32)} fnv1a=${fnv1a32(bytes)}: ${(e as Error).message}`);
+    }
+    await this.writeMemFile(`${GITDIR}/${rel}`, bytes);
+    await this.writeCachedRemoteLooseObject(rel, bytes);
+    return { ...unwrapped, bytes };
+  }
+
+  private async downloadRemoteGitBytes(rel: string): Promise<Uint8Array> {
+    const data = new Uint8Array(await this.fs.download(joinRemotePath(this.opts.remotePath, rel)));
+    return data;
+  }
+
+  private async downloadRemoteGitText(rel: string): Promise<string> {
+    return textDecoder.decode(await this.downloadRemoteGitBytes(rel));
+  }
+
+  private async tryDownloadRemoteGitText(rel: string): Promise<string | undefined> {
+    try {
+      return await this.downloadRemoteGitText(rel);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async remoteHasPackfiles(): Promise<boolean> {
+    const packPath = joinRemotePath(this.opts.remotePath, "objects/pack");
+    const station = this.fs as unknown as { listFolder?: (path: string) => Promise<Array<{ path: string; isdir: boolean }>>; listAllFiles?: (path: string) => Promise<Array<{ path: string; isdir: boolean }>> };
+    try {
+      const files = typeof station.listFolder === "function"
+        ? await station.listFolder(packPath)
+        : station.listAllFiles ? await station.listAllFiles(packPath) : [];
+      return files.some((file) => !file.isdir && /^pack-[0-9a-f]{40}\.(pack|idx)$/i.test(basenameRemotePath(file.path)));
+    } catch {
+      return false;
+    }
+  }
+
+  private async readCachedRemoteLooseObject(oid: string, rel: string): Promise<Uint8Array | undefined> {
+    const adapter = this.mobileGitCacheAdapter();
+    if (typeof adapter.readBinary !== "function") return undefined;
+    const cachePath = remoteGitObjectCachePath(rel);
+
+    try {
+      if (typeof adapter.exists === "function" && !(await adapter.exists(cachePath, true))) return undefined;
+      const bytes = new Uint8Array(await adapter.readBinary(cachePath));
+      unwrapGitLooseObjectBytes(bytes, oid, rel);
+      debugLog(`[git-filestation-mobile] remote git object cache hit rel=${rel} bytes=${bytes.byteLength}`);
+      return bytes;
+    } catch (e) {
+      debugLog(`[git-filestation-mobile] remote git object cache miss/invalid rel=${rel}: ${(e as Error).message}`);
+      return undefined;
+    }
+  }
+
+  private async writeCachedRemoteLooseObject(rel: string, bytes: Uint8Array): Promise<void> {
+    const adapter = this.mobileGitCacheAdapter();
+    if (typeof adapter.writeBinary !== "function") return;
+    const cachePath = remoteGitObjectCachePath(rel);
+
+    try {
+      await this.ensureAdapterFolder(dirnameVaultPath(cachePath));
+      await adapter.writeBinary(cachePath, bytesToArrayBuffer(bytes));
+      debugLog(`[git-filestation-mobile] remote git object cache stored rel=${rel} bytes=${bytes.byteLength}`);
+    } catch (e) {
+      debugLog(`[git-filestation-mobile] remote git object cache store skipped rel=${rel}: ${(e as Error).message}`);
+    }
+  }
+
+  private async ensureAdapterFolder(path: string): Promise<void> {
+    if (!path) return;
+    const adapter = this.mobileGitCacheAdapter();
+    if (typeof adapter.mkdir !== "function") return;
+
+    const parts = splitPath(path);
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (typeof adapter.exists === "function" && await adapter.exists(current, true)) continue;
+      try {
+        await adapter.mkdir(current);
       } catch (e) {
-        debugLog(`[git-filestation-mobile] failed downloading remote git file ${downloaded + 1}/${downloadable.length} rel=${rel} elapsedMs=${Date.now() - started}: ${(e as Error).message}`);
+        if (/already exists/i.test((e as Error).message || "")) continue;
+        if (typeof adapter.exists === "function" && await adapter.exists(current, true)) continue;
         throw e;
       }
     }
-    debugLog(`[git-filestation-mobile] remote bare repo download complete files=${downloaded} bytes=${bytes}`);
   }
 
-  private assertRemoteGitDownloadWithinMobileGuard(files: Array<{ path: string; isdir: boolean }>): void {
-    const maxFiles = this.opts.mobileDownloadGuard?.maxFiles ?? DEFAULT_MOBILE_REMOTE_GIT_FILE_GUARD;
-    if (maxFiles <= 0 || files.length <= maxFiles) return;
-    const sample = files
-      .slice(0, 5)
-      .map((file) => relativeRemotePath(this.opts.remotePath, file.path) || file.path)
-      .join(", ");
-    const message = `Git-over-File-Station mobile sync stopped before checkout: remote bare repo has ${files.length} downloadable Git files, above the mobile safety limit of ${maxFiles}. This path currently has to mirror the bare Git object store before checkout, which can make Obsidian/iOS reload under memory or IO pressure. Run git gc/pack on the NAS/desktop repo or use desktop Git-backed sync until mobile incremental fetch is implemented. Sample files: ${sample}`;
-    debugLog(`[git-filestation-mobile] preflight abort: ${message}`);
-    throw new Error(message);
-  }
-
-  private async listAllRemoteGitFilesStrict(basePath: string): Promise<Array<{ path: string; isdir: boolean }>> {
-    const station = this.fs as unknown as { listFolder?: (path: string) => Promise<Array<{ path: string; isdir: boolean }>>; listAllFiles?: (path: string) => Promise<Array<{ path: string; isdir: boolean }>> };
-    if (typeof station.listFolder !== "function") {
-      try {
-        return station.listAllFiles ? await station.listAllFiles(basePath) : [];
-      } catch (e) {
-        throw new Error(`Could not list remote Git folder ${basePath}: ${(e as Error).message}`);
-      }
-    }
-
-    const all: Array<{ path: string; isdir: boolean }> = [];
-    let frontier = [basePath];
-    const batch = 5;
-    while (frontier.length > 0) {
-      const next: string[] = [];
-      for (let i = 0; i < frontier.length; i += batch) {
-        const slice = frontier.slice(i, i + batch);
-        const settled = await Promise.allSettled(slice.map((folder) => station.listFolder!(folder)));
-        for (let j = 0; j < settled.length; j++) {
-          const folder = slice[j];
-          const r = settled[j];
-          if (r.status === "rejected") throw new Error(`Could not list remote Git folder ${folder}: ${(r.reason as Error).message}`);
-          for (const f of r.value) {
-            if (f.isdir) next.push(f.path);
-            else all.push(f);
-          }
-        }
-      }
-      frontier = next;
-    }
-    return all;
+  private mobileGitCacheAdapter(): MobileGitCacheAdapter {
+    return this.vault.adapter as unknown as MobileGitCacheAdapter;
   }
 
   private async probeDownloadedGitStore(idxFiles: string[]): Promise<void> {
@@ -693,13 +814,11 @@ export class MobileGitFileStationSyncEngine {
   }
 
   private async readRemoteBranchOidFromFileStation(): Promise<string | undefined> {
-    try {
-      const bytes = new Uint8Array(await this.fs.download(joinRemotePath(this.opts.remotePath, `refs/heads/${this.opts.branch}`)));
-      const text = textDecoder.decode(bytes).trim();
-      return /^[0-9a-f]{40}$/i.test(text) ? text : undefined;
-    } catch {
-      return undefined;
-    }
+    const loose = await this.tryDownloadRemoteGitText(`refs/heads/${this.opts.branch}`);
+    const looseOid = parseGitOid(loose);
+    if (looseOid) return looseOid;
+    const packedRefs = await this.tryDownloadRemoteGitText("packed-refs");
+    return packedRefs ? parsePackedRefsForBranch(packedRefs, this.opts.branch) : undefined;
   }
 
   private async copyLocalBranchToRemote(): Promise<void> {
@@ -1283,6 +1402,66 @@ function relativeRemotePath(base: string, path: string): string {
   return path.startsWith(`${normalizedBase}/`) ? path.slice(normalizedBase.length + 1) : path;
 }
 
+function remoteGitObjectCachePath(rel: string): string {
+  return `${MOBILE_GIT_OBJECT_CACHE_ROOT}/${rel}`;
+}
+
+function parseGitOid(text: string | undefined): string | undefined {
+  const trimmed = (text || "").trim();
+  return /^[0-9a-f]{40}$/i.test(trimmed) ? trimmed.toLowerCase() : undefined;
+}
+
+function parseDirectHeadOid(headText: string): string | undefined {
+  const firstLine = headText.split(/\r?\n/, 1)[0].trim();
+  return parseGitOid(firstLine);
+}
+
+function parsePackedRefsForBranch(text: string, branch: string): string | undefined {
+  const target = `refs/heads/${branch}`;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith("^")) continue;
+    const [oid, ref] = line.split(/\s+/, 2);
+    if (ref === target && parseGitOid(oid)) return oid.toLowerCase();
+  }
+  return undefined;
+}
+
+function parseGitCommitObject(object: Uint8Array, oid: string): { tree: string } {
+  const headerText = textDecoder.decode(object).split(/\r?\n\r?\n/, 1)[0];
+  const tree = headerText
+    .split(/\r?\n/)
+    .map((line) => /^tree ([0-9a-f]{40})$/i.exec(line)?.[1])
+    .find((value): value is string => !!value);
+  if (!tree) throw new Error(`commit object missing tree oid=${oid}`);
+  return { tree: tree.toLowerCase() };
+}
+
+function parseGitTreeObject(object: Uint8Array, treeOid: string): Array<{ type: "tree" | "blob" | "commit"; oid: string; path: string }> {
+  const entries: Array<{ type: "tree" | "blob" | "commit"; oid: string; path: string }> = [];
+  let offset = 0;
+  while (offset < object.byteLength) {
+    const modeStart = offset;
+    while (offset < object.byteLength && object[offset] !== 32) offset++;
+    if (offset >= object.byteLength) throw new Error(`tree object has truncated mode oid=${treeOid}`);
+    const mode = textDecoder.decode(object.slice(modeStart, offset));
+    offset++;
+
+    const pathStart = offset;
+    while (offset < object.byteLength && object[offset] !== 0) offset++;
+    if (offset >= object.byteLength) throw new Error(`tree object has truncated path oid=${treeOid}`);
+    const path = textDecoder.decode(object.slice(pathStart, offset));
+    offset++;
+    if (offset + 20 > object.byteLength) throw new Error(`tree object has truncated oid oid=${treeOid} path=${path}`);
+    const oid = hexPrefix(object.slice(offset, offset + 20), 20);
+    offset += 20;
+
+    if (mode === "40000") entries.push({ type: "tree", oid, path });
+    else if (mode === "160000") entries.push({ type: "commit", oid, path });
+    else entries.push({ type: "blob", oid, path });
+  }
+  return entries;
+}
 
 function shouldSkipRemoteGitFile(path: string): boolean {
   return path === "config" || path === "description" || path.endsWith(".lock") || path.startsWith("hooks/") || path.startsWith(".synology-sync/");

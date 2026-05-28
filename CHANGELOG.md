@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Replace the mobile Git-over-File-Station whole-bare-repo mirror with targeted `HEAD`, branch ref/`packed-refs`, and reachable loose-object reads, cache validated loose Git objects under `.obsidian/plugins/synology-sync/git-cache/v1`, and explicitly block on packfiles until mobile pack handling lands.
+
 ## 2026.0528.2
 
 ### Fixed
