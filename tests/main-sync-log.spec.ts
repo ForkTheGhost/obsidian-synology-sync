@@ -60,11 +60,12 @@ describe("persisted latest sync log", () => {
 
     await (plugin as unknown as { runGitFileStationSync: () => Promise<void> }).runGitFileStationSync();
 
-    expect(adapter.write).toHaveBeenCalledTimes(1);
-    const [path, body] = adapter.write.mock.calls[0] as [string, string];
+    expect(adapter.write).toHaveBeenCalledTimes(2);
+    const [path, body] = adapter.write.mock.calls[1] as [string, string];
     expect(path).toBe(LATEST_SYNC_LOG_NOTE_PATH);
     expect(body).toContain("GIT-OVER-FILE-STATION SYNC FINISHED: SUCCESS");
     expect(body).toContain("Plugin version: test-version");
+    expect(body).toContain("Status: finished");
     expect(body).not.toContain("hunter2");
     expect(body).not.toContain("abc123");
     expect(body).not.toContain("token123");

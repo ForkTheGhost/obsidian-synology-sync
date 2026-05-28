@@ -72,7 +72,7 @@ export interface SynologySyncSettings {
   persistSyncLogToVaultNote: boolean;
 }
 
-export const LATEST_SYNC_LOG_NOTE_PATH = ".obsidian/plugins/synology-sync/latest-run.md";
+export const LATEST_SYNC_LOG_NOTE_PATH = "Synology Sync Logs/latest-run.md";
 
 export function sanitizeSyncBackendForRuntime(
   settings: SynologySyncSettings,
@@ -590,7 +590,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Persist latest run log")
-      .setDesc(`Write the redacted latest sync transcript to ${LATEST_SYNC_LOG_NOTE_PATH}`)
+      .setDesc(`Write the redacted latest sync transcript to ${LATEST_SYNC_LOG_NOTE_PATH} at start and finish`)
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.persistSyncLogToVaultNote).onChange(async (value) => {
           this.plugin.settings.persistSyncLogToVaultNote = value;

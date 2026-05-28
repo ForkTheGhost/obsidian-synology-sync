@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 2026.0528.2
+
+### Fixed
+
+- Stop mobile Git-over-File-Station sync before downloading very large bare Git repositories that would otherwise mirror thousands of object files into iPhone memory before checkout. The preflight error explains the file count, safety limit, and remediation.
+- Move the optional latest-run log to visible `Synology Sync Logs/latest-run.md` and write it at sync start as well as finish so reload/crash evidence is not hidden under `.obsidian` or delayed until final cleanup.
+
 ## 2026.0528.1
 
 ### Added

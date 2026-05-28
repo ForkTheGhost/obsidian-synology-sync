@@ -111,6 +111,33 @@ describe("MobileGitFileStationSyncEngine", () => {
     return { vault, createdPaths };
   }
 
+
+  it("aborts mobile sync before downloading very large loose-object remotes", async () => {
+    const vault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
+    const files = Array.from({ length: 6 }, (_, i) => ({
+      path: `/homes/user/Obsidian/Test.git/objects/aa/${String(i).padStart(38, "0")}`,
+      name: String(i),
+      isdir: false,
+    }));
+    const fs = {
+      listFolder: jest.fn(async (path: string) => path.endsWith("Test.git") ? files : []),
+      download: jest.fn(async () => new ArrayBuffer(0)),
+      createFolder: jest.fn(async () => undefined),
+      upload: jest.fn(async () => undefined),
+    };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+      mobileDownloadGuard: { maxFiles: 5 },
+    });
+
+    await expect(engine.sync()).rejects.toThrow(/remote bare repo has 6 downloadable Git files/);
+    expect(fs.download).not.toHaveBeenCalled();
+  });
+
   it("initializes the in-memory git filesystem and bootstraps an empty bare repo", async () => {
     const vault = {
       adapter: {},
