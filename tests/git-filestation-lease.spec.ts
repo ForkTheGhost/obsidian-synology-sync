@@ -52,4 +52,54 @@ describe("FileStationGitLease", () => {
     expect(fs.upload).not.toHaveBeenCalled();
     expect(fs.delete).not.toHaveBeenCalled();
   });
+
+  it("recovers an expired lease only after reading and verifying metadata", async () => {
+    let strictCalls = 0;
+    const prior = { owner: "old-device", branch: "main", createdAt: new Date(0).toISOString(), expiresAt: new Date(1000).toISOString(), token: "old" };
+    let currentMetadata = JSON.stringify(prior);
+    const fs = {
+      createFolder: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => {
+        strictCalls++;
+        if (strictCalls === 1) throw new FileStationPathExistsError("exists", 414);
+      }),
+      download: jest.fn(async () => new TextEncoder().encode(currentMetadata).buffer),
+      upload: jest.fn(async (_dest: string, _name: string, content: ArrayBuffer) => {
+        currentMetadata = new TextDecoder().decode(new Uint8Array(content));
+      }),
+      delete: jest.fn(async () => undefined),
+    };
+
+    await withFileStationGitLease(fs as never, {
+      remotePath: "/repo.git",
+      branch: "main",
+      owner: "new-device",
+      now: () => 2000,
+      ttlMs: 60000,
+    }, async (lease) => {
+      expect(lease.owner).toBe("new-device");
+    });
+
+    expect(fs.download).toHaveBeenCalledWith("/repo.git/.synology-sync/leases/main.lock/lease.json");
+    expect(fs.delete).toHaveBeenCalledWith("/repo.git/.synology-sync/leases/main.lock");
+    expect(fs.createFolderStrict).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(currentMetadata).owner).toBe("new-device");
+  });
+
+  it("does not recover an unexpired lease", async () => {
+    const prior = { owner: "old-device", branch: "main", createdAt: new Date(0).toISOString(), expiresAt: new Date(999999).toISOString(), token: "old" };
+    const fs = {
+      createFolder: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => { throw new FileStationPathExistsError("exists", 414); }),
+      download: jest.fn(async () => new TextEncoder().encode(JSON.stringify(prior)).buffer),
+      upload: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+    };
+
+    await expect(withFileStationGitLease(fs as never, {
+      remotePath: "/repo.git", branch: "main", owner: "new-device", now: () => 2000,
+    }, async () => undefined)).rejects.toBeInstanceOf(FileStationGitLeaseHeldError);
+    expect(fs.delete).not.toHaveBeenCalled();
+  });
+
 });

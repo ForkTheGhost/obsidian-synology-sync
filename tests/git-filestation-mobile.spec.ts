@@ -219,6 +219,7 @@ describe("MobileGitFileStationSyncEngine", () => {
       getFiles: jest.fn(() => []),
       getAbstractFileByPath: jest.fn(() => null),
     };
+    let leaseMetadata = "";
     const fs = {
       listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }),
       createFolder: jest.fn(async () => undefined),
@@ -536,8 +537,8 @@ describe("MobileGitFileStationSyncEngine", () => {
       createFolder: jest.fn(async () => undefined),
       createFolderStrict: jest.fn(async () => undefined),
       delete: jest.fn(async () => undefined),
-      download: jest.fn(async () => new TextEncoder().encode(`${newOid}\n`).buffer),
-      upload: jest.fn(async () => undefined),
+      download: jest.fn(async (path: string) => path.endsWith("lease.json") ? new TextEncoder().encode(leaseMetadata).buffer : new TextEncoder().encode(`${newOid}\n`).buffer),
+      upload: jest.fn(async (_dest: string, name: string, content: ArrayBuffer) => { if (name === "lease.json") leaseMetadata = new TextDecoder().decode(new Uint8Array(content)); }),
     };
     const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
       remotePath: "/homes/user/Obsidian/Test.git",
@@ -866,6 +867,46 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(vault.createBinary).toHaveBeenCalledWith(".obsidian/app.json", expect.any(ArrayBuffer));
     expect(vault.adapter.writeBinary).toHaveBeenCalledWith(".obsidian/app.json", expect.any(ArrayBuffer));
     expect(Array.from(written.get(".obsidian/app.json") || [])).toEqual([123, 125]);
+  });
+
+
+  it("publishes branch refs through temp rename and verifies the landed ref", async () => {
+    const oid = "c".repeat(40);
+    let remoteRef = "";
+    let leaseMetadata2 = "";
+    const uploaded: string[] = [];
+    const fs = {
+      listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }),
+      createFolder: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+      download: jest.fn(async (path: string) => {
+        if (path.endsWith("lease.json")) return new TextEncoder().encode(leaseMetadata2).buffer;
+        return new TextEncoder().encode(remoteRef).buffer;
+      }),
+      upload: jest.fn(async (dest: string, name: string, content: ArrayBuffer) => {
+        uploaded.push(`${dest}/${name}`);
+        if (name === "lease.json") { leaseMetadata2 = new TextDecoder().decode(new Uint8Array(content)); return; }
+        if (name.includes(".tmp")) remoteRef = new TextDecoder().decode(new Uint8Array(content));
+      }),
+      rename: jest.fn(async (_path: string, newName: string) => {
+        expect(newName).toBe("main");
+      }),
+    };
+    const vault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git", branch: "main", syncIdentityId: "ios-device", authorName: "A", authorEmail: "a@example.com",
+    }) as unknown as { memfs: { promises: { mkdir: (path: string, options?: { recursive?: boolean }) => Promise<void>; writeFile: (path: string, data: Uint8Array | string) => Promise<void> } }; remoteBranchOidAtDownload: string | undefined; publishWithLease: () => Promise<void> };
+    await engine.memfs.promises.mkdir("/vault/.git/refs/heads", { recursive: true });
+    await engine.memfs.promises.mkdir("/vault", { recursive: true });
+    await engine.memfs.promises.writeFile("/vault/.git/HEAD", "ref: refs/heads/main\n");
+    await engine.memfs.promises.writeFile("/vault/.git/refs/heads/main", `${oid}\n`);
+    engine.remoteBranchOidAtDownload = undefined;
+
+    await engine.publishWithLease();
+
+    expect(uploaded.some((p) => /refs\/heads\/\.main\.synology-sync-.*\.tmp$/.test(p))).toBe(true);
+    expect(fs.rename).toHaveBeenCalled();
   });
 
 });

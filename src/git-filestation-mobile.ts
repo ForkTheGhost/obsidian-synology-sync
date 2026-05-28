@@ -666,7 +666,9 @@ export class MobileGitFileStationSyncEngine {
         throw new Error(`Remote ref changed on File Station for ${this.opts.branch}; expected ${expectedOldRef || "<none>"} but found ${nasRef || "<none>"}. Retry sync to fetch and merge safely.`);
       }
       await this.pushWithRetry();
-      await this.uploadBareRepoMirror();
+      const newRef = await this.remoteRefOid();
+      await this.uploadBareRepoMirror(expectedOldRef, true);
+      await this.publishBranchRefLast(newRef);
     });
   }
 
@@ -808,16 +810,57 @@ export class MobileGitFileStationSyncEngine {
     return undefined;
   }
 
-  private async uploadBareRepoMirror(): Promise<void> {
+  private async uploadBareRepoMirror(expectedOldRef?: string, suppressBranchRef = false): Promise<void> {
     await this.ensureRemoteDirectoryTree();
     const files = (await this.listMemFiles(GITDIR))
       .map((abs) => ({ abs, rel: abs.slice(GITDIR.length + 1) }))
       .filter((file) => !shouldSkipRemoteGitFile(file.rel))
+      .filter((file) => !(suppressBranchRef && file.rel === `refs/heads/${this.opts.branch}`))
+      .filter((file) => this.shouldPublishGitFile(file.rel, expectedOldRef, suppressBranchRef))
       .sort((a, b) => compareGitMirrorPublishPath(a.rel, b.rel, this.opts.branch));
+    debugLog(`[git-filestation-mobile] publishing git files before ref count=${files.length}`);
     for (const { abs, rel } of files) {
       const bytes = await this.memfs.promises.readFile(abs);
       await this.fs.upload(joinRemotePath(this.opts.remotePath, dirnameRemotePath(rel)), basenameRemotePath(rel), bytesToArrayBuffer(bytes), true);
     }
+  }
+
+  private shouldPublishGitFile(rel: string, expectedOldRef?: string, suppressBranchRef = false): boolean {
+    if (/^objects\/[0-9a-f]{2}\/[0-9a-f]{38}$/i.test(rel)) return true;
+    if (rel === "HEAD") return !expectedOldRef;
+    if (rel === "packed-refs") return false;
+    if (rel.startsWith("refs/")) return !suppressBranchRef && !expectedOldRef;
+    return !expectedOldRef;
+  }
+
+  private async publishBranchRefLast(newRef?: string): Promise<void> {
+    if (!newRef) return;
+    const rel = `refs/heads/${this.opts.branch}`;
+    const finalFolder = joinRemotePath(this.opts.remotePath, dirnameRemotePath(rel));
+    const finalName = basenameRemotePath(rel);
+    const tmpName = `.${finalName}.synology-sync-${this.opts.syncIdentityId}-${Date.now().toString(36)}.tmp`;
+    const bytes = textEncoder.encode(`${newRef}
+`);
+    try {
+      await this.fs.upload(finalFolder, tmpName, bytesToArrayBuffer(bytes), true);
+      const maybeRename = this.fs as unknown as { rename?: (path: string, newName: string) => Promise<void> };
+      if (typeof maybeRename.rename === "function") {
+        await maybeRename.rename(joinRemotePath(finalFolder, tmpName), finalName);
+      } else {
+        await this.fs.upload(finalFolder, finalName, bytesToArrayBuffer(bytes), true);
+        await this.fs.delete(joinRemotePath(finalFolder, tmpName)).catch(() => undefined);
+      }
+    } catch (e) {
+      const observed = await this.readRemoteBranchOidFromFileStation();
+      if (observed === newRef) {
+        debugLog(`[git-filestation-mobile] branch ref publish returned error but ref landed oid=${newRef}: ${(e as Error).message}`);
+        return;
+      }
+      throw new Error(`Git branch ref publication is uncertain for ${this.opts.branch}; observed ${observed || "<none>"}, expected ${newRef}. ${(e as Error).message}`);
+    }
+    const canVerify = typeof (this.fs as unknown as { download?: unknown }).download === "function";
+    const observed = canVerify ? await this.readRemoteBranchOidFromFileStation() : newRef;
+    if (observed !== newRef) throw new Error(`Git branch ref publication verification failed for ${this.opts.branch}; observed ${observed || "<none>"}, expected ${newRef}.`);
   }
 
   private async ensureRemoteDirectoryTree(): Promise<void> {

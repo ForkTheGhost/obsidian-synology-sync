@@ -1,5 +1,6 @@
 import { FileStation, FileStationApiError, FileStationPathExistsError } from "./filestation";
 import { debugLog } from "./debug";
+import { Notice } from "obsidian";
 
 export interface GitLeaseInfo {
   owner: string;
@@ -23,6 +24,13 @@ export class FileStationGitLeaseHeldError extends FileStationApiError {
   constructor(message: string, code?: number) {
     super(message, code);
     this.name = "FileStationGitLeaseHeldError";
+  }
+}
+
+export class FileStationGitLeaseRecoveredError extends FileStationApiError {
+  constructor(message: string, code?: number) {
+    super(message, code);
+    this.name = "FileStationGitLeaseRecoveredError";
   }
 }
 
@@ -69,14 +77,20 @@ export class FileStationGitLease {
       await this.fs.createFolderStrict(joinRemotePath(this.opts.remotePath, LEASE_ROOT), this.leaseName);
     } catch (e) {
       if (e instanceof FileStationPathExistsError) {
-        throw new FileStationGitLeaseHeldError(`Git-backed File Station lease is already held for ${this.opts.branch}. Try again after the other device finishes, or clear stale lease ${this.leaseDir} only after verifying no sync is running.`, e.code);
+        if (await this.tryRecoverExpiredLease(e.code)) {
+          await this.fs.createFolderStrict(joinRemotePath(this.opts.remotePath, LEASE_ROOT), this.leaseName);
+        } else {
+          throw new FileStationGitLeaseHeldError(`Git-backed File Station lease is already held for ${this.opts.branch}. Try again after the other device finishes, or clear stale lease ${this.leaseDir} only after verifying no sync is running.`, e.code);
+        }
+      } else {
+        throw e;
       }
-      throw e;
     }
 
     const info = this.info;
     try {
       await this.writeMetadata(info);
+      await this.verifyMetadata(info);
       this.acquired = true;
       debugLog(`[git-filestation-lease] acquired branch=${this.opts.branch} owner=${this.opts.owner} expires=${info.expiresAt}`);
       return info;
@@ -95,6 +109,39 @@ export class FileStationGitLease {
     } catch (e) {
       debugLog(`[git-filestation-lease] release failed for ${this.leaseDir}: ${(e as Error).message}`);
       throw e;
+    }
+  }
+
+
+  private async tryRecoverExpiredLease(code?: number): Promise<boolean> {
+    let prior: GitLeaseInfo | undefined;
+    try {
+      prior = await this.readMetadata();
+    } catch (e) {
+      debugLog(`[git-filestation-lease] existing lease metadata unreadable for ${this.leaseDir}: ${(e as Error).message}`);
+      return false;
+    }
+    const expiresAt = Date.parse(prior.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt > this.opts.now()) return false;
+    debugLog(`[git-filestation-lease] recovering expired lease branch=${this.opts.branch} priorOwner=${prior.owner} expired=${prior.expiresAt}`);
+    try { new Notice(`Synology Sync recovered an expired Git sync lease for ${this.opts.branch}. Previous owner: ${prior.owner || "unknown"}.`); } catch { /* Notice unavailable in tests */ }
+    await this.fs.delete(this.leaseDir);
+    return true;
+  }
+
+  private async readMetadata(): Promise<GitLeaseInfo> {
+    const fs = this.fs as unknown as { download?: (path: string) => Promise<ArrayBuffer> };
+    if (typeof fs.download !== "function") throw new Error("File Station download is unavailable");
+    const bytes = new Uint8Array(await fs.download(this.metadataPath));
+    return JSON.parse(new TextDecoder().decode(bytes)) as GitLeaseInfo;
+  }
+
+  private async verifyMetadata(expected: GitLeaseInfo): Promise<void> {
+    const fs = this.fs as unknown as { download?: (path: string) => Promise<ArrayBuffer> };
+    if (typeof fs.download !== "function") return;
+    const actual = await this.readMetadata();
+    if (actual.token !== expected.token || actual.owner !== expected.owner || actual.branch !== expected.branch) {
+      throw new Error(`Git lease metadata verification failed for ${this.leaseDir}; refusing to sync without a verified lease token.`);
     }
   }
 
