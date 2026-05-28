@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { resolveQuickConnect, resolveQuickConnectCandidates } from "../src/quickconnect";
+import { probeQuickConnectCandidates, resolveQuickConnect, resolveQuickConnectCandidates } from "../src/quickconnect";
 
 const mockedRequestUrl = requestUrl as jest.Mock;
 
@@ -105,7 +105,7 @@ describe("resolveQuickConnect", () => {
     mockedRequestUrl.mockReset();
   });
 
-  it("tries the regional QuickConnect portal host when relay region is returned", async () => {
+  it("prefers the SmartDNS LAN host when relay region is returned", async () => {
     mockedRequestUrl
       .mockResolvedValueOnce(quickConnectResponse())
       .mockResolvedValueOnce({
@@ -116,13 +116,13 @@ describe("resolveQuickConnect", () => {
     const resolved = await resolveQuickConnect("Example-NAS");
 
     expect(resolved).toEqual({
-      host: "example-nas.us5.quickconnect.to",
-      port: 443,
+      host: "192-0-2-10.EXAMPLE-NAS.direct.quickconnect.to",
+      port: 5001,
       https: true,
-      relay: true,
+      relay: undefined,
     });
     expect(mockedRequestUrl).toHaveBeenNthCalledWith(2, {
-      url: "https://example-nas.us5.quickconnect.to:443/webman/pingpong.cgi?action=cors&quickconnect=true",
+      url: "https://192-0-2-10.EXAMPLE-NAS.direct.quickconnect.to:5001/webman/pingpong.cgi?action=cors&quickconnect=true",
       method: "GET",
       throw: false,
     });
@@ -178,12 +178,13 @@ describe("resolveQuickConnect", () => {
       url: "https://example.control.quickconnect.to/Serv.php",
       method: "POST",
     }));
-    expect(candidates).toContainEqual({
+    expect(candidates).toContainEqual(expect.objectContaining({
       host: "synr-us5.EXAMPLE-NAS.direct.quickconnect.to",
       port: 32836,
       https: true,
       kind: "relay-api",
-    });
+      source: "relay-dualstack",
+    }));
   });
 
   it("uses request_tunnel relay API when direct 5001 candidates fail", async () => {
@@ -206,6 +207,41 @@ describe("resolveQuickConnect", () => {
       https: true,
       relay: undefined,
     });
+  });
+
+  it("orders portal/raw external after API-capable direct and relay candidates", async () => {
+    mockedRequestUrl
+      .mockResolvedValueOnce(quickConnectResponse())
+      .mockResolvedValueOnce(quickConnectTunnelResponse());
+
+    const candidates = await resolveQuickConnectCandidates("Example-NAS");
+
+    expect(candidates.map((c) => c.source)).toEqual([
+      "smartdns-lan",
+      "raw-lan",
+      "smartdns-external",
+      "smartdns-host",
+      "relay-dualstack",
+      "relay-ip",
+      "portal",
+      "raw-external",
+    ]);
+  });
+
+  it("falls through to a later relay when an earlier LAN candidate hangs", async () => {
+    jest.useFakeTimers();
+    const lan = { host: "lan.example", port: 5001, https: true, kind: "api" as const, source: "smartdns-lan" as const };
+    const relay = { host: "relay.example", port: 443, https: true, kind: "relay-api" as const, source: "relay-dn" as const };
+    mockedRequestUrl.mockImplementation((opts: { url: string }) => {
+      if (opts.url.includes("lan.example")) return new Promise(() => undefined);
+      return Promise.resolve({ status: 200, json: { success: true } });
+    });
+
+    const probe = probeQuickConnectCandidates([lan, relay], 50);
+    await jest.advanceTimersByTimeAsync(50);
+
+    await expect(probe).resolves.toEqual(relay);
+    jest.useRealTimers();
   });
 
   it("fails clearly when the server-info lookup times out", async () => {

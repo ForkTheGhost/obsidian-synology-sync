@@ -67,7 +67,7 @@ export interface SynologySyncSettings {
   gitAuthorEmail: string;
   obsidianConfigPolicy: ObsidianConfigSyncPolicy;
   obsidianConfigOptIns: ObsidianConfigOptIns;
-  debugQuickConnectResolution: boolean;
+  debugLogEnabled: boolean;
   quickConnectCandidateCache: CachedQuickConnectCandidate[];
   persistSyncLogToVaultNote: boolean;
 }
@@ -115,7 +115,7 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   gitAuthorEmail: "synology-sync@local",
   obsidianConfigPolicy: "notes-only",
   obsidianConfigOptIns: {},
-  debugQuickConnectResolution: false,
+  debugLogEnabled: false,
   quickConnectCandidateCache: [],
   persistSyncLogToVaultNote: false,
 };
@@ -135,8 +135,9 @@ export function migrateLoadedSettings(settings: SynologySyncSettings): boolean {
     settings.quickConnectCandidateCache = [];
     changed = true;
   }
-  if (typeof settings.debugQuickConnectResolution !== "boolean") {
-    settings.debugQuickConnectResolution = false;
+  if (typeof settings.debugLogEnabled !== "boolean") {
+    const legacyDebugQuickConnectResolution = (settings as SynologySyncSettings & { debugQuickConnectResolution?: unknown }).debugQuickConnectResolution;
+    settings.debugLogEnabled = typeof legacyDebugQuickConnectResolution === "boolean" ? legacyDebugQuickConnectResolution : false;
     changed = true;
   }
   if (settings.tombstoneJitterMs === LEGACY_TOMBSTONE_JITTER_MS) {
@@ -598,17 +599,17 @@ export class SynologySyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Debug QuickConnect resolution")
-      .setDesc("Log sanitized QuickConnect server-info field presence and working-candidate cache decisions. Useful for off-LAN relay troubleshooting.")
+      .setName("Debug log")
+      .setDesc("Enable extra diagnostic logging for troubleshooting. Logs are sanitized and may include detailed connection, sync, and QuickConnect resolution details.")
       .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.debugQuickConnectResolution).onChange(async (value) => {
-          this.plugin.settings.debugQuickConnectResolution = value;
+        toggle.setValue(this.plugin.settings.debugLogEnabled).onChange(async (value) => {
+          this.plugin.settings.debugLogEnabled = value;
           await this.plugin.saveSettings();
         })
       );
 
     new Setting(containerEl)
-      .setName("Debug log")
+      .setName("View debug log")
       .setDesc("View detailed connection and auth logs (credentials are redacted)")
       .addButton((btn) =>
         btn.setButtonText("Show log").onClick(() => {

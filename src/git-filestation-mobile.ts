@@ -301,12 +301,32 @@ export class MobileGitFileStationSyncEngine {
       return;
     }
 
-    for (const file of files) {
-      if (file.isdir) continue;
+    const downloadable = files.filter((file) => {
+      if (file.isdir) return false;
       const rel = relativeRemotePath(this.opts.remotePath, file.path);
-      if (!rel || shouldSkipRemoteGitFile(rel)) continue;
-      await this.writeMemFile(`${GITDIR}/${rel}`, new Uint8Array(await this.fs.download(file.path)));
+      return !!rel && !shouldSkipRemoteGitFile(rel);
+    });
+    debugLog(`[git-filestation-mobile] remote bare repo listing files=${files.length} downloadable=${downloadable.length}`);
+
+    let downloaded = 0;
+    let bytes = 0;
+    for (const file of downloadable) {
+      const rel = relativeRemotePath(this.opts.remotePath, file.path);
+      const started = Date.now();
+      try {
+        const data = new Uint8Array(await this.fs.download(file.path));
+        await this.writeMemFile(`${GITDIR}/${rel}`, data);
+        downloaded++;
+        bytes += data.byteLength;
+        if (downloaded <= 5 || data.byteLength >= 1024 * 1024 || downloaded % 25 === 0) {
+          debugLog(`[git-filestation-mobile] downloaded remote git file ${downloaded}/${downloadable.length} rel=${rel} bytes=${data.byteLength} elapsedMs=${Date.now() - started} totalBytes=${bytes}`);
+        }
+      } catch (e) {
+        debugLog(`[git-filestation-mobile] failed downloading remote git file ${downloaded + 1}/${downloadable.length} rel=${rel} elapsedMs=${Date.now() - started}: ${(e as Error).message}`);
+        throw e;
+      }
     }
+    debugLog(`[git-filestation-mobile] remote bare repo download complete files=${downloaded} bytes=${bytes}`);
   }
 
   private async listAllRemoteGitFilesStrict(basePath: string): Promise<Array<{ path: string; isdir: boolean }>> {
