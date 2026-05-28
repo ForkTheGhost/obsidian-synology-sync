@@ -887,10 +887,11 @@ describe("MobileGitFileStationSyncEngine", () => {
       upload: jest.fn(async (dest: string, name: string, content: ArrayBuffer) => {
         uploaded.push(`${dest}/${name}`);
         if (name === "lease.json") { leaseMetadata2 = new TextDecoder().decode(new Uint8Array(content)); return; }
-        if (name.includes(".tmp")) remoteRef = new TextDecoder().decode(new Uint8Array(content));
+        if (name === "main") remoteRef = new TextDecoder().decode(new Uint8Array(content));
       }),
       rename: jest.fn(async (_path: string, newName: string) => {
         expect(newName).toBe("main");
+        throw new Error("destination exists");
       }),
     };
     const vault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
@@ -906,7 +907,9 @@ describe("MobileGitFileStationSyncEngine", () => {
     await engine.publishWithLease();
 
     expect(uploaded.some((p) => /refs\/heads\/\.main\.synology-sync-.*\.tmp$/.test(p))).toBe(true);
+    expect(uploaded.some((p) => p.endsWith("/refs/heads/main"))).toBe(true);
     expect(fs.rename).toHaveBeenCalled();
+    expect(fs.delete).toHaveBeenCalledWith(expect.stringMatching(/\/refs\/heads\/\.main\.synology-sync-.*\.tmp$/));
   });
 
 });

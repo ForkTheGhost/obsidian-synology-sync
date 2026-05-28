@@ -845,7 +845,13 @@ export class MobileGitFileStationSyncEngine {
       await this.fs.upload(finalFolder, tmpName, bytesToArrayBuffer(bytes), true);
       const maybeRename = this.fs as unknown as { rename?: (path: string, newName: string) => Promise<void> };
       if (typeof maybeRename.rename === "function") {
-        await maybeRename.rename(joinRemotePath(finalFolder, tmpName), finalName);
+        try {
+          await maybeRename.rename(joinRemotePath(finalFolder, tmpName), finalName);
+        } catch (renameError) {
+          debugLog(`[git-filestation-mobile] temp ref rename failed; falling back to verified overwrite for ${rel}: ${(renameError as Error).message}`);
+          await this.fs.upload(finalFolder, finalName, bytesToArrayBuffer(bytes), true);
+          await this.fs.delete(joinRemotePath(finalFolder, tmpName)).catch(() => undefined);
+        }
       } else {
         await this.fs.upload(finalFolder, finalName, bytesToArrayBuffer(bytes), true);
         await this.fs.delete(joinRemotePath(finalFolder, tmpName)).catch(() => undefined);
