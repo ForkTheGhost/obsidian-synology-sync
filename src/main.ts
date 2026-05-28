@@ -367,6 +367,7 @@ export default class SynologySync extends Plugin {
 
     this.syncing = true;
     beginDebugSync(this.app);
+    await this.persistLatestSyncLog("started");
     new Notice("Synology Sync starting...");
 
     let fs: FileStation | null = null;
@@ -438,6 +439,7 @@ export default class SynologySync extends Plugin {
 
     this.syncing = true;
     beginDebugSync(this.app);
+    await this.persistLatestSyncLog("started");
     new Notice("Git-over-File-Station sync starting...");
 
     let fs: FileStation | null = null;
@@ -451,6 +453,7 @@ export default class SynologySync extends Plugin {
         authorEmail: this.settings.gitAuthorEmail,
         configPolicy: this.settings.obsidianConfigPolicy,
         configOptIns: this.settings.obsidianConfigOptIns,
+        mobileDownloadGuard: { maxFiles: 1500 },
       });
 
       const result = await engine.sync();
@@ -478,15 +481,17 @@ export default class SynologySync extends Plugin {
     }
   }
 
-  private async persistLatestSyncLog(): Promise<void> {
+  private async persistLatestSyncLog(status: "started" | "finished" = "finished"): Promise<void> {
     if (!this.settings.persistSyncLogToVaultNote) return;
 
     try {
+      debugLog(`Persistent log ${status}: ${LATEST_SYNC_LOG_NOTE_PATH}`);
       const log = redactSensitiveLogText(getDebugLog());
       const body = [
         "# Synology Sync Latest Run",
         "",
         `Updated: ${new Date().toISOString()}`,
+        `Status: ${status}`,
         `Plugin version: ${this.manifest.version || "unknown"}`,
         `Sync mode: ${this.settings.syncBackend}`,
         "",

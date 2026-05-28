@@ -21,6 +21,7 @@ export interface MobileGitFileStationSyncOptions {
   authorEmail: string;
   configPolicy?: import("./git-excludes").ObsidianConfigSyncPolicy;
   configOptIns?: import("./git-excludes").ObsidianConfigOptIns;
+  mobileDownloadGuard?: { maxFiles: number; maxBytes?: number };
 }
 
 type FsData = Uint8Array;
@@ -43,6 +44,7 @@ const WORKDIR = "/vault";
 const GITDIR = "/vault/.git";
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const DEFAULT_MOBILE_REMOTE_GIT_FILE_GUARD = 1500;
 
 /**
  * Browser/mobile Git-over-File-Station engine.
@@ -307,6 +309,7 @@ export class MobileGitFileStationSyncEngine {
       return !!rel && !shouldSkipRemoteGitFile(rel);
     });
     debugLog(`[git-filestation-mobile] remote bare repo listing files=${files.length} downloadable=${downloadable.length}`);
+    this.assertRemoteGitDownloadWithinMobileGuard(downloadable);
 
     let downloaded = 0;
     let bytes = 0;
@@ -327,6 +330,18 @@ export class MobileGitFileStationSyncEngine {
       }
     }
     debugLog(`[git-filestation-mobile] remote bare repo download complete files=${downloaded} bytes=${bytes}`);
+  }
+
+  private assertRemoteGitDownloadWithinMobileGuard(files: Array<{ path: string; isdir: boolean }>): void {
+    const maxFiles = this.opts.mobileDownloadGuard?.maxFiles ?? DEFAULT_MOBILE_REMOTE_GIT_FILE_GUARD;
+    if (maxFiles <= 0 || files.length <= maxFiles) return;
+    const sample = files
+      .slice(0, 5)
+      .map((file) => relativeRemotePath(this.opts.remotePath, file.path) || file.path)
+      .join(", ");
+    const message = `Git-over-File-Station mobile sync stopped before checkout: remote bare repo has ${files.length} downloadable Git files, above the mobile safety limit of ${maxFiles}. This path currently has to mirror the bare Git object store before checkout, which can make Obsidian/iOS reload under memory or IO pressure. Run git gc/pack on the NAS/desktop repo or use desktop Git-backed sync until mobile incremental fetch is implemented. Sample files: ${sample}`;
+    debugLog(`[git-filestation-mobile] preflight abort: ${message}`);
+    throw new Error(message);
   }
 
   private async listAllRemoteGitFilesStrict(basePath: string): Promise<Array<{ path: string; isdir: boolean }>> {
