@@ -67,12 +67,16 @@ export interface SynologySyncSettings {
   gitAuthorEmail: string;
   obsidianConfigPolicy: ObsidianConfigSyncPolicy;
   obsidianConfigOptIns: ObsidianConfigOptIns;
+  filenameSanitizeRestrictedChars: string;
+  filenameSanitizeReplacementChar: string;
   debugLogEnabled: boolean;
   quickConnectCandidateCache: CachedQuickConnectCandidate[];
   persistSyncLogToVaultNote: boolean;
 }
 
 export const LATEST_SYNC_LOG_NOTE_PATH = "Synology Sync Logs/latest-run.md";
+export const DEFAULT_FILENAME_SANITIZE_RESTRICTED_CHARS = ":<>\"/\\|?*";
+export const DEFAULT_FILENAME_SANITIZE_REPLACEMENT_CHAR = "-";
 
 export function sanitizeSyncBackendForRuntime(
   settings: SynologySyncSettings,
@@ -115,6 +119,8 @@ export const DEFAULT_SETTINGS: SynologySyncSettings = {
   gitAuthorEmail: "synology-sync@local",
   obsidianConfigPolicy: "notes-only",
   obsidianConfigOptIns: {},
+  filenameSanitizeRestrictedChars: DEFAULT_FILENAME_SANITIZE_RESTRICTED_CHARS,
+  filenameSanitizeReplacementChar: DEFAULT_FILENAME_SANITIZE_REPLACEMENT_CHAR,
   debugLogEnabled: false,
   quickConnectCandidateCache: [],
   persistSyncLogToVaultNote: false,
@@ -142,6 +148,14 @@ export function migrateLoadedSettings(settings: SynologySyncSettings): boolean {
   }
   if (settings.tombstoneJitterMs === LEGACY_TOMBSTONE_JITTER_MS) {
     settings.tombstoneJitterMs = DEFAULT_SETTINGS.tombstoneJitterMs;
+    changed = true;
+  }
+  if (typeof settings.filenameSanitizeRestrictedChars !== "string") {
+    settings.filenameSanitizeRestrictedChars = DEFAULT_FILENAME_SANITIZE_RESTRICTED_CHARS;
+    changed = true;
+  }
+  if (typeof settings.filenameSanitizeReplacementChar !== "string" || settings.filenameSanitizeReplacementChar.length === 0) {
+    settings.filenameSanitizeReplacementChar = DEFAULT_FILENAME_SANITIZE_REPLACEMENT_CHAR;
     changed = true;
   }
   return changed;
@@ -569,6 +583,35 @@ export class SynologySyncSettingTab extends PluginSettingTab {
         .setName("Git notes")
         .setDesc("Git backend uses real Git commits and merge behavior. In File Station mode, the NAS path is a bare Git repo used as the canonical store; human-readable files are checked out locally or by an optional server-side mirror task.");
     }
+
+    containerEl.createEl("h3", { text: "Filename sanitizer" });
+
+    new Setting(containerEl)
+      .setName("Restricted filename characters")
+      .setDesc("Remote Git note filename characters to replace before materializing on this device.")
+      .addText((text) =>
+        text
+          .setPlaceholder(DEFAULT_FILENAME_SANITIZE_RESTRICTED_CHARS)
+          .setValue(this.plugin.settings.filenameSanitizeRestrictedChars)
+          .onChange(async (value) => {
+            this.plugin.settings.filenameSanitizeRestrictedChars = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Filename replacement character")
+      .setDesc("Replacement used for each restricted filename character.")
+      .addText((text) =>
+        text
+          .setPlaceholder(DEFAULT_FILENAME_SANITIZE_REPLACEMENT_CHAR)
+          .setValue(this.plugin.settings.filenameSanitizeReplacementChar)
+          .onChange(async (value) => {
+            const trimmed = value.trim();
+            this.plugin.settings.filenameSanitizeReplacementChar = trimmed.length > 0 ? trimmed.slice(0, 1) : DEFAULT_FILENAME_SANITIZE_REPLACEMENT_CHAR;
+            await this.plugin.saveSettings();
+          })
+      );
 
     // Status
     containerEl.createEl("h3", { text: "Status" });

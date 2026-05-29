@@ -684,6 +684,25 @@ export class FileStation {
     throw new FileStationApiError(`${label} failed: ${JSON.stringify(cfData.error)}`, failureCode);
   }
 
+
+  async rename(path: string, newName: string): Promise<void> {
+    const resp = await requestUrl({
+      url: this.url("", {
+        api: "SYNO.FileStation.Rename",
+        version: "2",
+        method: "rename",
+        path,
+        name: newName,
+      }),
+      method: "GET",
+      throw: false,
+    });
+    const data = this.parseJson(resp, "rename");
+    if (!data.success) {
+      throw new Error(`rename failed for ${path} -> ${newName}: ${JSON.stringify(data.error)}`);
+    }
+  }
+
   async delete(path: string): Promise<void> {
     const resp = await requestUrl({
       url: this.url("", {

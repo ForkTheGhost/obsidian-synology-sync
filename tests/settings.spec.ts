@@ -55,6 +55,11 @@ describe("DEFAULT_SETTINGS", () => {
   it("keeps persistent latest-run log disabled by default", () => {
     expect(DEFAULT_SETTINGS.persistSyncLogToVaultNote).toBe(false);
   });
+
+  it("defaults cross-platform filename sanitizer fields", () => {
+    expect(DEFAULT_SETTINGS.filenameSanitizeRestrictedChars).toBe(":<>\"/\\|?*");
+    expect(DEFAULT_SETTINGS.filenameSanitizeReplacementChar).toBe("-");
+  });
 });
 
 describe("migrateLoadedSettings", () => {
