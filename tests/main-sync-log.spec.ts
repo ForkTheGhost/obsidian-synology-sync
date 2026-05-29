@@ -60,8 +60,8 @@ describe("persisted latest sync log", () => {
 
     await (plugin as unknown as { runGitFileStationSync: () => Promise<void> }).runGitFileStationSync();
 
-    expect(adapter.write).toHaveBeenCalledTimes(2);
-    const [path, body] = adapter.write.mock.calls[1] as [string, string];
+    expect(adapter.write).toHaveBeenCalledTimes(1);
+    const [path, body] = adapter.write.mock.calls[0] as [string, string];
     expect(path).toBe(LATEST_SYNC_LOG_NOTE_PATH);
     expect(body).toContain("GIT-OVER-FILE-STATION SYNC FINISHED: SUCCESS");
     expect(body).toContain("Plugin version: test-version");
@@ -70,6 +70,33 @@ describe("persisted latest sync log", () => {
     expect(body).not.toContain("abc123");
     expect(body).not.toContain("token123");
     expect(body).toContain("password=***");
+  });
+
+  it("does not write the persistent note before a sync finishes", async () => {
+    jest.useFakeTimers();
+    let releaseSync!: () => void;
+    const { plugin, adapter } = buildPlugin(true);
+    const { MobileGitFileStationSyncEngine } = jest.requireMock("../src/git-filestation-mobile") as {
+      MobileGitFileStationSyncEngine: jest.Mock;
+    };
+    MobileGitFileStationSyncEngine.mockImplementationOnce(() => ({
+      sync: jest.fn(() => new Promise((resolve) => {
+        releaseSync = () => resolve({ uploaded: [], downloaded: [], deleted: [], conflicts: [], errors: [] });
+      })),
+    }));
+
+    const run = (plugin as unknown as { runGitFileStationSync: () => Promise<void> }).runGitFileStationSync();
+    await Promise.resolve();
+    jest.advanceTimersByTime(30_000);
+    await Promise.resolve();
+
+    expect(adapter.write).not.toHaveBeenCalled();
+
+    releaseSync();
+    await run;
+
+    expect(adapter.write).toHaveBeenCalledTimes(1);
+    jest.useRealTimers();
   });
 
   it("does not fail sync completion when the optional note write fails", async () => {

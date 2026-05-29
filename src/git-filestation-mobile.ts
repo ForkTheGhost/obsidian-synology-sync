@@ -1373,9 +1373,8 @@ export class MobileGitFileStationSyncEngine {
         try {
           await maybeRename.rename(joinRemotePath(finalFolder, tmpName), finalName);
         } catch (renameError) {
-          debugLog(`[git-filestation-mobile] temp ref rename failed; falling back to verified overwrite for ${rel}: ${(renameError as Error).message}`);
-          await this.overwriteBranchRefWithVerification(finalFolder, finalName, rel, bytes, newRef);
-          await this.fs.delete(joinRemotePath(finalFolder, tmpName)).catch(() => undefined);
+          debugLog(`[git-filestation-mobile] temp ref rename failed; falling back to verified swap for ${rel}: ${(renameError as Error).message}`);
+          await this.swapBranchRefWithVerification(finalFolder, finalName, tmpName, rel, newRef);
         }
       } else {
         await this.overwriteBranchRefWithVerification(finalFolder, finalName, rel, bytes, newRef);
@@ -1395,6 +1394,39 @@ export class MobileGitFileStationSyncEngine {
       debugLog(`[git-filestation-mobile] branch ref verification observed ${observed || "<none>"}; retrying verified overwrite for ${rel}`);
       await this.overwriteBranchRefWithVerification(finalFolder, finalName, rel, bytes, newRef);
       return;
+    }
+  }
+
+  private async swapBranchRefWithVerification(finalFolder: string, finalName: string, tmpName: string, rel: string, newRef: string): Promise<void> {
+    const maybeRename = this.fs as unknown as { rename?: (path: string, newName: string) => Promise<void> };
+    if (typeof maybeRename.rename !== "function") {
+      await this.overwriteBranchRefWithVerification(finalFolder, finalName, rel, textEncoder.encode(`${newRef}\n`), newRef);
+      return;
+    }
+    const finalPath = joinRemotePath(finalFolder, finalName);
+    const tmpPath = joinRemotePath(finalFolder, tmpName);
+    const backupName = `.${finalName}.synology-sync-backup-${this.opts.syncIdentityId}-${Date.now().toString(36)}.tmp`;
+    const backupPath = joinRemotePath(finalFolder, backupName);
+    let backupCreated = false;
+    let promoted = false;
+    try {
+      await maybeRename.rename(finalPath, backupName);
+      backupCreated = true;
+      await maybeRename.rename(tmpPath, finalName);
+      promoted = true;
+      const observed = await this.readRemoteBranchOidFromFileStation();
+      if (observed !== newRef) {
+        throw new Error(`observed ${observed || "<none>"} after swap, expected ${newRef}`);
+      }
+      debugLog(`[git-filestation-mobile] branch ref verified after swap oid=${newRef}`);
+    } catch (e) {
+      if (backupCreated && !promoted) {
+        try { await maybeRename.rename(backupPath, finalName); } catch { /* best effort restore */ }
+      }
+      throw e;
+    } finally {
+      await this.fs.delete(tmpPath).catch(() => undefined);
+      await this.fs.delete(backupPath).catch(() => undefined);
     }
   }
 

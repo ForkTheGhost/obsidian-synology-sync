@@ -1024,6 +1024,7 @@ describe("MobileGitFileStationSyncEngine", () => {
   it("publishes branch refs through temp rename and verifies the landed ref", async () => {
     const oid = "c".repeat(40);
     let remoteRef = "";
+    let tmpRef = "";
     let leaseMetadata2 = "";
     const uploaded: string[] = [];
     const fs = {
@@ -1039,10 +1040,22 @@ describe("MobileGitFileStationSyncEngine", () => {
         uploaded.push(`${dest}/${name}`);
         if (name === "lease.json" || name.startsWith("lease-")) { leaseMetadata2 = new TextDecoder().decode(new Uint8Array(content)); return; }
         if (name === "main") remoteRef = new TextDecoder().decode(new Uint8Array(content));
+        if (/^\.main\.synology-sync-.*\.tmp$/.test(name)) tmpRef = new TextDecoder().decode(new Uint8Array(content));
       }),
-      rename: jest.fn(async (_path: string, newName: string) => {
-        expect(newName).toBe("main");
-        throw new Error("destination exists");
+      rename: jest.fn(async (path: string, newName: string) => {
+        if (/\/\.main\.synology-sync-.*\.tmp$/.test(path) && newName === "main" && remoteRef) {
+          throw new Error("destination exists");
+        }
+        if (path.endsWith("/main") && /^\.main\.synology-sync-backup-.*\.tmp$/.test(newName)) {
+          remoteRef = "";
+          return;
+        }
+        if (/\/\.main\.synology-sync-.*\.tmp$/.test(path) && newName === "main") {
+          remoteRef = tmpRef;
+          tmpRef = "";
+          return;
+        }
+        throw new Error(`unexpected rename ${path} -> ${newName}`);
       }),
     };
     const vault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
@@ -1053,14 +1066,16 @@ describe("MobileGitFileStationSyncEngine", () => {
     await engine.memfs.promises.mkdir("/vault", { recursive: true });
     await engine.memfs.promises.writeFile("/vault/.git/HEAD", "ref: refs/heads/main\n");
     await engine.memfs.promises.writeFile("/vault/.git/refs/heads/main", `${oid}\n`);
-    engine.remoteBranchOidAtDownload = undefined;
+    remoteRef = `${"b".repeat(40)}\n`;
+    engine.remoteBranchOidAtDownload = "b".repeat(40);
 
     await engine.publishWithLease();
 
     expect(uploaded.some((p) => /refs\/heads\/\.main\.synology-sync-.*\.tmp$/.test(p))).toBe(true);
-    expect(uploaded.some((p) => p.endsWith("/refs/heads/main"))).toBe(true);
-    expect(fs.rename).toHaveBeenCalled();
-    expect(fs.delete).toHaveBeenCalledWith(expect.stringMatching(/\/refs\/heads\/\.main\.synology-sync-.*\.tmp$/));
+    expect(uploaded.some((p) => p.endsWith("/refs/heads/main"))).toBe(false);
+    expect(fs.rename).toHaveBeenCalledWith(expect.stringMatching(/\/refs\/heads\/\.main\.synology-sync-.*\.tmp$/), "main");
+    expect(fs.rename).toHaveBeenCalledWith(expect.stringMatching(/\/refs\/heads\/main$/), expect.stringMatching(/^\.main\.synology-sync-backup-.*\.tmp$/));
+    expect(fs.delete).toHaveBeenCalledWith(expect.stringMatching(/\/refs\/heads\/\.main\.synology-sync-backup-.*\.tmp$/));
   });
 
 });
