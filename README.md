@@ -73,7 +73,7 @@ scripts/install-synology-sync-bare-hook.sh /homes/username/Obsidian/MyVault.git
 
 Replace the path with your **NAS bare Git repository path**. The command installs `scripts/hooks/synology-sync-pre-receive` as `hooks/pre-receive` and marks it executable. The plugin checks for this hook before Git-backed sync takes the File Station lease.
 
-If you skip this step, Obsidian/File Station sync still has its own lease and expected-ref checks, but a separate native Git push can race it and overwrite branch refs while a sync is in progress. For that reason, Git-backed sync pauses with a warning until the hook is installed and verified.
+If you skip this step, Obsidian/File Station sync still has its own lease and expected-ref checks, but a separate native Git push can race it and overwrite branch refs while a sync is in progress. For that reason, Git-backed sync logs a warning when the hook is missing, then continues with the plugin's built-in lease and ref checks.
 
 ## Quick start: Simple File Sync over File Station
 
