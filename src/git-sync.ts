@@ -59,7 +59,7 @@ class GitCommandError extends Error {
   }
 }
 
-export { DEFAULT_GIT_EXCLUDES, OBSIDIAN_CONFIG_SYNC_POLICY, buildGitExcludes } from "./git-excludes";
+export { NOTES_ONLY_GIT_EXCLUDES, SELECTED_SETTINGS_GIT_EXCLUDES, OBSIDIAN_CONFIG_SYNC_POLICY, buildGitExcludes } from "./git-excludes";
 import type { ObsidianConfigSyncPolicy } from "./git-excludes";
 export type { ObsidianConfigOptIns, ObsidianConfigSyncPolicy } from "./git-excludes";
 
@@ -104,6 +104,30 @@ export function findInvalidLocalFilesystemPaths(paths: string[]): string[] {
       invalidSegment.test(part) || reserved.test(part) || /[ .]$/.test(part),
     ),
   );
+}
+
+export function sanitizeVaultPathSegment(segment: string, restrictedChars: string, replacementChar: string): string {
+  const replacement = normalizeFilenameReplacementChar(replacementChar);
+  let out = "";
+  for (const char of segment) {
+    out += restrictedChars.includes(char) && char !== "/" ? replacement : char;
+  }
+  out = out.replace(/[ .]+$/g, (suffix) => replacement.repeat(suffix.length));
+  out = out.replace(/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i, (_match, name: string, ext: string = "") => `${name}${replacement}${ext}`);
+  return out;
+}
+
+export function sanitizeVaultPath(path: string, restrictedChars: string, replacementChar: string): string {
+  return path
+    .split("/")
+    .map((segment) => sanitizeVaultPathSegment(segment, restrictedChars, replacementChar))
+    .join("/");
+}
+
+function normalizeFilenameReplacementChar(value: string): string {
+  const trimmed = (value || "").trim();
+  if (!trimmed || trimmed === "/" || trimmed === "\\") return "-";
+  return trimmed.slice(0, 1);
 }
 
 export function classifyGitSetup(state: GitSetupState): GitSetupClassification {

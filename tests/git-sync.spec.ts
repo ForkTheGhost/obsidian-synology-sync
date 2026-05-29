@@ -1,4 +1,4 @@
-import { buildGitExcludes, classifyGitConflict, classifyGitSetup, GitSetupState, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError } from "../src/git-sync";
+import { buildGitExcludes, classifyGitConflict, classifyGitSetup, GitSetupState, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError, sanitizeVaultPath } from "../src/git-sync";
 import { isGitIgnoredPath, matchesGitIgnorePattern } from "../src/git-excludes";
 
 const baseState: GitSetupState = {
@@ -92,14 +92,15 @@ describe("classifyGitSetup", () => {
 describe("Obsidian config sync policy", () => {
   it("defaults to notes-only by excluding volatile/device-local Obsidian config", () => {
     const excludes = buildGitExcludes("notes-only");
-    expect(excludes).toContain(".obsidian/app.json");
-    expect(excludes).toContain(".obsidian/plugins/*/data.json");
+    expect(excludes).toContain(".obsidian/");
+    expect(excludes).toContain("Synology Sync Logs/latest-run*.md");
   });
 
   it("allows selected settings opt-ins without blindly syncing plugin data", () => {
     const excludes = buildGitExcludes("selected-settings", { pluginLists: true, hotkeys: true });
     expect(excludes).not.toContain(".obsidian/community-plugins.json");
     expect(excludes).not.toContain(".obsidian/hotkeys.json");
+    expect(excludes).toContain(".obsidian/plugins/");
     expect(excludes).toContain(".obsidian/plugins/*/data.json");
   });
 
@@ -107,8 +108,8 @@ describe("Obsidian config sync policy", () => {
     const excludes = buildGitExcludes("notes-only");
     expect(isGitIgnoredPath(".obsidian/plugins/calendar/data.json", excludes)).toBe(true);
     expect(isGitIgnoredPath(".obsidian/plugins/foo/data.json", excludes)).toBe(true);
-    expect(isGitIgnoredPath(".obsidian/plugins/foo/main.js", excludes)).toBe(false);
-    expect(isGitIgnoredPath(".obsidian/plugins/foo/manifest.json", excludes)).toBe(false);
+    expect(isGitIgnoredPath(".obsidian/plugins/foo/main.js", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/plugins/foo/manifest.json", excludes)).toBe(true);
   });
 
   it("keeps notes-first Obsidian state exclusions aligned with gitignore semantics", () => {
@@ -117,6 +118,14 @@ describe("Obsidian config sync policy", () => {
     expect(isGitIgnoredPath(".obsidian/appearance.json", excludes)).toBe(true);
     expect(isGitIgnoredPath(".obsidian/graph.json", excludes)).toBe(true);
     expect(isGitIgnoredPath(".obsidian/workspace-mobile.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/community-plugins.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/core-plugins.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/hotkeys.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/snippets/custom.css", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/templates.json", excludes)).toBe(true);
+    expect(isGitIgnoredPath(".obsidian/plugins/calendar/main.js", excludes)).toBe(true);
+    expect(isGitIgnoredPath("Synology Sync Logs/latest-run.md", excludes)).toBe(true);
+    expect(isGitIgnoredPath("Synology Sync Logs/latest-run (conflict device abc123).md", excludes)).toBe(true);
     expect(isGitIgnoredPath(".trash/deleted.md", excludes)).toBe(true);
     expect(isGitIgnoredPath(".sync-tombstones/device.json", excludes)).toBe(true);
     expect(isGitIgnoredPath("Daily/today.md", excludes)).toBe(false);
@@ -165,5 +174,13 @@ describe("invalid local filesystem paths", () => {
     expect(error.path).toBe("<invalid-local-paths>");
     expect(error.error).toContain("B: C.md");
     expect(error.error).toContain("Rename these notes");
+  });
+
+  it("sanitizes restricted filename characters inside path segments", () => {
+    expect(sanitizeVaultPath("A/B: C?.md", ":<>\"/\\|?*", "-")).toBe("A/B- C-.md");
+  });
+
+  it("sanitizes reserved Windows names and trailing dot or space", () => {
+    expect(sanitizeVaultPath("A/CON.md/B. /NUL", ":<>\"/\\|?*", "-")).toBe("A/CON-.md/B--/NUL-");
   });
 });

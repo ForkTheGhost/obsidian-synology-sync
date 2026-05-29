@@ -3,7 +3,7 @@ import { FileStation } from "./filestation";
 import { withFileStationGitLease } from "./git-filestation-lease";
 import { debugLog } from "./debug";
 import { SyncResult } from "./sync";
-import { buildGitExcludes, classifyGitConflict, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError } from "./git-sync";
+import { buildGitExcludes, classifyGitConflict, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError, sanitizeVaultPath } from "./git-sync";
 import { isGitIgnoredPath } from "./git-excludes";
 
 import { Buffer } from "buffer";
@@ -21,9 +21,13 @@ export interface MobileGitFileStationSyncOptions {
   authorEmail: string;
   configPolicy?: import("./git-excludes").ObsidianConfigSyncPolicy;
   configOptIns?: import("./git-excludes").ObsidianConfigOptIns;
+  filenameSanitizeRestrictedChars?: string;
+  filenameSanitizeReplacementChar?: string;
 }
 
 type FsData = Uint8Array;
+type GitTreeBlobEntry = { path: string; oid: string; mode: string; type: string };
+type MutableTreeNode = { trees: Map<string, MutableTreeNode>; blobs: Map<string, Omit<GitTreeBlobEntry, "path">> };
 
 type NodeLikeStat = {
   isFile: () => boolean;
@@ -86,6 +90,7 @@ export class MobileGitFileStationSyncEngine {
   private syncLeaseHeld = false;
   private syncLeaseExpectedOldRef: string | undefined;
   private mobileCacheMarker: MobileGitCacheMarker | undefined;
+  private remotePackfilesDownloaded = false;
 
   constructor(vault: Vault, fs: FileStation, opts: MobileGitFileStationSyncOptions) {
     this.vault = vault;
@@ -96,6 +101,8 @@ export class MobileGitFileStationSyncEngine {
       branch: opts.branch.trim() || "main",
       authorName: opts.authorName.trim() || "Obsidian Synology Sync",
       authorEmail: opts.authorEmail.trim() || "synology-sync@local",
+      filenameSanitizeRestrictedChars: opts.filenameSanitizeRestrictedChars ?? ":<>\"/\\|?*",
+      filenameSanitizeReplacementChar: normalizeReplacementChar(opts.filenameSanitizeReplacementChar),
     };
     this.gitExcludes = buildGitExcludes(this.opts.configPolicy, this.opts.configOptIns);
   }
@@ -147,11 +154,17 @@ export class MobileGitFileStationSyncEngine {
       throw new Error(`Remote ref changed while acquiring Git-over-File-Station lease for ${this.opts.branch}; expected ${expectedOldRefHint || "<none>"} but found ${this.remoteBranchOidAtDownload || "<none>"}. Retry sync to fetch and merge safely.`);
     }
 
-    const invalidRemotePaths = await this.runPhase("inspect remote tree", () => this.invalidRemotePathsForLocalCheckout());
+    let invalidRemotePaths = await this.runPhase("inspect remote tree", () => this.invalidRemotePathsForLocalCheckout());
+    debugLog(`[git-filestation-mobile] invalid remote filename count=${invalidRemotePaths.length}`);
+    if (invalidRemotePaths.length > 0) {
+      const renamed = await this.runPhase("sanitize remote filenames", () => this.sanitizeInvalidRemotePaths(invalidRemotePaths, result));
+      if (renamed > 0) invalidRemotePaths = await this.runPhase("inspect sanitized remote tree", () => this.invalidRemotePathsForLocalCheckout());
+    }
     if (invalidRemotePaths.length > 0) {
       result.errors.push(invalidLocalFilesystemPathError(invalidRemotePaths));
       return result;
     }
+    await this.runPhase("prune redundant conflict artifacts", () => this.pruneRedundantRemoteConflictArtifacts(result));
 
     const nestedRepos = this.findNestedGitRepositories();
     if (nestedRepos.length > 0) {
@@ -168,7 +181,6 @@ export class MobileGitFileStationSyncEngine {
       if (hiddenSystemFilesAtStart.length > 0) debugLog(`[git-filestation-mobile] treating vault as empty except hidden system files: ${hiddenSystemFilesAtStart.join(", ")}`);
       const beforeSnapshot = await this.runPhase("snapshot workdir", () => this.snapshotWorkdirFiles());
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
-      await this.runPhase("checkout remote", () => this.checkoutRemote());
       await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
       // Direct materialization already writes every remote file through Obsidian's vault API.
       // Do not immediately run applyCheckoutChanges against the original empty snapshot: on
@@ -183,7 +195,7 @@ export class MobileGitFileStationSyncEngine {
       const remoteFiles = await this.runPhase("list remote files", () => this.remoteTreeFiles());
       const firstSyncLocalAdditions = await this.runPhase("detect first-sync local additions", () => this.firstSyncLocalAdditions(workdirFilesAtStart, remoteFiles));
       if (firstSyncLocalAdditions.length > 0) {
-        await this.runPhase("checkout remote", () => this.checkoutRemote());
+        await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
         await this.runPhase("restore first-sync local additions", () => this.restoreInitialLocalFiles(firstSyncLocalAdditions, initialLocalFiles));
         await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(initialLocalFiles, result));
         await this.runPhase("commit local changes", () => this.commitLocalChanges(`Sync from ${this.opts.syncIdentityId}`, false));
@@ -194,7 +206,6 @@ export class MobileGitFileStationSyncEngine {
       }
       if (!hadUserFilesAtStart) {
         if (hiddenSystemFilesAtStart.length > 0) debugLog(`[git-filestation-mobile] treating vault as empty except hidden system files: ${hiddenSystemFilesAtStart.join(", ")}`);
-        await this.runPhase("checkout remote", () => this.checkoutRemote());
         await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
         // Direct materialization already writes every remote file through Obsidian's vault API.
         // Do not immediately run applyCheckoutChanges against the original empty snapshot: on
@@ -207,7 +218,6 @@ export class MobileGitFileStationSyncEngine {
       // the established remote vault. Anchor the local branch to the remote first, materialize
       // the remote tree, then add the starter files back as conflict copies. This preserves
       // local work while keeping remote history as the source of truth.
-      await this.runPhase("checkout remote", () => this.checkoutRemote());
       await this.runPhase("materialize remote files", () => this.materializeRemoteFiles(remoteFiles, result));
       if (initialLocalFiles.size > 0) {
         await this.runPhase("materialize pre-sync local copies", () => this.materializeInitialLocalCopies(initialLocalFiles, result));
@@ -462,7 +472,11 @@ export class MobileGitFileStationSyncEngine {
       bytes = await this.downloadRemoteGitBytes(rel);
     } catch (e) {
       if (await this.remoteHasPackfiles()) {
-        throw new Error(`Git-over-File-Station mobile sync cannot fetch required object ${oid} as a loose object because the NAS Git store has packfiles under objects/pack. Mobile File Station packfile reads are not implemented yet; run a desktop/admin bootstrap that leaves required objects loose, or use desktop Git-backed sync until pack handling lands. Original error: ${(e as Error).message}`);
+        try {
+          return await this.downloadRemotePackedObject(oid);
+        } catch (packError) {
+          throw new Error(`Git-over-File-Station mobile sync could not fetch required object ${oid} as a loose object or from remote packfiles. Loose object error: ${(e as Error).message}. Packfile error: ${(packError as Error).message}`);
+        }
       }
       throw new Error(`Git-over-File-Station mobile sync could not fetch required loose object ${oid} at ${rel}: ${(e as Error).message}`);
     }
@@ -476,6 +490,46 @@ export class MobileGitFileStationSyncEngine {
     await this.writeMemFile(`${GITDIR}/${rel}`, bytes);
     await this.writeCachedRemoteLooseObject(rel, bytes);
     return { ...unwrapped, bytes };
+  }
+
+  private async downloadRemotePackedObject(oid: string): Promise<{ type: string; object: Uint8Array; bytes: Uint8Array }> {
+    await this.ensureRemotePackfilesDownloaded();
+    try {
+      const result = await git.readObject({ fs: this.memfs.client, gitdir: GITDIR, oid, cache: this.cache, format: "content" });
+      const wrapped = wrapGitObject(result.type, result.object);
+      debugLog(`[git-filestation-mobile] remote packed object read oid=${oid.slice(0, 12)} type=${result.type} bytes=${result.object.byteLength}`);
+      return { type: result.type, object: result.object, bytes: wrapped };
+    } catch (e) {
+      throw new Error(`packed object read failed oid=${oid}: ${(e as Error).message || String(e)}`);
+    }
+  }
+
+  private async ensureRemotePackfilesDownloaded(): Promise<void> {
+    if (this.remotePackfilesDownloaded) return;
+    const entries = await this.listRemotePackEntries();
+    const packFiles = entries.filter((rel) => /^objects\/pack\/pack-[0-9a-f]{40}\.pack$/i.test(rel)).sort();
+    const idxFiles = entries.filter((rel) => /^objects\/pack\/pack-[0-9a-f]{40}\.idx$/i.test(rel)).sort();
+    if (packFiles.length === 0) throw new Error("remote objects/pack has no pack files");
+
+    for (const packRel of packFiles) {
+      const idxRel = `${packRel.slice(0, -".pack".length)}.idx`;
+      if (!idxFiles.includes(idxRel)) throw new Error(`remote Git pack missing idx pack=${packRel} expected=${idxRel}`);
+
+      const [packBytes, idxBytes] = await Promise.all([
+        this.downloadRemoteGitBytes(packRel),
+        this.downloadRemoteGitBytes(idxRel),
+      ]);
+      const packInfo = await verifyGitPackBytes(packBytes, packRel);
+      const idxInfo = await verifyGitPackIndexBytes(idxBytes, idxRel, packInfo.packSha);
+      if (idxInfo.objectCount !== packInfo.objectCount) {
+        throw new Error(`remote Git pack/idx object count mismatch pack=${packRel} packCount=${packInfo.objectCount} idx=${idxRel} idxCount=${idxInfo.objectCount}`);
+      }
+      await this.writeMemFile(`${GITDIR}/${packRel}`, packBytes);
+      await this.writeMemFile(`${GITDIR}/${idxRel}`, idxBytes);
+      debugLog(`[git-filestation-mobile] remote Git pack downloaded pack=${packRel} bytes=${packBytes.byteLength} objects=${packInfo.objectCount} idx=${idxRel} idxBytes=${idxBytes.byteLength}`);
+    }
+
+    this.remotePackfilesDownloaded = true;
   }
 
   private async downloadRemoteGitBytes(rel: string): Promise<Uint8Array> {
@@ -496,15 +550,21 @@ export class MobileGitFileStationSyncEngine {
   }
 
   private async remoteHasPackfiles(): Promise<boolean> {
+    return (await this.listRemotePackEntries()).some((rel) => /^objects\/pack\/pack-[0-9a-f]{40}\.(pack|idx)$/i.test(rel));
+  }
+
+  private async listRemotePackEntries(): Promise<string[]> {
     const packPath = joinRemotePath(this.opts.remotePath, "objects/pack");
     const station = this.fs as unknown as { listFolder?: (path: string) => Promise<Array<{ path: string; isdir: boolean }>>; listAllFiles?: (path: string) => Promise<Array<{ path: string; isdir: boolean }>> };
     try {
       const files = typeof station.listFolder === "function"
         ? await station.listFolder(packPath)
         : station.listAllFiles ? await station.listAllFiles(packPath) : [];
-      return files.some((file) => !file.isdir && /^pack-[0-9a-f]{40}\.(pack|idx)$/i.test(basenameRemotePath(file.path)));
+      return files
+        .filter((file) => !file.isdir)
+        .map((file) => `objects/pack/${basenameRemotePath(file.path)}`);
     } catch {
-      return false;
+      return [];
     }
   }
 
@@ -864,6 +924,179 @@ export class MobileGitFileStationSyncEngine {
     return findInvalidLocalFilesystemPaths(await this.remoteTreeFiles());
   }
 
+  private async sanitizeInvalidRemotePaths(paths: string[], result: SyncResult): Promise<number> {
+    const restricted = this.opts.filenameSanitizeRestrictedChars ?? ":<>\"/\\|?*";
+    const replacement = normalizeReplacementChar(this.opts.filenameSanitizeReplacementChar);
+    const renames = new Map<string, string>();
+    const allRemotePaths = await this.remoteTreeFiles();
+    const occupied = new Set(allRemotePaths);
+    const destinations = new Set<string>();
+
+    for (const path of paths) {
+      const sanitized = sanitizeVaultPath(path, restricted, replacement);
+      if (sanitized === path) continue;
+      if (destinations.has(sanitized) || (occupied.has(sanitized) && !paths.includes(sanitized))) {
+        result.errors.push({
+          path,
+          error: `Filename sanitizer would rename ${path} to ${sanitized}, but that destination already exists. Rename manually to avoid losing context.`,
+        });
+        return 0;
+      }
+      renames.set(path, sanitized);
+      destinations.add(sanitized);
+    }
+
+    if (renames.size === 0) return 0;
+    const head = await this.remoteRefOid();
+    if (!head) return 0;
+    const newTree = await this.writeRenamedRemoteTree(head, renames);
+    const newCommit = await this.writeCommitForTree(
+      newTree,
+      head,
+      `Sanitize filenames for cross-platform sync from ${this.opts.syncIdentityId}`,
+    );
+    await this.writeMemText(`${GITDIR}/refs/heads/${this.opts.branch}`, `${newCommit}\n`);
+    for (const [from, to] of renames) {
+      result.uploaded.push(to);
+      result.deleted.push(from);
+      debugLog(`[git-filestation-mobile] sanitized remote filename ${from} -> ${to}`);
+    }
+    await this.publishWithLease();
+    return renames.size;
+  }
+
+  private async pruneRedundantRemoteConflictArtifacts(result: SyncResult): Promise<number> {
+    const head = await this.remoteRefOid();
+    if (!head) return 0;
+    const remoteFiles = await this.remoteTreeFiles();
+    const remote = new Set(remoteFiles);
+    const deletions = new Set<string>();
+
+    for (const path of remoteFiles) {
+      if (/^Synology Sync Logs\/latest-run \(conflict .+ [0-9a-f]{12}\)\.md$/i.test(path)) {
+        deletions.add(path);
+        continue;
+      }
+
+      const original = originalPathForConflictCopy(path);
+      if (!original || !remote.has(original)) continue;
+      if (await this.remoteConflictCopyIsRedundant(head, original, path)) deletions.add(path);
+    }
+
+    if (deletions.size === 0) return 0;
+    const newTree = await this.writePrunedRemoteTree(head, deletions);
+    const newCommit = await this.writeCommitForTree(
+      newTree,
+      head,
+      `Prune redundant conflict artifacts from ${this.opts.syncIdentityId}`,
+    );
+    await this.writeMemText(`${GITDIR}/refs/heads/${this.opts.branch}`, `${newCommit}\n`);
+    for (const path of Array.from(deletions).sort()) {
+      result.deleted.push(path);
+      debugLog(`[git-filestation-mobile] pruned redundant remote conflict artifact ${path}`);
+    }
+    await this.publishWithLease();
+    return deletions.size;
+  }
+
+  private async remoteConflictCopyIsRedundant(head: string, original: string, conflict: string): Promise<boolean> {
+    const [originalBlob, conflictBlob] = await Promise.all([
+      git.readBlob({ fs: this.memfs.client, gitdir: GITDIR, oid: head, filepath: original, cache: this.cache }),
+      git.readBlob({ fs: this.memfs.client, gitdir: GITDIR, oid: head, filepath: conflict, cache: this.cache }),
+    ]);
+    const originalBytes = originalBlob.blob instanceof Uint8Array ? originalBlob.blob : new Uint8Array(originalBlob.blob);
+    const conflictBytes = conflictBlob.blob instanceof Uint8Array ? conflictBlob.blob : new Uint8Array(conflictBlob.blob);
+    if (bytesEqual(originalBytes, conflictBytes)) return true;
+    if (!/\.md$/i.test(original) || !/\.md$/i.test(conflict)) return false;
+    try {
+      return textDecoder.decode(originalBytes).trim() === textDecoder.decode(conflictBytes).trim();
+    } catch {
+      return false;
+    }
+  }
+
+  private async writePrunedRemoteTree(head: string, deletions: Set<string>): Promise<string> {
+    const entries = await this.remoteTreeBlobEntries(head);
+    return this.writeTreeFromBlobEntries(entries.filter((entry) => !deletions.has(entry.path)));
+  }
+
+  private async writeRenamedRemoteTree(head: string, renames: Map<string, string>): Promise<string> {
+    const entries = await this.remoteTreeBlobEntries(head);
+    const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+    for (const [from, to] of renames) {
+      const entry = byPath.get(from);
+      if (!entry) throw new Error(`Filename sanitizer could not find remote tree entry for ${from}`);
+      byPath.delete(from);
+      byPath.set(to, { ...entry, path: to });
+    }
+    return this.writeTreeFromBlobEntries(Array.from(byPath.values()));
+  }
+
+  private async remoteTreeBlobEntries(commitOid: string): Promise<GitTreeBlobEntry[]> {
+    const commit = await git.readCommit({ fs: this.memfs.client, gitdir: GITDIR, oid: commitOid, cache: this.cache });
+    const out: GitTreeBlobEntry[] = [];
+    await this.collectGitTreeBlobEntries(commit.commit.tree, "", out);
+    return out.sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  private async collectGitTreeBlobEntries(treeOid: string, prefix: string, out: GitTreeBlobEntry[]): Promise<void> {
+    const { tree } = await git.readTree({ fs: this.memfs.client, gitdir: GITDIR, oid: treeOid, cache: this.cache });
+    for (const entry of tree) {
+      const path = prefix ? `${prefix}/${entry.path}` : entry.path;
+      if (entry.type === "tree") {
+        await this.collectGitTreeBlobEntries(entry.oid, path, out);
+      } else {
+        out.push({ path, oid: entry.oid, mode: String(entry.mode), type: entry.type });
+      }
+    }
+  }
+
+  private async writeTreeFromBlobEntries(entries: GitTreeBlobEntry[]): Promise<string> {
+    const root: MutableTreeNode = { trees: new Map(), blobs: new Map() };
+    for (const entry of entries) {
+      const parts = entry.path.split("/");
+      const name = parts.pop();
+      if (!name) continue;
+      let node = root;
+      for (const part of parts) {
+        let child = node.trees.get(part);
+        if (!child) {
+          child = { trees: new Map(), blobs: new Map() };
+          node.trees.set(part, child);
+        }
+        node = child;
+      }
+      node.blobs.set(name, { oid: entry.oid, mode: entry.mode, type: entry.type });
+    }
+    return this.writeMutableTree(root);
+  }
+
+  private async writeMutableTree(node: MutableTreeNode): Promise<string> {
+    const tree: Array<{ mode: string; path: string; oid: string; type: string }> = [];
+    for (const [path, child] of Array.from(node.trees.entries()).sort(([a], [b]) => a.localeCompare(b))) {
+      tree.push({ mode: "040000", path, oid: await this.writeMutableTree(child), type: "tree" });
+    }
+    for (const [path, blob] of Array.from(node.blobs.entries()).sort(([a], [b]) => a.localeCompare(b))) {
+      tree.push({ mode: blob.mode, path, oid: blob.oid, type: blob.type });
+    }
+    return git.writeTree({ fs: this.memfs.client, gitdir: GITDIR, tree: tree as never });
+  }
+
+  private async writeCommitForTree(tree: string, parent: string, message: string): Promise<string> {
+    const commit = {
+      message,
+      tree,
+      parent: [parent],
+      author: { name: this.opts.authorName, email: this.opts.authorEmail, timestamp: Math.floor(Date.now() / 1000), timezoneOffset: new Date().getTimezoneOffset() },
+      committer: { name: this.opts.authorName, email: this.opts.authorEmail, timestamp: Math.floor(Date.now() / 1000), timezoneOffset: new Date().getTimezoneOffset() },
+    };
+    return (git as unknown as { writeCommit: (args: unknown) => Promise<string> }).writeCommit({
+      fs: this.memfs.client,
+      gitdir: GITDIR,
+      commit,
+    });
+  }
+
   private async mergeRemote(allowUnrelatedHistories: boolean): Promise<void> {
     try {
       await git.merge({
@@ -907,6 +1140,8 @@ export class MobileGitFileStationSyncEngine {
       const newRef = await this.remoteRefOid();
       await this.uploadBareRepoMirror(expectedOldRef, true);
       await this.publishBranchRefLast(newRef);
+      this.remoteBranchOidAtDownload = newRef;
+      this.syncLeaseExpectedOldRef = newRef;
       await this.writeMobileGitCacheMarker(newRef, "partial", "published ref");
     };
 
@@ -1071,9 +1306,14 @@ export class MobileGitFileStationSyncEngine {
       .filter((file) => this.shouldPublishGitFile(file.rel, expectedOldRef, suppressBranchRef))
       .sort((a, b) => compareGitMirrorPublishPath(a.rel, b.rel, this.opts.branch));
     debugLog(`[git-filestation-mobile] publishing git files before ref count=${files.length}`);
-    for (const { abs, rel } of files) {
+    for (let idx = 0; idx < files.length; idx++) {
+      const { abs, rel } = files[idx];
       const bytes = await this.memfs.promises.readFile(abs);
       await this.fs.upload(joinRemotePath(this.opts.remotePath, dirnameRemotePath(rel)), basenameRemotePath(rel), bytesToArrayBuffer(bytes), true);
+      const count = idx + 1;
+      if (count === files.length || count % 100 === 0) {
+        debugLog(`[git-filestation-mobile] published git files before ref count=${count}/${files.length} last=${rel}`);
+      }
     }
   }
 
@@ -1101,11 +1341,11 @@ export class MobileGitFileStationSyncEngine {
           await maybeRename.rename(joinRemotePath(finalFolder, tmpName), finalName);
         } catch (renameError) {
           debugLog(`[git-filestation-mobile] temp ref rename failed; falling back to verified overwrite for ${rel}: ${(renameError as Error).message}`);
-          await this.fs.upload(finalFolder, finalName, bytesToArrayBuffer(bytes), true);
+          await this.overwriteBranchRefWithVerification(finalFolder, finalName, rel, bytes, newRef);
           await this.fs.delete(joinRemotePath(finalFolder, tmpName)).catch(() => undefined);
         }
       } else {
-        await this.fs.upload(finalFolder, finalName, bytesToArrayBuffer(bytes), true);
+        await this.overwriteBranchRefWithVerification(finalFolder, finalName, rel, bytes, newRef);
         await this.fs.delete(joinRemotePath(finalFolder, tmpName)).catch(() => undefined);
       }
     } catch (e) {
@@ -1118,7 +1358,35 @@ export class MobileGitFileStationSyncEngine {
     }
     const canVerify = typeof (this.fs as unknown as { download?: unknown }).download === "function";
     const observed = canVerify ? await this.readRemoteBranchOidFromFileStation() : newRef;
-    if (observed !== newRef) throw new Error(`Git branch ref publication verification failed for ${this.opts.branch}; observed ${observed || "<none>"}, expected ${newRef}.`);
+    if (observed !== newRef) {
+      debugLog(`[git-filestation-mobile] branch ref verification observed ${observed || "<none>"}; retrying verified overwrite for ${rel}`);
+      await this.overwriteBranchRefWithVerification(finalFolder, finalName, rel, bytes, newRef);
+      return;
+    }
+  }
+
+  private async overwriteBranchRefWithVerification(finalFolder: string, finalName: string, rel: string, bytes: Uint8Array, newRef: string): Promise<void> {
+    const finalPath = joinRemotePath(finalFolder, finalName);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await this.fs.delete(finalPath).catch((deleteError) => {
+        debugLog(`[git-filestation-mobile] branch ref delete before overwrite failed for ${rel} attempt=${attempt}: ${(deleteError as Error).message}`);
+      });
+      await sleep(300 * attempt);
+      await this.fs.upload(finalFolder, finalName, bytesToArrayBuffer(bytes), true);
+      if (typeof (this.fs as unknown as { download?: unknown }).download !== "function") {
+        debugLog(`[git-filestation-mobile] branch ref overwrite uploaded without download verification for ${rel}`);
+        return;
+      }
+      await sleep(300 * attempt);
+      const observed = await this.readRemoteBranchOidFromFileStation();
+      if (observed === newRef) {
+        debugLog(`[git-filestation-mobile] branch ref verified after overwrite attempt=${attempt} oid=${newRef}`);
+        return;
+      }
+      debugLog(`[git-filestation-mobile] branch ref overwrite attempt=${attempt} observed ${observed || "<none>"} expected ${newRef}`);
+    }
+    const observed = await this.readRemoteBranchOidFromFileStation();
+    throw new Error(`Git branch ref publication verification failed for ${this.opts.branch}; observed ${observed || "<none>"}, expected ${newRef}.`);
   }
 
   private async ensureRemoteDirectoryTree(): Promise<void> {
@@ -1626,6 +1894,15 @@ function conflictCopyNaming(path: string, syncIdentityId: string): { dir: string
   return { dir, prefix, suffix };
 }
 
+function originalPathForConflictCopy(path: string): string | undefined {
+  const dir = dirnameVaultPath(path);
+  const base = basename(path);
+  const match = /^(.*) \(conflict .+ [0-9a-f]{12}\)(\.[^.]*)?$/i.exec(base);
+  if (!match) return undefined;
+  const original = `${match[1]}${match[2] || ""}`;
+  return dir ? `${dir}/${original}` : original;
+}
+
 async function conflictCopyPath(path: string, syncIdentityId: string, bytes: Uint8Array): Promise<string> {
   const { dir, prefix, suffix } = conflictCopyNaming(path, syncIdentityId);
   const blobOid = await sha1Hex(wrapGitObject("blob", bytes));
@@ -1678,4 +1955,14 @@ function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(bytes);
   return copy.buffer;
+}
+
+function normalizeReplacementChar(value: string | undefined): string {
+  const trimmed = (value || "").trim();
+  if (!trimmed || trimmed === "/" || trimmed === "\\") return "-";
+  return trimmed.slice(0, 1);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 }

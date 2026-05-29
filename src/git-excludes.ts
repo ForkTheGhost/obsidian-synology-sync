@@ -1,12 +1,31 @@
-export const DEFAULT_GIT_EXCLUDES = [
+export const NOTES_ONLY_GIT_EXCLUDES = [
+  // Notes-only means the readable note vault syncs, while local Obsidian
+  // runtime/config state stays device-local.
+  ".obsidian/",
+  "Synology Sync Logs/latest-run*.md",
+  ".trash/",
+  ".sync-tombstones/",
+  "node_modules/",
+];
+
+export const SELECTED_SETTINGS_GIT_EXCLUDES = [
   // Notes-first default, modeled after Obsidian Sync's selective config strategy:
   // sync note content by default while keeping volatile/device-local Obsidian state local.
   ".obsidian/app.json",
   ".obsidian/appearance.json",
   ".obsidian/graph.json",
   ".obsidian/workspace*",
+  ".obsidian/community-plugins.json",
+  ".obsidian/core-plugins.json",
+  ".obsidian/core-plugins-migration.json",
+  ".obsidian/hotkeys.json",
+  ".obsidian/snippets/",
+  ".obsidian/plugins/",
+  ".obsidian/templates.json",
+  ".obsidian/types.json",
   ".obsidian/plugins/*/data.json",
   ".obsidian/plugins/synology-sync/",
+  "Synology Sync Logs/latest-run*.md",
   ".trash/",
   ".sync-tombstones/",
   "node_modules/",
@@ -31,16 +50,19 @@ export interface ObsidianConfigOptIns {
 }
 
 export function buildGitExcludes(policy: ObsidianConfigSyncPolicy = "notes-only", optIns: ObsidianConfigOptIns = {}): string[] {
+  if (policy === "notes-only") return [...NOTES_ONLY_GIT_EXCLUDES];
+
   if (policy === "full-config") {
     return [
       ".obsidian/plugins/synology-sync/",
+      "Synology Sync Logs/latest-run*.md",
       ".trash/",
       ".sync-tombstones/",
       "node_modules/",
     ];
   }
 
-  const excludes = [...DEFAULT_GIT_EXCLUDES];
+  const excludes = [...SELECTED_SETTINGS_GIT_EXCLUDES];
   if (policy === "selected-settings") {
     if (optIns.appearance) removeAll(excludes, [".obsidian/app.json", ".obsidian/appearance.json", ".obsidian/graph.json"]);
     if (optIns.pluginLists) removeAll(excludes, [".obsidian/community-plugins.json", ".obsidian/core-plugins.json", ".obsidian/core-plugins-migration.json"]);

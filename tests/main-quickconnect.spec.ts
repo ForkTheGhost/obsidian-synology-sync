@@ -1,4 +1,4 @@
-import { moveCandidateToFront, prioritizeCachedQuickConnectCandidates } from "../src/main";
+import { moveCandidateToFront, prioritizeCachedQuickConnectCandidates, quickConnectCandidatesAfterResolution } from "../src/main";
 import type { QCCandidate } from "../src/quickconnect";
 
 describe("QuickConnect candidate prioritization", () => {
@@ -51,5 +51,35 @@ describe("QuickConnect candidate prioritization", () => {
       successCount: 10,
       lastSuccessAt: now - 15 * 24 * 60 * 60 * 1000,
     }], "Example-NAS", now)).toEqual([portal]);
+  });
+
+  it("uses fresh cached candidates when QuickConnect discovery fails", () => {
+    const now = Date.UTC(2026, 4, 27);
+    const relay: QCCandidate = { host: "relay.example", port: 32836, https: true, kind: "relay-api", source: "cache" };
+
+    expect(quickConnectCandidatesAfterResolution(null, [{
+      candidate: relay,
+      quickConnectId: "example-nas",
+      successCount: 3,
+      lastSuccessAt: now - 60_000,
+    }], "Example-NAS", now)).toEqual([relay]);
+  });
+
+  it("does not use stale or wrong-id cache entries after QuickConnect discovery fails", () => {
+    const now = Date.UTC(2026, 4, 27);
+    const staleRelay: QCCandidate = { host: "stale.example", port: 32836, https: true, kind: "relay-api" };
+    const otherRelay: QCCandidate = { host: "other.example", port: 32836, https: true, kind: "relay-api" };
+
+    expect(quickConnectCandidatesAfterResolution(null, [{
+      candidate: staleRelay,
+      quickConnectId: "example-nas",
+      successCount: 3,
+      lastSuccessAt: now - 15 * 24 * 60 * 60 * 1000,
+    }, {
+      candidate: otherRelay,
+      quickConnectId: "other-nas",
+      successCount: 3,
+      lastSuccessAt: now - 60_000,
+    }], "Example-NAS", now)).toEqual([]);
   });
 });

@@ -145,6 +145,43 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(downloaded.some((path) => path.includes("/objects/ff/"))).toBe(false);
   });
 
+  it("sanitizes remote filenames before materializing them on Windows-like filesystems", async () => {
+    const { remote } = await seededBareRemote({
+      "Folder/Bad: Name.md": "remote baseline\n",
+      "Folder/CON.md": "reserved basename\n",
+      "Folder/Trailing. ": "trailing dot space\n",
+    });
+    const { vault, createdPaths } = vaultWithFiles({});
+    const uploaded: string[] = [];
+    const fs = remoteBackedFileStation(remote, uploaded);
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "windows-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+      filenameSanitizeRestrictedChars: ":<>\"/\\|?*",
+      filenameSanitizeReplacementChar: "-",
+    });
+
+    const result = await engine.sync();
+
+    expect(result.errors).toEqual([]);
+    expect(result.uploaded).toContain("Folder/Bad- Name.md");
+    expect(result.uploaded).toContain("Folder/CON-.md");
+    expect(result.uploaded).toContain("Folder/Trailing--");
+    expect(result.deleted).toContain("Folder/Bad: Name.md");
+    expect(result.deleted).toContain("Folder/CON.md");
+    expect(result.deleted).toContain("Folder/Trailing. ");
+    expect(createdPaths).toContain("Folder/Bad- Name.md");
+    expect(createdPaths).toContain("Folder/CON-.md");
+    expect(createdPaths).toContain("Folder/Trailing--");
+    expect(createdPaths).not.toContain("Folder/Bad: Name.md");
+    expect(createdPaths).not.toContain("Folder/CON.md");
+    expect(createdPaths).not.toContain("Folder/Trailing. ");
+    expect(uploaded.some((path) => path.endsWith("/refs/heads/main"))).toBe(true);
+  });
+
   it("initializes the in-memory git filesystem and bootstraps an empty bare repo", async () => {
     const vault = {
       adapter: {},
@@ -181,7 +218,7 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(uploads.some((u) => u.fileName === "HEAD")).toBe(true);
     expect(uploads.some((u) => u.destFolder.endsWith("refs/heads") && u.fileName === "main")).toBe(true);
   });
-  it("blocks packed remote objects until mobile packfile reads are implemented", async () => {
+  it("attempts remote packfile reads when required loose objects are packed", async () => {
     const vault = {
       adapter: {},
       getFiles: jest.fn(() => []),
@@ -200,16 +237,18 @@ describe("MobileGitFileStationSyncEngine", () => {
       }),
       listAllFiles: jest.fn(async () => []),
       download: jest.fn(async (path: string) => {
-        if (path.endsWith("lease.json")) return textEncoder.encode(leaseMetadata).buffer;
+        if (path.includes("/.synology-sync/leases/") && path.endsWith(".json")) return textEncoder.encode(leaseMetadata).buffer;
         if (path.endsWith("/HEAD")) return textEncoder.encode("ref: refs/heads/main\n").buffer;
         if (path.endsWith("/refs/heads/main")) return textEncoder.encode(`${oid}\n`).buffer;
+        if (path.endsWith(".pack")) return textEncoder.encode("not a git pack").buffer;
+        if (path.endsWith(".idx")) return textEncoder.encode("not a git index").buffer;
         throw new Error("loose object missing");
       }),
       createFolder: jest.fn(async () => undefined),
       createFolderStrict: jest.fn(async () => undefined),
       delete: jest.fn(async () => undefined),
       upload: jest.fn(async (_dest: string, name: string, content: ArrayBuffer) => {
-        if (name === "lease.json") leaseMetadata = new TextDecoder().decode(new Uint8Array(content));
+        if (name === "lease.json" || name.startsWith("lease-")) leaseMetadata = new TextDecoder().decode(new Uint8Array(content));
       }),
     };
 
@@ -221,7 +260,9 @@ describe("MobileGitFileStationSyncEngine", () => {
       authorEmail: "synology-sync@local",
     });
 
-    await expect(engine.sync()).rejects.toThrow(/packfiles under objects\/pack/);
+    await expect(engine.sync()).rejects.toThrow(/Packfile error: pack too short/);
+    expect(fs.download).toHaveBeenCalledWith(expect.stringMatching(/objects\/pack\/pack-b{40}\.pack$/));
+    expect(fs.download).toHaveBeenCalledWith(expect.stringMatching(/objects\/pack\/pack-b{40}\.idx$/));
   });
 
   it("returns Buffer for binary reads when isomorphic-git passes an options object", async () => {
@@ -548,8 +589,8 @@ describe("MobileGitFileStationSyncEngine", () => {
       createFolder: jest.fn(async () => undefined),
       createFolderStrict: jest.fn(async () => undefined),
       delete: jest.fn(async () => undefined),
-      download: jest.fn(async (path: string) => path.endsWith("lease.json") ? new TextEncoder().encode(leaseMetadata).buffer : new TextEncoder().encode(`${newOid}\n`).buffer),
-      upload: jest.fn(async (_dest: string, name: string, content: ArrayBuffer) => { if (name === "lease.json") leaseMetadata = new TextDecoder().decode(new Uint8Array(content)); }),
+      download: jest.fn(async (path: string) => path.includes("/.synology-sync/leases/") && path.endsWith(".json") ? new TextEncoder().encode(leaseMetadata).buffer : new TextEncoder().encode(`${newOid}\n`).buffer),
+      upload: jest.fn(async (_dest: string, name: string, content: ArrayBuffer) => { if (name === "lease.json" || name.startsWith("lease-")) leaseMetadata = new TextDecoder().decode(new Uint8Array(content)); }),
     };
     const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
       remotePath: "/homes/user/Obsidian/Test.git",
@@ -947,12 +988,12 @@ describe("MobileGitFileStationSyncEngine", () => {
       createFolderStrict: jest.fn(async () => undefined),
       delete: jest.fn(async () => undefined),
       download: jest.fn(async (path: string) => {
-        if (path.endsWith("lease.json")) return new TextEncoder().encode(leaseMetadata2).buffer;
+        if (path.includes("/.synology-sync/leases/") && path.endsWith(".json")) return new TextEncoder().encode(leaseMetadata2).buffer;
         return new TextEncoder().encode(remoteRef).buffer;
       }),
       upload: jest.fn(async (dest: string, name: string, content: ArrayBuffer) => {
         uploaded.push(`${dest}/${name}`);
-        if (name === "lease.json") { leaseMetadata2 = new TextDecoder().decode(new Uint8Array(content)); return; }
+        if (name === "lease.json" || name.startsWith("lease-")) { leaseMetadata2 = new TextDecoder().decode(new Uint8Array(content)); return; }
         if (name === "main") remoteRef = new TextDecoder().decode(new Uint8Array(content));
       }),
       rename: jest.fn(async (_path: string, newName: string) => {

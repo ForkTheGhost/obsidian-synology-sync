@@ -1,4 +1,4 @@
-import { Plugin, Notice, Modal, App } from "obsidian";
+import { Plugin, Notice, Modal, App, TFile } from "obsidian";
 import { FileStation, FileStationConfig, LoginResult } from "./filestation";
 import { compareQuickConnectCandidates, resolveQuickConnect, resolveQuickConnectCandidates, probeQuickConnectCandidates, QCCandidate } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
@@ -95,6 +95,18 @@ export function freshCachedQuickConnectCandidates(
       return b.successCount - a.successCount;
     })
     .map((entry) => entry.candidate);
+}
+
+export function quickConnectCandidatesAfterResolution(
+  discovered: QCCandidate[] | null,
+  cached: CachedQuickConnectCandidate[],
+  quickConnectId: string,
+  now = Date.now(),
+): QCCandidate[] {
+  if (discovered) {
+    return prioritizeCachedQuickConnectCandidates(discovered, cached, quickConnectId, now);
+  }
+  return freshCachedQuickConnectCandidates(cached, quickConnectId, now);
 }
 
 export default class SynologySync extends Plugin {
@@ -225,18 +237,21 @@ export default class SynologySync extends Plugin {
 
 
   private async prioritizedQuickConnectCandidates(quickConnectId: string): Promise<QCCandidate[]> {
-    const candidates = await resolveQuickConnectCandidates(quickConnectId, this.settings.debugLogEnabled);
-    const freshCachedCandidates = freshCachedQuickConnectCandidates(this.settings.quickConnectCandidateCache || [], quickConnectId);
+    const cached = this.settings.quickConnectCandidateCache || [];
+    const freshCachedCandidates = freshCachedQuickConnectCandidates(cached, quickConnectId);
     if (freshCachedCandidates.length > 0) {
       debugLog(`QC: found ${freshCachedCandidates.length} fresh cached working candidate(s); merging with rediscovered candidates by source priority`);
     }
-    const cachedCandidates = prioritizeCachedQuickConnectCandidates(
-      candidates,
-      this.settings.quickConnectCandidateCache || [],
-      quickConnectId,
-    );
+    let discoveredCandidates: QCCandidate[] | null = null;
+    try {
+      discoveredCandidates = await resolveQuickConnectCandidates(quickConnectId, this.settings.debugLogEnabled);
+    } catch (e) {
+      if (freshCachedCandidates.length === 0) throw e;
+      debugLog(`QC: server-info lookup failed; using ${freshCachedCandidates.length} fresh cached working candidate(s): ${(e as Error).message}`);
+    }
+    const cachedCandidates = quickConnectCandidatesAfterResolution(discoveredCandidates, cached, quickConnectId);
     if (this.settings.debugLogEnabled) {
-      debugLog(`QC: working-candidate cache entries=${(this.settings.quickConnectCandidateCache || []).length} candidates_after_cache=${cachedCandidates.length}`);
+      debugLog(`QC: working-candidate cache entries=${cached.length} candidates_after_cache=${cachedCandidates.length}`);
       cachedCandidates.forEach((candidate, i) => debugLog(`QC: priority [${i}] ${candidateUrl(candidate)} (${candidate.kind}${candidate.source ? ` source=${candidate.source}` : ""})`));
     }
     const candidatesToProbe = cachedCandidates;
@@ -368,6 +383,7 @@ export default class SynologySync extends Plugin {
     this.syncing = true;
     beginDebugSync(this.app);
     await this.persistLatestSyncLog("started");
+    const stopProgressLog = this.startPersistentLogProgress();
     new Notice("Synology Sync starting...");
 
     let fs: FileStation | null = null;
@@ -421,6 +437,7 @@ export default class SynologySync extends Plugin {
       new Notice(`Sync failed: ${(e as Error).message}`);
       console.error("Synology Sync error:", e);
     } finally {
+      stopProgressLog();
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
       }
@@ -440,6 +457,7 @@ export default class SynologySync extends Plugin {
     this.syncing = true;
     beginDebugSync(this.app);
     await this.persistLatestSyncLog("started");
+    const stopProgressLog = this.startPersistentLogProgress();
     new Notice("Git-over-File-Station sync starting...");
 
     let fs: FileStation | null = null;
@@ -453,6 +471,8 @@ export default class SynologySync extends Plugin {
         authorEmail: this.settings.gitAuthorEmail,
         configPolicy: this.settings.obsidianConfigPolicy,
         configOptIns: this.settings.obsidianConfigOptIns,
+        filenameSanitizeRestrictedChars: this.settings.filenameSanitizeRestrictedChars,
+        filenameSanitizeReplacementChar: this.settings.filenameSanitizeReplacementChar,
       });
 
       const result = await engine.sync();
@@ -471,6 +491,7 @@ export default class SynologySync extends Plugin {
       new Notice(`Git-over-File-Station sync failed: ${(e as Error).message}`);
       console.error("Git-over-File-Station Synology Sync error:", e);
     } finally {
+      stopProgressLog();
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
       }
@@ -500,11 +521,27 @@ export default class SynologySync extends Plugin {
         "",
       ].join("\n");
 
-      await this.ensureAdapterFolder(LATEST_SYNC_LOG_NOTE_PATH);
-      await this.app.vault.adapter.write(LATEST_SYNC_LOG_NOTE_PATH, body);
+      await withTimeout(async () => {
+        await this.ensureAdapterFolder(LATEST_SYNC_LOG_NOTE_PATH);
+        const existing = typeof this.app.vault.getAbstractFileByPath === "function"
+          ? this.app.vault.getAbstractFileByPath(LATEST_SYNC_LOG_NOTE_PATH)
+          : null;
+        if (existing instanceof TFile) await this.app.vault.modify(existing, body);
+        else await this.app.vault.adapter.write(LATEST_SYNC_LOG_NOTE_PATH, body);
+      }, 2000, "persist latest sync log");
     } catch (e) {
       console.warn("Synology Sync could not persist latest sync log:", e);
     }
+  }
+
+  private startPersistentLogProgress(): () => void {
+    let running = false;
+    const timer = globalThis.setInterval(() => {
+      if (running) return;
+      running = true;
+      void this.persistLatestSyncLog("started").finally(() => { running = false; });
+    }, 5000);
+    return () => globalThis.clearInterval(timer);
   }
 
   private async ensureAdapterFolder(path: string): Promise<void> {
@@ -564,6 +601,20 @@ export default class SynologySync extends Plugin {
       notice.hide();
       new SyncLogModal(this.app, result, getDebugLog()).open();
     });
+  }
+}
+
+async function withTimeout<T>(fn: () => Promise<T>, ms: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise<never>((_, reject) => {
+        timeoutId = globalThis.setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
   }
 }
 

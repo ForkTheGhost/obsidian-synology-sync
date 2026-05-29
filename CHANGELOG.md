@@ -2,10 +2,16 @@
 
 ## [Unreleased]
 
+## 2026.0528.3
+
 ### Fixed
 
-- Replace the mobile Git-over-File-Station whole-bare-repo mirror with targeted `HEAD`, branch ref/`packed-refs`, and reachable loose-object reads, cache validated loose Git objects under `.obsidian/plugins/synology-sync/git-cache/v1`, and explicitly block on packfiles until mobile pack handling lands.
+- Replace the mobile Git-over-File-Station whole-bare-repo mirror with targeted `HEAD`, branch ref/`packed-refs`, reachable object reads, and validated packfile/index reads, while caching validated Git objects under `.obsidian/plugins/synology-sync/git-cache/v1`.
 - Hold the Git-over-File-Station lease across authoritative remote ref/object reads, remote materialization, and publish; verify `expectedOldRef` in lease metadata; and add a plugin cache marker so mobile object cache reuse is branch/repo scoped and rebuildable.
+- Add a cross-platform filename sanitizer for Git-tracked vault paths, defaulting to replacing `:<>"\/\|?*` with `-`, so Windows can materialize notes created on platforms that allow restricted filename characters.
+- Keep `.obsidian/` local by default under the Notes only policy, matching `ARCHITECTURE.md`, and exclude generated `Synology Sync Logs/latest-run*.md` diagnostics from Git sync.
+- Prune redundant conflict artifacts under the File Station lease when generated latest-run conflict copies or identical Markdown conflict copies already exist in the NAS Git tree.
+- Add visible File Station publish progress and verify branch-ref overwrite fallback when DSM rename reports the destination ref already exists.
 
 ## 2026.0528.2
 
