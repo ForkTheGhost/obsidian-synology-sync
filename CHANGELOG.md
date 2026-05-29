@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## 2026.0529.1
+
+### Fixed
+
+- Recover orphaned Git File Station lease directories when `main.lock` exists but `lease.json` is missing/404s, instead of treating the incomplete lock folder as held forever.
+
 ## 2026.0528.6
 
 ### Fixed

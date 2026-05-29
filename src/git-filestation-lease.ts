@@ -125,7 +125,14 @@ export class FileStationGitLease {
     try {
       prior = await this.readMetadata();
     } catch (e) {
-      debugLog(`[git-filestation-lease] existing lease metadata unreadable for ${this.leaseDir}: ${(e as Error).message}`);
+      const message = (e as Error).message;
+      debugLog(`[git-filestation-lease] existing lease metadata unreadable for ${this.leaseDir}: ${message}`);
+      if (isMissingLeaseMetadataError(e)) {
+        debugLog(`[git-filestation-lease] recovering orphaned lease directory with missing metadata branch=${this.opts.branch} path=${this.leaseDir}`);
+        try { new Notice(`Synology Sync recovered an incomplete Git sync lease for ${this.opts.branch}. The lock folder existed but its lease metadata was missing.`); } catch { /* Notice unavailable in tests */ }
+        await this.fs.delete(this.leaseDir);
+        return true;
+      }
       return false;
     }
     const expiresAt = Date.parse(prior.expiresAt);
@@ -221,4 +228,9 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
+}
+
+function isMissingLeaseMetadataError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /lease\.json/i.test(message) && /(?:HTTP\s+404|not\s+found|no\s+such\s+file|does\s+not\s+exist|missing)/i.test(message);
 }

@@ -110,6 +110,42 @@ describe("FileStationGitLease", () => {
     expect(JSON.parse(currentMetadata).owner).toBe("new-device");
   });
 
+
+  it("recovers an orphaned lease directory when lease metadata is missing", async () => {
+    let strictCalls = 0;
+    let metadata = "";
+    const fs = {
+      createFolder: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => {
+        strictCalls++;
+        if (strictCalls === 1) throw new FileStationPathExistsError("exists", 414);
+      }),
+      download: jest.fn(async (path: string) => {
+        if (path.endsWith("/lease.json") && !metadata) throw new Error(`download failed for ${path}: HTTP 404`);
+        return new TextEncoder().encode(metadata).buffer;
+      }),
+      upload: jest.fn(async (_dest: string, _name: string, content: ArrayBuffer) => {
+        metadata = new TextDecoder().decode(new Uint8Array(content));
+      }),
+      delete: jest.fn(async () => undefined),
+    };
+
+    await withFileStationGitLease(fs as never, {
+      remotePath: "/repo.git",
+      branch: "main",
+      owner: "new-device",
+      now: () => 2000,
+      ttlMs: 60000,
+    }, async (lease) => {
+      expect(lease.owner).toBe("new-device");
+    });
+
+    expect(fs.download).toHaveBeenCalledWith("/repo.git/.synology-sync/leases/main.lock/lease.json");
+    expect(fs.delete).toHaveBeenCalledWith("/repo.git/.synology-sync/leases/main.lock");
+    expect(fs.createFolderStrict).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(metadata).owner).toBe("new-device");
+  });
+
   it("does not recover an unexpired lease", async () => {
     const prior = { owner: "old-device", branch: "main", createdAt: new Date(0).toISOString(), expiresAt: new Date(999999).toISOString(), token: "old" };
     const fs = {
