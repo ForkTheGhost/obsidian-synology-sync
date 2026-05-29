@@ -31,9 +31,10 @@ Git hooks do not run for File Station API uploads, so this hook cannot replace
 the plugin's lease and expected-old-ref checks. It is a guardrail for native
 Git pushes only.
 
-The Obsidian plugin verifies that `hooks/pre-receive` exists and matches the
+The Obsidian plugin checks whether `hooks/pre-receive` exists and matches the
 Synology Sync guard fingerprint before Git-backed File Station sync takes the
-NAS lease. The plugin does not install the hook automatically because File
-Station upload cannot reliably mark the file executable on DSM. A hook that
-exists but is not executable gives false confidence because native Git will not
-run it.
+NAS lease. If the hook is missing or unrecognized, the plugin logs a warning and
+continues with its built-in File Station lease and expected-ref checks. The
+plugin does not install the hook automatically because File Station upload cannot
+reliably mark the file executable on DSM. A hook that exists but is not
+executable gives false confidence because native Git will not run it.

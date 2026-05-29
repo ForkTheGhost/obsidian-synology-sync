@@ -94,7 +94,7 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(isSynologySyncNativeGitGuardHook("#!/bin/sh\necho hello\n")).toBe(false);
   });
 
-  it("refuses Git-backed sync before taking the lease when the native Git guard hook is missing", async () => {
+  it("warns but continues with plugin lease/ref checks when the native Git guard hook is missing", async () => {
     const textEncoder = new TextEncoder();
     const { remote } = await seededBareRemote({ "RemoteOnly.md": "remote baseline\n" });
     const { vault } = vaultWithFiles({});
@@ -114,13 +114,8 @@ describe("MobileGitFileStationSyncEngine", () => {
 
     const result = await engine.sync();
 
-    expect(result.errors).toEqual([expect.objectContaining({
-      path: "hooks/pre-receive",
-      error: expect.stringContaining("WARNING: Native Git admin guardrail hook could not be verified"),
-    })]);
-    expect(result.errors[0].error).toContain("README.md#git-backed-sync-admin-guardrail");
-    expect(result.errors[0].error).toContain("Risk if skipped");
-    expect(fs.createFolderStrict).not.toHaveBeenCalled();
+    expect(result.errors).toEqual([]);
+    expect(fs.createFolderStrict).toHaveBeenCalled();
   });
 
   function vaultWithFiles(files: Record<string, string>) {
