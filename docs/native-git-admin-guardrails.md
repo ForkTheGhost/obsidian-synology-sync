@@ -9,6 +9,12 @@ Install the optional bare-repo hook only while no Obsidian sync is active:
 scripts/install-synology-sync-bare-hook.sh /path/to/VertigoWerk.git
 ```
 
+For the VertigoRay vault, the current NAS bare repo path is:
+
+```bash
+scripts/install-synology-sync-bare-hook.sh /home/Obsidian/git/VertigoRay.git
+```
+
 The hook installs as `hooks/pre-receive` in the bare repo and blocks native Git
 pushes to a branch when `.synology-sync/leases/<branch>.lock` exists. This keeps
 desktop/admin Git pushes from racing a File Station sync lease.
@@ -24,3 +30,10 @@ The hook is intentionally conservative:
 Git hooks do not run for File Station API uploads, so this hook cannot replace
 the plugin's lease and expected-old-ref checks. It is a guardrail for native
 Git pushes only.
+
+The Obsidian plugin verifies that `hooks/pre-receive` exists and matches the
+Synology Sync guard fingerprint before Git-backed File Station sync takes the
+NAS lease. The plugin does not install the hook automatically because File
+Station upload cannot reliably mark the file executable on DSM. A hook that
+exists but is not executable gives false confidence because native Git will not
+run it.
