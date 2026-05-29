@@ -57,6 +57,13 @@ const textDecoder = new TextDecoder();
 const MOBILE_GIT_OBJECT_CACHE_ROOT = ".obsidian/plugins/synology-sync/git-cache/v1";
 const MOBILE_GIT_CACHE_MARKER_PATH = `${MOBILE_GIT_OBJECT_CACHE_ROOT}/cache-marker.json`;
 const MOBILE_GIT_CACHE_SCHEMA_VERSION = 1;
+const NATIVE_GIT_GUARD_HOOK_REL = "hooks/pre-receive";
+const NATIVE_GIT_GUARD_HOOK_SNIPPETS = [
+  "synology-sync: refusing push to",
+  ".synology-sync/leases/",
+  "SYN_SYNC_ALLOW_NON_FF",
+  "SYN_SYNC_ALLOW_BRANCH_DELETE",
+];
 
 type MobileGitCacheMarker = {
   schemaVersion: number;
@@ -121,6 +128,8 @@ export class MobileGitFileStationSyncEngine {
     const hiddenSystemFilesAtStart = this.hiddenSystemVaultFilesAtStart(workdirFilesAtStart);
     const initialLocalFiles = hadLocalCommitsBeforeRemoteImport ? new Map<string, Uint8Array>() : await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
     const expectedOldRefHint = await this.runPhase("preflight remote ref", () => this.readRemoteBranchOidFromFileStation());
+    const guardrailOk = await this.runPhase("verify native Git admin guardrail", () => this.verifyNativeGitAdminGuardrail(result));
+    if (!guardrailOk) return result;
 
     return await this.withAuthoritativeSyncLease(result, expectedOldRefHint, async () => this.syncUnderHeldLease(
       result,
@@ -131,6 +140,30 @@ export class MobileGitFileStationSyncEngine {
       initialLocalFiles,
       expectedOldRefHint,
     ));
+  }
+
+  private async verifyNativeGitAdminGuardrail(result: SyncResult): Promise<boolean> {
+    const station = this.fs as unknown as { download?: (path: string) => Promise<ArrayBuffer> };
+    if (typeof station.download !== "function") {
+      debugLog("[git-filestation-mobile] native Git admin guardrail verification skipped: File Station download unavailable");
+      return true;
+    }
+    const hookPath = joinRemotePath(this.opts.remotePath, NATIVE_GIT_GUARD_HOOK_REL);
+    try {
+      const bytes = new Uint8Array(await station.download(hookPath));
+      const text = textDecoder.decode(bytes);
+      if (!isSynologySyncNativeGitGuardHook(text)) {
+        result.errors.push(nativeGitGuardrailError("Native Git admin guardrail hook is missing or not recognized. Install scripts/hooks/synology-sync-pre-receive as hooks/pre-receive in the NAS bare repo after all syncs are idle."));
+        debugLog(`[git-filestation-mobile] native Git admin guardrail invalid path=${hookPath} bytes=${bytes.byteLength}`);
+        return false;
+      }
+      debugLog(`[git-filestation-mobile] native Git admin guardrail verified path=${hookPath} bytes=${bytes.byteLength}`);
+      return true;
+    } catch (e) {
+      result.errors.push(nativeGitGuardrailError(`Native Git admin guardrail hook could not be verified at ${NATIVE_GIT_GUARD_HOOK_REL}: ${(e as Error).message}. Install it after all syncs are idle before using Git-backed sync.`));
+      debugLog(`[git-filestation-mobile] native Git admin guardrail verification failed path=${hookPath}: ${(e as Error).message}`);
+      return false;
+    }
   }
 
   private async syncUnderHeldLease(
@@ -1340,9 +1373,8 @@ export class MobileGitFileStationSyncEngine {
         try {
           await maybeRename.rename(joinRemotePath(finalFolder, tmpName), finalName);
         } catch (renameError) {
-          debugLog(`[git-filestation-mobile] temp ref rename failed; falling back to verified overwrite for ${rel}: ${(renameError as Error).message}`);
-          await this.overwriteBranchRefWithVerification(finalFolder, finalName, rel, bytes, newRef);
-          await this.fs.delete(joinRemotePath(finalFolder, tmpName)).catch(() => undefined);
+          debugLog(`[git-filestation-mobile] temp ref rename failed; falling back to verified swap for ${rel}: ${(renameError as Error).message}`);
+          await this.swapBranchRefWithVerification(finalFolder, finalName, tmpName, rel, newRef);
         }
       } else {
         await this.overwriteBranchRefWithVerification(finalFolder, finalName, rel, bytes, newRef);
@@ -1362,6 +1394,39 @@ export class MobileGitFileStationSyncEngine {
       debugLog(`[git-filestation-mobile] branch ref verification observed ${observed || "<none>"}; retrying verified overwrite for ${rel}`);
       await this.overwriteBranchRefWithVerification(finalFolder, finalName, rel, bytes, newRef);
       return;
+    }
+  }
+
+  private async swapBranchRefWithVerification(finalFolder: string, finalName: string, tmpName: string, rel: string, newRef: string): Promise<void> {
+    const maybeRename = this.fs as unknown as { rename?: (path: string, newName: string) => Promise<void> };
+    if (typeof maybeRename.rename !== "function") {
+      await this.overwriteBranchRefWithVerification(finalFolder, finalName, rel, textEncoder.encode(`${newRef}\n`), newRef);
+      return;
+    }
+    const finalPath = joinRemotePath(finalFolder, finalName);
+    const tmpPath = joinRemotePath(finalFolder, tmpName);
+    const backupName = `.${finalName}.synology-sync-backup-${this.opts.syncIdentityId}-${Date.now().toString(36)}.tmp`;
+    const backupPath = joinRemotePath(finalFolder, backupName);
+    let backupCreated = false;
+    let promoted = false;
+    try {
+      await maybeRename.rename(finalPath, backupName);
+      backupCreated = true;
+      await maybeRename.rename(tmpPath, finalName);
+      promoted = true;
+      const observed = await this.readRemoteBranchOidFromFileStation();
+      if (observed !== newRef) {
+        throw new Error(`observed ${observed || "<none>"} after swap, expected ${newRef}`);
+      }
+      debugLog(`[git-filestation-mobile] branch ref verified after swap oid=${newRef}`);
+    } catch (e) {
+      if (backupCreated && !promoted) {
+        try { await maybeRename.rename(backupPath, finalName); } catch { /* best effort restore */ }
+      }
+      throw e;
+    } finally {
+      await this.fs.delete(tmpPath).catch(() => undefined);
+      await this.fs.delete(backupPath).catch(() => undefined);
     }
   }
 
@@ -1787,6 +1852,14 @@ function fnv1a32(bytes: Uint8Array): string {
 
 function emptyResult(): SyncResult {
   return { uploaded: [], downloaded: [], deleted: [], deletedRemote: [], deletedLocal: [], recreated: [], preservedLocal: [], conflicts: [], errors: [] };
+}
+
+function nativeGitGuardrailError(error: string): { path: string; error: string } {
+  return { path: NATIVE_GIT_GUARD_HOOK_REL, error };
+}
+
+export function isSynologySyncNativeGitGuardHook(text: string): boolean {
+  return NATIVE_GIT_GUARD_HOOK_SNIPPETS.every((snippet) => text.includes(snippet));
 }
 
 function isMissingParentDir(error: unknown): boolean {

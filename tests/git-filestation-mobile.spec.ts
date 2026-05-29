@@ -1,7 +1,15 @@
 import { TFile, TFolder } from "obsidian";
-import { MobileGitFileStationSyncEngine } from "../src/git-filestation-mobile";
+import { MobileGitFileStationSyncEngine, isSynologySyncNativeGitGuardHook } from "../src/git-filestation-mobile";
 
 describe("MobileGitFileStationSyncEngine", () => {
+  const nativeGitGuardHook = [
+    "#!/bin/sh",
+    "lease_dir=\".synology-sync/leases/$lease_name\"",
+    "synology-sync: refusing push to $refname because $lease_dir exists",
+    "SYN_SYNC_ALLOW_NON_FF",
+    "SYN_SYNC_ALLOW_BRANCH_DELETE",
+  ].join("\n");
+
   async function seededBareRemote(files: Record<string, string>): Promise<{
     git: typeof import("isomorphic-git");
     remote: Map<string, Uint8Array>;
@@ -65,8 +73,9 @@ describe("MobileGitFileStationSyncEngine", () => {
         .map((name) => {
           const child = `${path.replace(/\/$/, "")}/${name}`;
           return { path: child, name, isdir: Array.from(remote.keys()).some((p) => p.startsWith(`${child}/`)) };
-        })),
+      })),
       download: jest.fn(async (path: string) => {
+        if (path.endsWith("/hooks/pre-receive")) return textEncoder.encode(nativeGitGuardHook).buffer;
         const bytes = remote.get(path) || textEncoder.encode("");
         return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
       }),
@@ -79,6 +88,38 @@ describe("MobileGitFileStationSyncEngine", () => {
       }),
     };
   }
+
+  it("recognizes the Synology Sync native Git guard hook fingerprint", () => {
+    expect(isSynologySyncNativeGitGuardHook(nativeGitGuardHook)).toBe(true);
+    expect(isSynologySyncNativeGitGuardHook("#!/bin/sh\necho hello\n")).toBe(false);
+  });
+
+  it("refuses Git-backed sync before taking the lease when the native Git guard hook is missing", async () => {
+    const textEncoder = new TextEncoder();
+    const { remote } = await seededBareRemote({ "RemoteOnly.md": "remote baseline\n" });
+    const { vault } = vaultWithFiles({});
+    const fs = remoteBackedFileStation(remote, []);
+    fs.download.mockImplementation(async (path: string) => {
+      if (path.endsWith("/hooks/pre-receive")) throw new Error("not found");
+      const bytes = remote.get(path) || textEncoder.encode("");
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    });
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    const result = await engine.sync();
+
+    expect(result.errors).toEqual([expect.objectContaining({
+      path: "hooks/pre-receive",
+      error: expect.stringContaining("Native Git admin guardrail hook could not be verified"),
+    })]);
+    expect(fs.createFolderStrict).not.toHaveBeenCalled();
+  });
 
   function vaultWithFiles(files: Record<string, string>) {
     const textEncoder = new TextEncoder();
@@ -237,6 +278,7 @@ describe("MobileGitFileStationSyncEngine", () => {
       }),
       listAllFiles: jest.fn(async () => []),
       download: jest.fn(async (path: string) => {
+        if (path.endsWith("/hooks/pre-receive")) return textEncoder.encode(nativeGitGuardHook).buffer;
         if (path.includes("/.synology-sync/leases/") && path.endsWith(".json")) return textEncoder.encode(leaseMetadata).buffer;
         if (path.endsWith("/HEAD")) return textEncoder.encode("ref: refs/heads/main\n").buffer;
         if (path.endsWith("/refs/heads/main")) return textEncoder.encode(`${oid}\n`).buffer;
@@ -722,8 +764,9 @@ describe("MobileGitFileStationSyncEngine", () => {
         .map((name) => {
           const child = `${path.replace(/\/$/, "")}/${name}`;
           return { path: child, name, isdir: Array.from(remote.keys()).some((p) => p.startsWith(`${child}/`)) };
-        })),
+      })),
       download: jest.fn(async (path: string) => {
+        if (path.endsWith("/hooks/pre-receive")) return textEncoder.encode(nativeGitGuardHook).buffer;
         const bytes = remote.get(path) || textEncoder.encode("");
         return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
       }),
@@ -802,8 +845,9 @@ describe("MobileGitFileStationSyncEngine", () => {
         .map((name) => {
           const child = `${path.replace(/\/$/, "")}/${name}`;
           return { path: child, name, isdir: Array.from(remote.keys()).some((p) => p.startsWith(`${child}/`)) };
-        })),
+      })),
       download: jest.fn(async (path: string) => {
+        if (path.endsWith("/hooks/pre-receive")) return textEncoder.encode(nativeGitGuardHook).buffer;
         const bytes = remote.get(path) || textEncoder.encode("");
         return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
       }),
@@ -980,6 +1024,7 @@ describe("MobileGitFileStationSyncEngine", () => {
   it("publishes branch refs through temp rename and verifies the landed ref", async () => {
     const oid = "c".repeat(40);
     let remoteRef = "";
+    let tmpRef = "";
     let leaseMetadata2 = "";
     const uploaded: string[] = [];
     const fs = {
@@ -995,10 +1040,22 @@ describe("MobileGitFileStationSyncEngine", () => {
         uploaded.push(`${dest}/${name}`);
         if (name === "lease.json" || name.startsWith("lease-")) { leaseMetadata2 = new TextDecoder().decode(new Uint8Array(content)); return; }
         if (name === "main") remoteRef = new TextDecoder().decode(new Uint8Array(content));
+        if (/^\.main\.synology-sync-.*\.tmp$/.test(name)) tmpRef = new TextDecoder().decode(new Uint8Array(content));
       }),
-      rename: jest.fn(async (_path: string, newName: string) => {
-        expect(newName).toBe("main");
-        throw new Error("destination exists");
+      rename: jest.fn(async (path: string, newName: string) => {
+        if (/\/\.main\.synology-sync-.*\.tmp$/.test(path) && newName === "main" && remoteRef) {
+          throw new Error("destination exists");
+        }
+        if (path.endsWith("/main") && /^\.main\.synology-sync-backup-.*\.tmp$/.test(newName)) {
+          remoteRef = "";
+          return;
+        }
+        if (/\/\.main\.synology-sync-.*\.tmp$/.test(path) && newName === "main") {
+          remoteRef = tmpRef;
+          tmpRef = "";
+          return;
+        }
+        throw new Error(`unexpected rename ${path} -> ${newName}`);
       }),
     };
     const vault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
@@ -1009,14 +1066,16 @@ describe("MobileGitFileStationSyncEngine", () => {
     await engine.memfs.promises.mkdir("/vault", { recursive: true });
     await engine.memfs.promises.writeFile("/vault/.git/HEAD", "ref: refs/heads/main\n");
     await engine.memfs.promises.writeFile("/vault/.git/refs/heads/main", `${oid}\n`);
-    engine.remoteBranchOidAtDownload = undefined;
+    remoteRef = `${"b".repeat(40)}\n`;
+    engine.remoteBranchOidAtDownload = "b".repeat(40);
 
     await engine.publishWithLease();
 
     expect(uploaded.some((p) => /refs\/heads\/\.main\.synology-sync-.*\.tmp$/.test(p))).toBe(true);
-    expect(uploaded.some((p) => p.endsWith("/refs/heads/main"))).toBe(true);
-    expect(fs.rename).toHaveBeenCalled();
-    expect(fs.delete).toHaveBeenCalledWith(expect.stringMatching(/\/refs\/heads\/\.main\.synology-sync-.*\.tmp$/));
+    expect(uploaded.some((p) => p.endsWith("/refs/heads/main"))).toBe(false);
+    expect(fs.rename).toHaveBeenCalledWith(expect.stringMatching(/\/refs\/heads\/\.main\.synology-sync-.*\.tmp$/), "main");
+    expect(fs.rename).toHaveBeenCalledWith(expect.stringMatching(/\/refs\/heads\/main$/), expect.stringMatching(/^\.main\.synology-sync-backup-.*\.tmp$/));
+    expect(fs.delete).toHaveBeenCalledWith(expect.stringMatching(/\/refs\/heads\/\.main\.synology-sync-backup-.*\.tmp$/));
   });
 
 });

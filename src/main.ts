@@ -382,8 +382,6 @@ export default class SynologySync extends Plugin {
 
     this.syncing = true;
     beginDebugSync(this.app);
-    await this.persistLatestSyncLog("started");
-    const stopProgressLog = this.startPersistentLogProgress();
     new Notice("Synology Sync starting...");
 
     let fs: FileStation | null = null;
@@ -437,7 +435,6 @@ export default class SynologySync extends Plugin {
       new Notice(`Sync failed: ${(e as Error).message}`);
       console.error("Synology Sync error:", e);
     } finally {
-      stopProgressLog();
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
       }
@@ -456,8 +453,6 @@ export default class SynologySync extends Plugin {
 
     this.syncing = true;
     beginDebugSync(this.app);
-    await this.persistLatestSyncLog("started");
-    const stopProgressLog = this.startPersistentLogProgress();
     new Notice("Git-over-File-Station sync starting...");
 
     let fs: FileStation | null = null;
@@ -491,7 +486,6 @@ export default class SynologySync extends Plugin {
       new Notice(`Git-over-File-Station sync failed: ${(e as Error).message}`);
       console.error("Git-over-File-Station Synology Sync error:", e);
     } finally {
-      stopProgressLog();
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
       }
@@ -532,16 +526,6 @@ export default class SynologySync extends Plugin {
     } catch (e) {
       console.warn("Synology Sync could not persist latest sync log:", e);
     }
-  }
-
-  private startPersistentLogProgress(): () => void {
-    let running = false;
-    const timer = globalThis.setInterval(() => {
-      if (running) return;
-      running = true;
-      void this.persistLatestSyncLog("started").finally(() => { running = false; });
-    }, 5000);
-    return () => globalThis.clearInterval(timer);
   }
 
   private async ensureAdapterFolder(path: string): Promise<void> {

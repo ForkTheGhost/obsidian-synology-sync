@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 2026.0528.4
+
+### Fixed
+
+- Make the visible `Synology Sync Logs/latest-run.md` diagnostics note a last-completed-run dump only, written once after sync finishes, eliminating sync-start and 5-second live writes that could churn Obsidian during long syncs.
+- Harden Git-over-File-Station branch ref publication when `refs/heads/main` already exists by moving the old ref aside, renaming the temp ref into place, verifying the landed ref, and then deleting the backup.
+
 ## 2026.0528.3
 
 ### Fixed

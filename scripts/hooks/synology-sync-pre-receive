@@ -1,0 +1,57 @@
+#!/bin/sh
+set -eu
+
+# Guard native/admin Git pushes into a Synology bare repo while Obsidian clients
+# coordinate through the File Station lease protocol.
+
+zero_oid="0000000000000000000000000000000000000000"
+blocked=0
+
+safe_branch_name() {
+  printf '%s' "${1:-main}" \
+    | sed 's/[^A-Za-z0-9._-]\{1,\}/-/g; s/^-*//; s/-*$//' \
+    | awk '{ if ($0 == "") print "main"; else print $0 }'
+}
+
+reject() {
+  printf '%s\n' "$*" >&2
+  blocked=1
+}
+
+while read -r oldrev newrev refname; do
+  case "$refname" in
+    refs/heads/*)
+      branch=${refname#refs/heads/}
+      lease_name="$(safe_branch_name "$branch").lock"
+      lease_dir=".synology-sync/leases/$lease_name"
+
+      if [ -d "$lease_dir" ]; then
+        owner="unknown"
+        expires="unknown"
+        if [ -r "$lease_dir/lease.json" ]; then
+          owner=$(sed -n 's/.*"owner"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$lease_dir/lease.json" | head -n 1)
+          expires=$(sed -n 's/.*"expiresAt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$lease_dir/lease.json" | head -n 1)
+          [ -n "$owner" ] || owner="unknown"
+          [ -n "$expires" ] || expires="unknown"
+        fi
+        reject "synology-sync: refusing push to $refname because $lease_dir exists (owner=$owner expiresAt=$expires). Wait for sync to finish or remove a verified stale lease."
+      fi
+
+      if [ "$newrev" = "$zero_oid" ] && [ "${SYN_SYNC_ALLOW_BRANCH_DELETE:-}" != "1" ]; then
+        reject "synology-sync: refusing branch deletion for $refname. Set SYN_SYNC_ALLOW_BRANCH_DELETE=1 only for coordinated maintenance."
+      fi
+
+      if [ "$oldrev" != "$zero_oid" ] && [ "$newrev" != "$zero_oid" ] && [ "${SYN_SYNC_ALLOW_NON_FF:-}" != "1" ]; then
+        if ! git merge-base --is-ancestor "$oldrev" "$newrev"; then
+          reject "synology-sync: refusing non-fast-forward update for $refname. Use coordinated maintenance with SYN_SYNC_ALLOW_NON_FF=1 only after all Obsidian clients are quiesced."
+        fi
+      fi
+      ;;
+  esac
+done
+
+if [ "$blocked" -ne 0 ]; then
+  exit 1
+fi
+
+exit 0
