@@ -116,8 +116,10 @@ describe("MobileGitFileStationSyncEngine", () => {
 
     expect(result.errors).toEqual([expect.objectContaining({
       path: "hooks/pre-receive",
-      error: expect.stringContaining("Native Git admin guardrail hook could not be verified"),
+      error: expect.stringContaining("WARNING: Native Git admin guardrail hook could not be verified"),
     })]);
+    expect(result.errors[0].error).toContain("README.md#git-backed-sync-admin-guardrail");
+    expect(result.errors[0].error).toContain("Risk if skipped");
     expect(fs.createFolderStrict).not.toHaveBeenCalled();
   });
 

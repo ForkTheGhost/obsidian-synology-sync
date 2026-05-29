@@ -61,6 +61,20 @@ You configure a **NAS bare Git repository path**, for example:
 
 Important: `MyVault.git` is repository storage. Do **not** open it as an Obsidian vault. Open the local vault/checkout on each device.
 
+#### Git-backed sync admin guardrail
+
+Git-backed sync uses the plugin's File Station lease before it writes branch refs, but native/admin Git pushes to the same NAS bare repo do not go through File Station and cannot see that lease unless the bare repo has a server-side hook.
+
+Install the native Git guard hook once, while all Obsidian syncs are idle:
+
+```bash
+scripts/install-synology-sync-bare-hook.sh /homes/username/Obsidian/MyVault.git
+```
+
+Replace the path with your **NAS bare Git repository path**. The command installs `scripts/hooks/synology-sync-pre-receive` as `hooks/pre-receive` and marks it executable. The plugin checks for this hook before Git-backed sync takes the File Station lease.
+
+If you skip this step, Obsidian/File Station sync still has its own lease and expected-ref checks, but a separate native Git push can race it and overwrite branch refs while a sync is in progress. For that reason, Git-backed sync pauses with a warning until the hook is installed and verified.
+
 ## Quick start: Simple File Sync over File Station
 
 1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Obsidian's Community Plugins.

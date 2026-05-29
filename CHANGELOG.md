@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Document the required native Git guard hook setup command in the README and make the runtime missing-hook message an explicit warning with the risk of skipping it.
+
 ## 2026.0528.4
 
 ### Fixed
