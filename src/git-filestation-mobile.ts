@@ -64,6 +64,7 @@ const NATIVE_GIT_GUARD_HOOK_SNIPPETS = [
   "SYN_SYNC_ALLOW_NON_FF",
   "SYN_SYNC_ALLOW_BRANCH_DELETE",
 ];
+const NATIVE_GIT_GUARD_SETUP_DOC = "README.md#git-backed-sync-admin-guardrail";
 
 type MobileGitCacheMarker = {
   schemaVersion: number;
@@ -153,15 +154,16 @@ export class MobileGitFileStationSyncEngine {
       const bytes = new Uint8Array(await station.download(hookPath));
       const text = textDecoder.decode(bytes);
       if (!isSynologySyncNativeGitGuardHook(text)) {
-        result.errors.push(nativeGitGuardrailError("Native Git admin guardrail hook is missing or not recognized. Install scripts/hooks/synology-sync-pre-receive as hooks/pre-receive in the NAS bare repo after all syncs are idle."));
+        result.errors.push(nativeGitGuardrailError(`WARNING: Native Git admin guardrail hook is missing or not recognized. Git-backed sync is paused before taking the File Station lease. Install scripts/hooks/synology-sync-pre-receive as hooks/pre-receive in the NAS bare repo after all syncs are idle; see ${NATIVE_GIT_GUARD_SETUP_DOC}. Risk if skipped: native Git pushes can race Obsidian/File Station sync and overwrite branch refs.`));
         debugLog(`[git-filestation-mobile] native Git admin guardrail invalid path=${hookPath} bytes=${bytes.byteLength}`);
         return false;
       }
       debugLog(`[git-filestation-mobile] native Git admin guardrail verified path=${hookPath} bytes=${bytes.byteLength}`);
       return true;
     } catch (e) {
-      result.errors.push(nativeGitGuardrailError(`Native Git admin guardrail hook could not be verified at ${NATIVE_GIT_GUARD_HOOK_REL}: ${(e as Error).message}. Install it after all syncs are idle before using Git-backed sync.`));
-      debugLog(`[git-filestation-mobile] native Git admin guardrail verification failed path=${hookPath}: ${(e as Error).message}`);
+      const warning = `WARNING: Native Git admin guardrail hook could not be verified at ${NATIVE_GIT_GUARD_HOOK_REL}: ${(e as Error).message}. Git-backed sync is paused before taking the File Station lease. Install it after all syncs are idle before using Git-backed sync; see ${NATIVE_GIT_GUARD_SETUP_DOC}. Risk if skipped: native Git pushes can race Obsidian/File Station sync and overwrite branch refs.`;
+      result.errors.push(nativeGitGuardrailError(warning));
+      debugLog(`[git-filestation-mobile] ${warning}`);
       return false;
     }
   }
