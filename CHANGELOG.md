@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## 2026.0528.6
+
+### Fixed
+
+- Keep the native Git guard hook check advisory: missing or unrecognized hooks now log a warning and continue with the plugin's lease/ref checks instead of reporting an error.
+
 ## 2026.0528.5
 
 ### Changed

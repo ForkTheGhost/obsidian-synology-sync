@@ -129,8 +129,7 @@ export class MobileGitFileStationSyncEngine {
     const hiddenSystemFilesAtStart = this.hiddenSystemVaultFilesAtStart(workdirFilesAtStart);
     const initialLocalFiles = hadLocalCommitsBeforeRemoteImport ? new Map<string, Uint8Array>() : await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
     const expectedOldRefHint = await this.runPhase("preflight remote ref", () => this.readRemoteBranchOidFromFileStation());
-    const guardrailOk = await this.runPhase("verify native Git admin guardrail", () => this.verifyNativeGitAdminGuardrail(result));
-    if (!guardrailOk) return result;
+    await this.runPhase("verify native Git admin guardrail", () => this.verifyNativeGitAdminGuardrail());
 
     return await this.withAuthoritativeSyncLease(result, expectedOldRefHint, async () => this.syncUnderHeldLease(
       result,
@@ -143,28 +142,24 @@ export class MobileGitFileStationSyncEngine {
     ));
   }
 
-  private async verifyNativeGitAdminGuardrail(result: SyncResult): Promise<boolean> {
+  private async verifyNativeGitAdminGuardrail(): Promise<void> {
     const station = this.fs as unknown as { download?: (path: string) => Promise<ArrayBuffer> };
     if (typeof station.download !== "function") {
       debugLog("[git-filestation-mobile] native Git admin guardrail verification skipped: File Station download unavailable");
-      return true;
+      return;
     }
     const hookPath = joinRemotePath(this.opts.remotePath, NATIVE_GIT_GUARD_HOOK_REL);
     try {
       const bytes = new Uint8Array(await station.download(hookPath));
       const text = textDecoder.decode(bytes);
       if (!isSynologySyncNativeGitGuardHook(text)) {
-        result.errors.push(nativeGitGuardrailError(`WARNING: Native Git admin guardrail hook is missing or not recognized. Git-backed sync is paused before taking the File Station lease. Install scripts/hooks/synology-sync-pre-receive as hooks/pre-receive in the NAS bare repo after all syncs are idle; see ${NATIVE_GIT_GUARD_SETUP_DOC}. Risk if skipped: native Git pushes can race Obsidian/File Station sync and overwrite branch refs.`));
-        debugLog(`[git-filestation-mobile] native Git admin guardrail invalid path=${hookPath} bytes=${bytes.byteLength}`);
-        return false;
+        debugLog(`[git-filestation-mobile] WARNING: Native Git admin guardrail hook is missing or not recognized at ${NATIVE_GIT_GUARD_HOOK_REL}; continuing with plugin lease/ref checks. Install scripts/hooks/synology-sync-pre-receive as hooks/pre-receive in the NAS bare repo after all syncs are idle; see ${NATIVE_GIT_GUARD_SETUP_DOC}. Risk if skipped: native Git pushes can race Obsidian/File Station sync and overwrite branch refs. bytes=${bytes.byteLength}`);
+        return;
       }
       debugLog(`[git-filestation-mobile] native Git admin guardrail verified path=${hookPath} bytes=${bytes.byteLength}`);
-      return true;
     } catch (e) {
-      const warning = `WARNING: Native Git admin guardrail hook could not be verified at ${NATIVE_GIT_GUARD_HOOK_REL}: ${(e as Error).message}. Git-backed sync is paused before taking the File Station lease. Install it after all syncs are idle before using Git-backed sync; see ${NATIVE_GIT_GUARD_SETUP_DOC}. Risk if skipped: native Git pushes can race Obsidian/File Station sync and overwrite branch refs.`;
-      result.errors.push(nativeGitGuardrailError(warning));
+      const warning = `WARNING: Native Git admin guardrail hook could not be verified at ${NATIVE_GIT_GUARD_HOOK_REL}: ${(e as Error).message}. Continuing with plugin lease/ref checks. Install it after all syncs are idle; see ${NATIVE_GIT_GUARD_SETUP_DOC}. Risk if skipped: native Git pushes can race Obsidian/File Station sync and overwrite branch refs.`;
       debugLog(`[git-filestation-mobile] ${warning}`);
-      return false;
     }
   }
 
@@ -1854,10 +1849,6 @@ function fnv1a32(bytes: Uint8Array): string {
 
 function emptyResult(): SyncResult {
   return { uploaded: [], downloaded: [], deleted: [], deletedRemote: [], deletedLocal: [], recreated: [], preservedLocal: [], conflicts: [], errors: [] };
-}
-
-function nativeGitGuardrailError(error: string): { path: string; error: string } {
-  return { path: NATIVE_GIT_GUARD_HOOK_REL, error };
 }
 
 export function isSynologySyncNativeGitGuardHook(text: string): boolean {
