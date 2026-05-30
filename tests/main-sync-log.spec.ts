@@ -60,8 +60,11 @@ describe("persisted latest sync log", () => {
 
     await (plugin as unknown as { runGitFileStationSync: () => Promise<void> }).runGitFileStationSync();
 
-    expect(adapter.write).toHaveBeenCalledTimes(1);
-    const [path, body] = adapter.write.mock.calls[0] as [string, string];
+    expect(adapter.write).toHaveBeenCalledTimes(2);
+    const [startedPath, startedBody] = adapter.write.mock.calls[0] as [string, string];
+    expect(startedPath).toBe(LATEST_SYNC_LOG_NOTE_PATH);
+    expect(startedBody).toContain("Status: started");
+    const [path, body] = adapter.write.mock.calls[1] as [string, string];
     expect(path).toBe(LATEST_SYNC_LOG_NOTE_PATH);
     expect(body).toContain("GIT-OVER-FILE-STATION SYNC FINISHED: SUCCESS");
     expect(body).toContain("Plugin version: test-version");
@@ -72,7 +75,7 @@ describe("persisted latest sync log", () => {
     expect(body).toContain("password=***");
   });
 
-  it("does not write the persistent note before a sync finishes", async () => {
+  it("updates the persistent note while a sync is running", async () => {
     jest.useFakeTimers();
     let releaseSync!: () => void;
     const { plugin, adapter } = buildPlugin(true);
@@ -87,15 +90,20 @@ describe("persisted latest sync log", () => {
 
     const run = (plugin as unknown as { runGitFileStationSync: () => Promise<void> }).runGitFileStationSync();
     await Promise.resolve();
+    await Promise.resolve();
     jest.advanceTimersByTime(30_000);
     await Promise.resolve();
+    await Promise.resolve();
 
-    expect(adapter.write).not.toHaveBeenCalled();
+    expect(adapter.write).toHaveBeenCalled();
+    const bodies = adapter.write.mock.calls.map((call) => call[1] as string);
+    expect(bodies.some((body) => body.includes("Status: started"))).toBe(true);
+    expect(bodies.some((body) => body.includes("Status: running"))).toBe(true);
 
     releaseSync();
     await run;
 
-    expect(adapter.write).toHaveBeenCalledTimes(1);
+    expect(adapter.write.mock.calls.at(-1)?.[1]).toContain("Status: finished");
     jest.useRealTimers();
   });
 

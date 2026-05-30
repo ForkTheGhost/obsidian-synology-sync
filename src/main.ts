@@ -454,6 +454,12 @@ export default class SynologySync extends Plugin {
     this.syncing = true;
     beginDebugSync(this.app);
     new Notice("Git-over-File-Station sync starting...");
+    void this.persistLatestSyncLog("started");
+    const progressLogInterval = this.settings.persistSyncLogToVaultNote
+      ? globalThis.setInterval(() => {
+        void this.persistLatestSyncLog("running");
+      }, 15_000)
+      : null;
 
     let fs: FileStation | null = null;
     try {
@@ -486,6 +492,7 @@ export default class SynologySync extends Plugin {
       new Notice(`Git-over-File-Station sync failed: ${(e as Error).message}`);
       console.error("Git-over-File-Station Synology Sync error:", e);
     } finally {
+      if (progressLogInterval !== null) globalThis.clearInterval(progressLogInterval);
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
       }
@@ -495,7 +502,7 @@ export default class SynologySync extends Plugin {
     }
   }
 
-  private async persistLatestSyncLog(status: "started" | "finished" = "finished"): Promise<void> {
+  private async persistLatestSyncLog(status: "started" | "running" | "finished" = "finished"): Promise<void> {
     if (!this.settings.persistSyncLogToVaultNote) return;
 
     try {
