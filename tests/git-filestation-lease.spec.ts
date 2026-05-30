@@ -162,4 +162,26 @@ describe("FileStationGitLease", () => {
     expect(fs.delete).not.toHaveBeenCalled();
   });
 
+  it("includes held lease metadata in the already-held error", async () => {
+    const prior = {
+      owner: "same-device",
+      branch: "main",
+      createdAt: "2026-05-30T17:51:11.084Z",
+      expiresAt: "2026-05-30T18:21:11.084Z",
+      token: "old",
+    };
+    const fs = {
+      createFolder: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => { throw new FileStationPathExistsError("exists", 414); }),
+      download: jest.fn(async () => new TextEncoder().encode(JSON.stringify(prior)).buffer),
+      upload: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+    };
+
+    await expect(withFileStationGitLease(fs as never, {
+      remotePath: "/repo.git", branch: "main", owner: "same-device", now: () => 2000,
+    }, async () => undefined)).rejects.toThrow(/held for main by this device since 2026-05-30T17:51:11.084Z until 2026-05-30T18:21:11.084Z/);
+    expect(fs.delete).not.toHaveBeenCalled();
+  });
+
 });

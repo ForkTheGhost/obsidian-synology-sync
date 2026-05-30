@@ -85,7 +85,8 @@ export class FileStationGitLease {
           await this.fs.createFolderStrict(joinRemotePath(this.opts.remotePath, LEASE_ROOT), this.leaseName);
           createdLeaseDir = true;
         } else {
-          throw new FileStationGitLeaseHeldError(`Git-backed File Station lease is already held for ${this.opts.branch}. Try again after the other device finishes, or clear stale lease ${this.leaseDir} only after verifying no sync is running.`, e.code);
+          const heldDetails = await this.describeHeldLease();
+          throw new FileStationGitLeaseHeldError(`Git-backed File Station lease is already held for ${this.opts.branch}${heldDetails}. Try again after the other device finishes, or clear stale lease ${this.leaseDir} only after verifying no sync is running.`, e.code);
         }
       } else {
         throw e;
@@ -145,6 +146,16 @@ export class FileStationGitLease {
 
   private async readMetadata(): Promise<GitLeaseInfo> {
     return await this.readMetadataAt(this.metadataPath);
+  }
+
+  private async describeHeldLease(): Promise<string> {
+    try {
+      const held = await this.readMetadata();
+      const sameOwner = held.owner === this.opts.owner;
+      return ` by ${sameOwner ? "this device" : held.owner || "unknown owner"} since ${held.createdAt || "unknown time"} until ${held.expiresAt || "unknown expiry"}`;
+    } catch {
+      return "";
+    }
   }
 
   private async readMetadataAt(path: string): Promise<GitLeaseInfo> {
