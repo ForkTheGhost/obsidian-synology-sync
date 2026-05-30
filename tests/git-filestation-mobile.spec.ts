@@ -733,6 +733,71 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(objectIndex).toBeLessThan(refIndex);
   });
 
+  it("does not re-upload objects already reachable from the expected old ref", async () => {
+    const textEncoder = new TextEncoder();
+    const git = await import("isomorphic-git");
+    const vault = { adapter: {}, getFiles: jest.fn(() => []), getAbstractFileByPath: jest.fn(() => null) };
+    const uploaded: string[] = [];
+    const fs = {
+      listAllFiles: jest.fn(async () => { throw new Error("remote missing"); }),
+      createFolder: jest.fn(async () => undefined),
+      upload: jest.fn(async (destFolder: string, fileName: string) => {
+        uploaded.push(`${destFolder}/${fileName}`);
+      }),
+    };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+    const exposed = engine as unknown as {
+      memfs: {
+        client: unknown;
+        promises: {
+          mkdir: (path: string, options?: { recursive?: boolean }) => Promise<void>;
+          writeFile: (path: string, data: Uint8Array | string) => Promise<void>;
+          readdir: (path: string) => Promise<string[]>;
+          lstat: (path: string) => Promise<{ isDirectory: () => boolean; isFile: () => boolean }>;
+        };
+      };
+      uploadBareRepoMirror: (expectedOldRef?: string, suppressBranchRef?: boolean) => Promise<void>;
+    };
+    const collectObjectRels = async (dir: string, found = new Set<string>()): Promise<Set<string>> => {
+      for (const name of await exposed.memfs.promises.readdir(dir)) {
+        const abs = `${dir}/${name}`;
+        const stat = await exposed.memfs.promises.lstat(abs);
+        if (stat.isDirectory()) await collectObjectRels(abs, found);
+        else if (stat.isFile()) {
+          const rel = abs.slice("/vault/.git/".length);
+          if (/^objects\/[0-9a-f]{2}\/[0-9a-f]{38}$/i.test(rel)) found.add(rel);
+        }
+      }
+      return found;
+    };
+
+    await exposed.memfs.promises.mkdir("/vault", { recursive: true });
+    await git.init({ fs: exposed.memfs.client as never, dir: "/vault", defaultBranch: "main" });
+    await exposed.memfs.promises.writeFile("/vault/RemoteOnly.md", textEncoder.encode("remote baseline\n"));
+    await git.add({ fs: exposed.memfs.client as never, dir: "/vault", filepath: "RemoteOnly.md" });
+    const oldRef = await git.commit({ fs: exposed.memfs.client as never, dir: "/vault", message: "seed remote", author: { name: "Seed", email: "seed@example.com" } });
+    const oldObjectRels = await collectObjectRels("/vault/.git/objects");
+
+    await exposed.memfs.promises.writeFile("/vault/LocalOnly.md", textEncoder.encode("local addition\n"));
+    await git.add({ fs: exposed.memfs.client as never, dir: "/vault", filepath: "LocalOnly.md" });
+    await git.commit({ fs: exposed.memfs.client as never, dir: "/vault", message: "local sync", author: { name: "Device", email: "device@example.com" } });
+
+    await exposed.uploadBareRepoMirror(oldRef, true);
+
+    const uploadedObjectRels = uploaded
+      .map((path) => path.replace("/homes/user/Obsidian/Test.git/", ""))
+      .filter((path) => path.startsWith("objects/"));
+    expect(uploadedObjectRels.length).toBeGreaterThan(0);
+    expect(uploadedObjectRels.some((rel) => oldObjectRels.has(rel))).toBe(false);
+    expect(uploaded.some((path) => path.endsWith("/refs/heads/main"))).toBe(false);
+  });
+
   it("treats already-existing vault folders as successful during materialization", async () => {
     const folders = new Set<string>();
     const vault = {

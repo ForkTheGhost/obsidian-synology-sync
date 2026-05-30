@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Publish only Git objects that are not already reachable from the expected old File Station ref, avoiding long lease-held re-uploads of the existing remote object cache on large vaults.
+- Reduce verbose mobile Git cache and checkout-folder debug noise so runtime logs stay usable during large syncs.
+
 ## 2026.0529.1
 
 ### Fixed
