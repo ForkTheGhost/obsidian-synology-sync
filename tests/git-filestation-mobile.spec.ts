@@ -369,6 +369,51 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(createdFiles).toEqual(["Folder/Sub/note.md"]);
   });
 
+  it("stops before publishing when a live vault note changes during sync", async () => {
+    const textEncoder = new TextEncoder();
+    const note = new TFile();
+    note.path = "Daily/live-edit.md";
+    let readCount = 0;
+    const fsUploads: string[] = [];
+    const vault = {
+      adapter: {},
+      getFiles: jest.fn(() => [note]),
+      readBinary: jest.fn(async () => {
+        readCount++;
+        return textEncoder.encode(readCount === 1 ? "snapshot bytes\n" : "user kept typing\n").buffer;
+      }),
+      getAbstractFileByPath: jest.fn((path: string) => path === note.path ? note : null),
+      createFolder: jest.fn(async () => undefined),
+      createBinary: jest.fn(async () => undefined),
+      modifyBinary: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+    };
+    const fs = {
+      createFolder: jest.fn(async () => undefined),
+      createFolderStrict: jest.fn(async () => undefined),
+      delete: jest.fn(async () => undefined),
+      upload: jest.fn(async (destFolder: string, fileName: string) => {
+        fsUploads.push(`${destFolder}/${fileName}`);
+      }),
+    };
+    const engine = new MobileGitFileStationSyncEngine(vault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "windows-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    const result = await engine.sync();
+
+    expect(result.errors).toEqual([{
+      path: "Daily/live-edit.md",
+      error: expect.stringContaining("changed while sync was running"),
+    }]);
+    expect(result.uploaded).toEqual([]);
+    expect(fsUploads.some((path) => path.includes("/objects/") || path.endsWith("/refs/heads/main"))).toBe(false);
+  });
+
   it("materializes a conflict copy for pre-merge local changes", async () => {
     const vault = {
       adapter: {},

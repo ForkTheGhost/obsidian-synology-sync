@@ -272,6 +272,7 @@ export class MobileGitFileStationSyncEngine {
 
     const needsBootstrapCommit = !localHadCommits && !remoteHadCommits;
     if (localChanged.length > 0 || needsBootstrapCommit) {
+      if (!(await this.runPhase("verify live vault unchanged before commit", () => this.verifyLiveVaultUnchanged(beforeSnapshot, result)))) return result;
       await this.runPhase("commit local changes", () => this.commitLocalChanges(
         needsBootstrapCommit ? "Initialize Obsidian vault sync" : `Sync from ${this.opts.syncIdentityId}`,
         needsBootstrapCommit,
@@ -295,6 +296,7 @@ export class MobileGitFileStationSyncEngine {
             ? classifyGitConflict(conflicts.find((p) => p.startsWith(".obsidian/")) || conflicts[0]).message
             : "Merge conflicts need to be resolved before Git sync can push.",
         });
+        if (!(await this.runPhase("verify live vault unchanged before apply", () => this.verifyLiveVaultUnchanged(beforeSnapshot, result)))) return result;
         await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
         return result;
       }
@@ -304,7 +306,9 @@ export class MobileGitFileStationSyncEngine {
       await this.runPhase("materialize pre-merge local copies", () => this.materializePreMergeLocalCopies(preMergeLocalChanged, beforeSnapshot, result));
       if (preMergeLocalChanged.size > 0) await this.runPhase("commit conflict copies", () => this.commitLocalChanges(`Preserve local conflict copies from ${this.opts.syncIdentityId}`, false));
     }
+    if (!(await this.runPhase("verify live vault unchanged before publish", () => this.verifyLiveVaultUnchanged(beforeSnapshot, result)))) return result;
     await this.runPhase("publish with lease", () => this.publishWithLease());
+    if (!(await this.runPhase("verify live vault unchanged before apply", () => this.verifyLiveVaultUnchanged(beforeSnapshot, result)))) return result;
     await this.runPhase("apply checkout changes", () => this.applyCheckoutChanges(beforeSnapshot, result));
     return result;
   }
@@ -1526,6 +1530,29 @@ export class MobileGitFileStationSyncEngine {
     return snapshot;
   }
 
+  private async verifyLiveVaultUnchanged(before: Map<string, string>, result: SyncResult): Promise<boolean> {
+    const changed: string[] = [];
+    for (const [path, beforeHash] of before) {
+      if (this.isExcluded(path)) continue;
+      const liveHash = await this.liveVaultFileHash(path);
+      if (liveHash !== beforeHash) changed.push(path);
+    }
+    if (changed.length === 0) return true;
+    const message = "changed while sync was running; sync stopped before publishing or overwriting stale note bytes. Run sync again after editing settles.";
+    for (const path of changed) {
+      if (!result.errors.some((entry) => entry.path === path && entry.error === message)) result.errors.push({ path, error: message });
+    }
+    debugLog(`[git-filestation-mobile] live vault changed during sync; aborting stale publish/apply paths=${changed.join(", ")}`);
+    return false;
+  }
+
+  private async liveVaultFileHash(path: string): Promise<string | undefined> {
+    const file = this.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) return undefined;
+    const bytes = new Uint8Array(await this.vault.readBinary(file));
+    return dataFingerprint(bytes);
+  }
+
   private async materializeRemoteFiles(remoteFiles: string[], result: SyncResult): Promise<void> {
     debugLog(`[git-filestation-mobile] materializing remote files count=${remoteFiles.length}`);
     const head = await git.resolveRef({ fs: this.memfs.client, gitdir: GITDIR, ref: `refs/heads/${this.opts.branch}` });
@@ -1671,12 +1698,7 @@ export class MobileGitFileStationSyncEngine {
 
   private async fileHash(path: string): Promise<string> {
     const data = await this.memfs.promises.readFile(path);
-    let hash = 2166136261;
-    for (const byte of data) {
-      hash ^= byte;
-      hash = Math.imul(hash, 16777619);
-    }
-    return `${data.byteLength}:${hash >>> 0}`;
+    return dataFingerprint(data);
   }
 }
 
@@ -2048,6 +2070,15 @@ function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(bytes);
   return copy.buffer;
+}
+
+function dataFingerprint(bytes: Uint8Array): string {
+  let hash = 2166136261;
+  for (const byte of bytes) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${bytes.byteLength}:${hash >>> 0}`;
 }
 
 function normalizeReplacementChar(value: string | undefined): string {
