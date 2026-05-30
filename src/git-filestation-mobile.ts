@@ -618,7 +618,6 @@ export class MobileGitFileStationSyncEngine {
       if (typeof adapter.exists === "function" && !(await adapter.exists(cachePath, true))) return undefined;
       const bytes = new Uint8Array(await adapter.readBinary(cachePath));
       unwrapGitLooseObjectBytes(bytes, oid, rel);
-      debugLog(`[git-filestation-mobile] remote git object cache hit rel=${rel} bytes=${bytes.byteLength}`);
       return bytes;
     } catch (e) {
       debugLog(`[git-filestation-mobile] remote git object cache miss/invalid rel=${rel}: ${(e as Error).message}`);
@@ -635,7 +634,6 @@ export class MobileGitFileStationSyncEngine {
     try {
       await this.ensureAdapterFolder(dirnameVaultPath(cachePath));
       await adapter.writeBinary(cachePath, bytesToArrayBuffer(bytes));
-      debugLog(`[git-filestation-mobile] remote git object cache stored rel=${rel} bytes=${bytes.byteLength}`);
     } catch (e) {
       debugLog(`[git-filestation-mobile] remote git object cache store skipped rel=${rel}: ${(e as Error).message}`);
     }
@@ -1198,6 +1196,11 @@ export class MobileGitFileStationSyncEngine {
       await this.pushWithRetry();
       const newRef = await this.remoteRefOid();
       debugLog(`[git-filestation-mobile] publish prepared local ref branch=${this.opts.branch} newRef=${newRef || "<none>"}`);
+      if (newRef && newRef === expectedOldRef) {
+        await this.writeMobileGitCacheMarker(newRef, "partial", "publish no-op");
+        debugLog(`[git-filestation-mobile] publish no-op branch=${this.opts.branch} ref unchanged=${newRef}`);
+        return;
+      }
       await this.uploadBareRepoMirror(expectedOldRef, true);
       await this.publishBranchRefLast(newRef);
       this.remoteBranchOidAtDownload = newRef;
@@ -1360,13 +1363,14 @@ export class MobileGitFileStationSyncEngine {
 
   private async uploadBareRepoMirror(expectedOldRef?: string, suppressBranchRef = false): Promise<void> {
     await this.ensureRemoteDirectoryTree();
+    const existingRemoteObjectOids = await this.reachableObjectOidsForPublish(expectedOldRef);
     const files = (await this.listMemFiles(GITDIR))
       .map((abs) => ({ abs, rel: abs.slice(GITDIR.length + 1) }))
       .filter((file) => !shouldSkipRemoteGitFile(file.rel))
       .filter((file) => !(suppressBranchRef && file.rel === `refs/heads/${this.opts.branch}`))
-      .filter((file) => this.shouldPublishGitFile(file.rel, expectedOldRef, suppressBranchRef))
+      .filter((file) => this.shouldPublishGitFile(file.rel, expectedOldRef, suppressBranchRef, existingRemoteObjectOids))
       .sort((a, b) => compareGitMirrorPublishPath(a.rel, b.rel, this.opts.branch));
-    debugLog(`[git-filestation-mobile] publishing git files before ref count=${files.length}`);
+    debugLog(`[git-filestation-mobile] publishing git files before ref count=${files.length} skippedExistingObjects=${existingRemoteObjectOids.size}`);
     for (let idx = 0; idx < files.length; idx++) {
       const { abs, rel } = files[idx];
       const bytes = await this.memfs.promises.readFile(abs);
@@ -1378,8 +1382,52 @@ export class MobileGitFileStationSyncEngine {
     }
   }
 
-  private shouldPublishGitFile(rel: string, expectedOldRef?: string, suppressBranchRef = false): boolean {
-    if (/^objects\/[0-9a-f]{2}\/[0-9a-f]{38}$/i.test(rel)) return true;
+  private async reachableObjectOidsForPublish(expectedOldRef?: string): Promise<Set<string>> {
+    if (!expectedOldRef) return new Set();
+    try {
+      const oids = await this.reachableObjectOids(expectedOldRef);
+      debugLog(`[git-filestation-mobile] publish old-ref reachable objects count=${oids.size} ref=${expectedOldRef}`);
+      return oids;
+    } catch (e) {
+      debugLog(`[git-filestation-mobile] publish could not derive old-ref object set for ${expectedOldRef}; publishing all objects: ${(e as Error).message}`);
+      return new Set();
+    }
+  }
+
+  private async reachableObjectOids(rootOid: string): Promise<Set<string>> {
+    const seen = new Set<string>();
+    const visit = async (oid: string): Promise<void> => {
+      if (seen.has(oid)) return;
+      seen.add(oid);
+
+      const result = await git.readObject({
+        fs: this.memfs.client,
+        gitdir: GITDIR,
+        oid,
+        cache: this.cache,
+        format: "content",
+      });
+      const object = result.object as Uint8Array;
+      if (result.type === "commit") {
+        const commit = parseGitCommitObject(object, oid);
+        await visit(commit.tree);
+        return;
+      }
+      if (result.type === "tree") {
+        for (const entry of parseGitTreeObject(object, oid)) {
+          if (entry.type === "commit") continue;
+          await visit(entry.oid);
+        }
+      }
+    };
+
+    await visit(rootOid);
+    return seen;
+  }
+
+  private shouldPublishGitFile(rel: string, expectedOldRef?: string, suppressBranchRef = false, existingRemoteObjectOids = new Set<string>()): boolean {
+    const objectOid = looseObjectOidFromRel(rel);
+    if (objectOid) return !existingRemoteObjectOids.has(objectOid);
     if (rel === "HEAD") return !expectedOldRef;
     if (rel === "packed-refs") return false;
     if (rel.startsWith("refs/")) return !suppressBranchRef && !expectedOldRef;
@@ -1628,7 +1676,6 @@ export class MobileGitFileStationSyncEngine {
       } catch (e) {
         const afterCreate = this.vault.getAbstractFileByPath(current);
         if (afterCreate instanceof TFolder || /already exists/i.test((e as Error).message || "")) {
-          debugLog(`[git-filestation-mobile] checkout folder already exists: ${current}`);
           continue;
         }
         throw e;
@@ -1981,6 +2028,11 @@ function parseGitTreeObject(object: Uint8Array, treeOid: string): Array<{ type: 
 
 function shouldSkipRemoteGitFile(path: string): boolean {
   return path === "config" || path === "description" || path.endsWith(".lock") || path.startsWith("hooks/") || path.startsWith(".synology-sync/");
+}
+
+function looseObjectOidFromRel(path: string): string | undefined {
+  const match = /^objects\/([0-9a-f]{2})\/([0-9a-f]{38})$/i.exec(path);
+  return match ? `${match[1]}${match[2]}`.toLowerCase() : undefined;
 }
 
 function compareGitMirrorPublishPath(a: string, b: string, branch: string): number {
