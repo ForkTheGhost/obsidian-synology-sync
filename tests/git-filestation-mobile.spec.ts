@@ -1017,6 +1017,63 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(secondDownloads.some((path) => path.includes("/objects/"))).toBe(false);
   });
 
+  it("uses a matching cache marker to avoid repeated first-sync conflict copies", async () => {
+    const { git, remote } = await seededBareRemote({ "Daily/2026-05-28 Thursday.md": "remote baseline\n" });
+    const cache = new Map<string, Uint8Array>();
+    const folders = new Set<string>();
+    const uploaded: string[] = [];
+    const fs = remoteBackedFileStation(remote, uploaded);
+    const adapter = {
+      exists: jest.fn(async (path: string) => cache.has(path) || folders.has(path)),
+      mkdir: jest.fn(async (path: string) => { folders.add(path); }),
+      readBinary: jest.fn(async (path: string) => {
+        const bytes = cache.get(path);
+        if (!bytes) throw new Error("missing cache");
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }),
+      writeBinary: jest.fn(async (path: string, data: ArrayBuffer) => {
+        cache.set(path, new Uint8Array(data));
+      }),
+    };
+
+    const firstVault = { ...vaultWithFiles({}).vault, adapter };
+    const first = new MobileGitFileStationSyncEngine(firstVault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "windows-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    const firstResult = await first.sync();
+
+    expect(firstResult.errors).toEqual([]);
+    expect(firstResult.conflicts).toEqual([]);
+    expect(cache.has(".obsidian/plugins/synology-sync/git-cache/v1/cache-marker.json")).toBe(true);
+
+    const { vault: secondVaultBase, createdPaths } = vaultWithFiles({
+      "Daily/2026-05-28 Thursday.md": "local edit after completed sync\n",
+    });
+    const secondVault = { ...secondVaultBase, adapter };
+    const second = new MobileGitFileStationSyncEngine(secondVault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "windows-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    const result = await second.sync();
+
+    expect(result.errors).toEqual([]);
+    expect(result.conflicts).toEqual([]);
+    expect(result.uploaded).toContain("Daily/2026-05-28 Thursday.md");
+    expect(createdPaths.filter((path) => path.includes("(conflict windows-device "))).toEqual([]);
+    const head = await git.resolveRef({ fs: (second as unknown as { memfs: { client: unknown } }).memfs.client as never, gitdir: "/vault/.git", ref: "refs/heads/main" });
+    const blob = await git.readBlob({ fs: (second as unknown as { memfs: { client: unknown } }).memfs.client as never, gitdir: "/vault/.git", oid: head, filepath: "Daily/2026-05-28 Thursday.md" });
+    expect(new TextDecoder().decode(blob.blob as Uint8Array)).toBe("local edit after completed sync\n");
+  });
+
 
   it("publishes branch refs through temp rename and verifies the landed ref", async () => {
     const oid = "c".repeat(40);

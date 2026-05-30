@@ -178,11 +178,17 @@ export class MobileGitFileStationSyncEngine {
     await this.runPhase("ensure remote configured", () => this.ensureRemoteConfigured());
 
     const remoteHadCommits = await this.remoteHasCommits();
-    const localHadCommits = hadLocalCommitsBeforeRemoteImport;
     this.remoteBranchOidAtDownload = remoteHadCommits ? await this.remoteRefOid() : undefined;
     if ((this.remoteBranchOidAtDownload || undefined) !== (expectedOldRefHint || undefined)) {
       throw new Error(`Remote ref changed while acquiring Git-over-File-Station lease for ${this.opts.branch}; expected ${expectedOldRefHint || "<none>"} but found ${this.remoteBranchOidAtDownload || "<none>"}. Retry sync to fetch and merge safely.`);
     }
+    const recoveredEstablishedCheckout = await this.canRecoverEstablishedCheckout(
+      hadLocalCommitsBeforeRemoteImport,
+      hadUserFilesAtStart,
+      this.remoteBranchOidAtDownload,
+    );
+    const localHadCommits = hadLocalCommitsBeforeRemoteImport || recoveredEstablishedCheckout;
+    debugLog(`[git-filestation-mobile] sync decision localHadCommitsBeforeRemoteImport=${hadLocalCommitsBeforeRemoteImport} recoveredEstablishedCheckout=${recoveredEstablishedCheckout} hadUserFilesAtStart=${hadUserFilesAtStart} workdirFilesAtStart=${workdirFilesAtStart.length} hiddenSystemFilesAtStart=${hiddenSystemFilesAtStart.length} remoteHadCommits=${remoteHadCommits} expectedOldRef=${expectedOldRefHint || "<none>"} remoteRef=${this.remoteBranchOidAtDownload || "<none>"}`);
 
     let invalidRemotePaths = await this.runPhase("inspect remote tree", () => this.invalidRemotePathsForLocalCheckout());
     debugLog(`[git-filestation-mobile] invalid remote filename count=${invalidRemotePaths.length}`);
@@ -639,6 +645,23 @@ export class MobileGitFileStationSyncEngine {
     if (marker.branch !== this.opts.branch) return false;
     if (marker.remoteIdentity !== this.remoteCacheIdentity()) return false;
     if (marker.completeness === "needs-rebuild") return false;
+    return true;
+  }
+
+  private async canRecoverEstablishedCheckout(hadLocalCommitsBeforeRemoteImport: boolean, hadUserFilesAtStart: boolean, remoteRef: string | undefined): Promise<boolean> {
+    if (hadLocalCommitsBeforeRemoteImport || !hadUserFilesAtStart || !remoteRef) return false;
+    const marker = await this.readMobileGitCacheMarker();
+    const markerRef = marker?.lastVerifiedRemoteRef;
+    const reusable = await this.mobileGitCacheCanReuse();
+    if (!marker || !reusable) {
+      debugLog(`[git-filestation-mobile] missing local Git baseline; first-sync policy remains active because cache marker is ${marker ? "not reusable" : "missing"}`);
+      return false;
+    }
+    if (markerRef !== remoteRef) {
+      debugLog(`[git-filestation-mobile] missing local Git baseline; first-sync policy remains active because cache marker ref=${markerRef || "<none>"} does not match remote ref=${remoteRef}`);
+      return false;
+    }
+    debugLog(`[git-filestation-mobile] recovering established checkout from cache marker ref=${remoteRef} runtime=${marker.runtimeId || "<unknown>"} reason=${marker.reason || "<none>"}`);
     return true;
   }
 
@@ -1162,17 +1185,21 @@ export class MobileGitFileStationSyncEngine {
   private async publishWithLease(): Promise<void> {
     const expectedOldRef = this.remoteBranchOidAtDownload;
     const publish = async () => {
+      debugLog(`[git-filestation-mobile] publish start branch=${this.opts.branch} expectedOldRef=${expectedOldRef || "<none>"}`);
       const nasRef = await this.readRemoteBranchOidFromFileStation();
+      debugLog(`[git-filestation-mobile] publish checked NAS ref branch=${this.opts.branch} observed=${nasRef || "<none>"} expected=${expectedOldRef || "<none>"}`);
       if (nasRef !== expectedOldRef) {
         throw new Error(`Remote ref changed on File Station for ${this.opts.branch}; expected ${expectedOldRef || "<none>"} but found ${nasRef || "<none>"}. Retry sync to fetch and merge safely.`);
       }
       await this.pushWithRetry();
       const newRef = await this.remoteRefOid();
+      debugLog(`[git-filestation-mobile] publish prepared local ref branch=${this.opts.branch} newRef=${newRef || "<none>"}`);
       await this.uploadBareRepoMirror(expectedOldRef, true);
       await this.publishBranchRefLast(newRef);
       this.remoteBranchOidAtDownload = newRef;
       this.syncLeaseExpectedOldRef = newRef;
       await this.writeMobileGitCacheMarker(newRef, "partial", "published ref");
+      debugLog(`[git-filestation-mobile] publish complete branch=${this.opts.branch} oldRef=${expectedOldRef || "<none>"} newRef=${newRef || "<none>"}`);
     };
 
     if (this.syncLeaseHeld) {
