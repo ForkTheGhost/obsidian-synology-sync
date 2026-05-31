@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 2026.0530.1
+
+### Added
+
+- Persist plugin-owned mobile Git state under `.obsidian/plugins/synology-sync/git-cache/v1/state` with a manifest/fingerprint health check, so repeat mobile syncs can restore validated Git metadata without relying on live-vault `.git` folders.
+- Add regression coverage for persistent mobile Git state reuse after object-cache eviction and safe invalidation/rebuild when persisted state is corrupt.
+
 ### Fixed
 
 - Publish only Git objects that are not already reachable from the expected old File Station ref, avoiding long lease-held re-uploads of the existing remote object cache on large vaults.

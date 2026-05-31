@@ -1127,6 +1127,113 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(secondDownloads.some((path) => path.includes("/objects/"))).toBe(false);
   });
 
+  it("restores plugin-owned persistent Git state when loose object cache entries are evicted", async () => {
+    const { remote } = await seededBareRemote({ "RemoteOnly.md": "remote baseline\n" });
+    const cache = new Map<string, Uint8Array>();
+    const folders = new Set<string>();
+    const uploaded: string[] = [];
+    const fs = remoteBackedFileStation(remote, uploaded);
+    const adapter = {
+      exists: jest.fn(async (path: string) => cache.has(path) || folders.has(path)),
+      mkdir: jest.fn(async (path: string) => { folders.add(path); }),
+      readBinary: jest.fn(async (path: string) => {
+        const bytes = cache.get(path);
+        if (!bytes) throw new Error("missing cache");
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }),
+      writeBinary: jest.fn(async (path: string, data: ArrayBuffer) => {
+        cache.set(path, new Uint8Array(data));
+      }),
+    };
+
+    const firstVault = { ...vaultWithFiles({}).vault, adapter };
+    const first = new MobileGitFileStationSyncEngine(firstVault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    await first.sync();
+
+    expect(cache.has(".obsidian/plugins/synology-sync/git-cache/v1/state/manifest.json")).toBe(true);
+    for (const key of Array.from(cache.keys())) {
+      if (key.startsWith(".obsidian/plugins/synology-sync/git-cache/v1/objects/")) cache.delete(key);
+    }
+
+    fs.download.mockClear();
+    adapter.readBinary.mockClear();
+    const secondVault = { ...vaultWithFiles({}).vault, adapter };
+    const second = new MobileGitFileStationSyncEngine(secondVault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    const result = await second.sync();
+
+    expect(result.errors).toEqual([]);
+    expect(adapter.readBinary).toHaveBeenCalledWith(".obsidian/plugins/synology-sync/git-cache/v1/state/manifest.json");
+    const secondDownloads = fs.download.mock.calls.map(([path]) => path);
+    expect(secondDownloads).toContain("/homes/user/Obsidian/Test.git/HEAD");
+    expect(secondDownloads).toContain("/homes/user/Obsidian/Test.git/refs/heads/main");
+    expect(secondDownloads.some((path) => path.includes("/objects/"))).toBe(false);
+  });
+
+  it("invalidates corrupt persistent Git state and falls back to remote object reads", async () => {
+    const { remote } = await seededBareRemote({ "RemoteOnly.md": "remote baseline\n" });
+    const cache = new Map<string, Uint8Array>();
+    const folders = new Set<string>();
+    const uploaded: string[] = [];
+    const fs = remoteBackedFileStation(remote, uploaded);
+    const adapter = {
+      exists: jest.fn(async (path: string) => cache.has(path) || folders.has(path)),
+      mkdir: jest.fn(async (path: string) => { folders.add(path); }),
+      readBinary: jest.fn(async (path: string) => {
+        const bytes = cache.get(path);
+        if (!bytes) throw new Error("missing cache");
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }),
+      writeBinary: jest.fn(async (path: string, data: ArrayBuffer) => {
+        cache.set(path, new Uint8Array(data));
+      }),
+    };
+
+    const firstVault = { ...vaultWithFiles({}).vault, adapter };
+    const first = new MobileGitFileStationSyncEngine(firstVault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    await first.sync();
+
+    const stateObjectPath = Array.from(cache.keys()).find((path) => path.startsWith(".obsidian/plugins/synology-sync/git-cache/v1/state/files/objects/"));
+    expect(stateObjectPath).toBeDefined();
+    cache.set(stateObjectPath!, new Uint8Array([1, 2, 3]));
+
+    fs.download.mockClear();
+    const secondVault = { ...vaultWithFiles({}).vault, adapter };
+    const second = new MobileGitFileStationSyncEngine(secondVault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    const result = await second.sync();
+
+    expect(result.errors).toEqual([]);
+    const secondDownloads = fs.download.mock.calls.map(([path]) => path);
+    expect(secondDownloads.some((path) => path.includes("/objects/"))).toBe(true);
+  });
+
   it("uses a matching cache marker to avoid repeated first-sync conflict copies", async () => {
     const { git, remote } = await seededBareRemote({ "Daily/2026-05-28 Thursday.md": "remote baseline\n" });
     const cache = new Map<string, Uint8Array>();

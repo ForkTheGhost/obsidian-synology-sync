@@ -240,34 +240,37 @@ The default policy is notes-oriented and should avoid surprising multi-device co
 
 ## Roadmap / open design items
 
-### Persistent mobile Git cache and staging worktree
+### Persistent mobile Git cache and staging area
 
-The first mobile Git-over-File-Station implementation uses an in-memory filesystem because Obsidian mobile does not expose a normal desktop filesystem path to plugins. A follow-up should evaluate a plugin-owned persistent Git cache/staging area, such as `@isomorphic-git/lightning-fs` / IndexedDB or another Obsidian-mobile-safe store, so repeated syncs do not need to reconstruct the Git working state from the vault and NAS bare repo every run.
+Mobile sync should use a plugin-owned persistent cache/staging area instead of treating the live readable vault as the place to reconstruct remote Git state. The exact storage technology is an implementation detail and should be chosen for the Obsidian mobile runtime.
 
-The preferred long-term model is to materialize remote Git state into the plugin-owned cache/staging worktree, not directly into the live readable Obsidian vault. Each sync should snapshot the live vault, read/verify the NAS ref under the lease, materialize or reuse the remote tree in staging, compare the live snapshot against the staged remote tree, and then apply only the final decisions back to the live vault. This keeps remote checkout/materialization from being a destructive intermediate operation in the user's vault and reduces first-sync/recovery log spam such as per-file "already matches remote; no conflict copy needed" messages.
+The current mobile File Station implementation persists validated Git metadata under `.obsidian/plugins/synology-sync/git-cache/v1/state` and validates it with a private manifest before reuse. That state is plugin-owned and excluded from vault content sync; it is not a vault-root `.git` directory.
 
-The local cache marker should be separate from the NAS lease. The NAS lease is remote, shared, temporary concurrency control for write permission. The local cache marker is private, persistent device state that decides whether the plugin-owned cache can be reused. Neither the lease nor the cache marker proves the live vault can be overwritten; overwrite safety still comes from the current live-vault snapshot compared with the staged remote tree.
+The intended model is:
 
-A plugin-owned cache marker should record enough information to validate cache reuse, for example:
+- Snapshot the live vault before applying remote changes.
+- Read and verify the NAS state under the normal write-safety rules.
+- Reuse or rebuild the plugin-owned cache/staging area as needed.
+- Compare the live-vault snapshot with the staged remote state.
+- Apply only the final sync decisions back to the live vault.
 
-- cache schema version
-- sync mode and branch
-- privacy-preserving NAS repo identity hash, not the raw NAS path if avoidable
-- last verified NAS remote ref and local cache ref
-- cache completeness state, such as `complete`, `partial`, or `needs-rebuild`
-- runtime/host fingerprint fields consistent with the debug `RUNTIME:` line
-- last successful sync/publish timestamp and plugin version
+This keeps remote materialization from becoming a destructive intermediate operation in the user's notes and reduces noisy first-sync/recovery behavior.
 
-Acceptance considerations:
+Keep these concepts separate:
 
-- Works inside Obsidian iOS/mobile WebView storage constraints.
-- Does not rely on desktop-only `getBasePath()`, Node `fs`, or native Git.
-- Uses the plugin-owned cache/staging area for remote materialization and diffing before touching the live vault.
-- Has a startup cache health check and a safe invalidation/rebuild path if persisted data is missing, evicted, quota-limited, or corrupt.
-- Does not leak vault path/host-identifying data in logs, cache markers, or commit messages.
-- Persists at least the last-synced commit/ref identity and enough manifest/object metadata to reduce unnecessary mobile conflicts when a full persistent Git cache is unavailable.
-- Excludes the plugin-owned cache/staging area from user sync content unconditionally, even when broader Obsidian configuration sync is enabled.
-- Provides a user-visible clear/rebuild-cache recovery path for storage pressure or corrupt cache state.
+- **NAS lease:** shared, temporary permission to publish a write.
+- **Local cache marker:** private device state used to decide whether cached state can be reused.
+- **Persistent state manifest:** private plugin-owned Git metadata health record with schema, branch, remote identity hash, remote ref, and per-file fingerprints.
+- **Live-vault snapshot/diff:** the safety boundary for deciding what can be changed in the user's vault.
+
+A valid implementation should:
+
+- Work on mobile without depending on desktop-only filesystem or Git tooling.
+- Detect missing, stale, evicted, quota-limited, or corrupt cache state and rebuild safely.
+- Store only the minimum cache metadata needed to prove reuse is safe.
+- Avoid raw hostnames, vault paths, and other identifying local details in logs or cache metadata.
+- Exclude the plugin-owned cache/staging area from user sync content.
+- Provide a clear user-facing way to clear/rebuild the cache when recovery is needed.
 
 ### Git history retention and packfile policy
 
