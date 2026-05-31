@@ -19,6 +19,7 @@ export class Plugin {
 
 export class App {
   vault: Vault = new Vault();
+  secretStorage: SecretStorage = new SecretStorage();
 }
 
 export class PluginSettingTab {
@@ -29,6 +30,7 @@ export class PluginSettingTab {
 }
 
 export class Setting {
+  controlEl: any = {};
   constructor(_containerEl: any) {}
   setName(_n: string) { return this; }
   setDesc(_d: string) { return this; }
@@ -69,6 +71,7 @@ export class Vault {
   getFiles(): TFile[] { return []; }
   getAbstractFileByPath(_p: string): TFile | TFolder | null { return null; }
   async readBinary(_f: TFile): Promise<ArrayBuffer> { return new ArrayBuffer(0); }
+  async modify(_f: TFile, _d: string): Promise<void> {}
   async modifyBinary(_f: TFile, _d: ArrayBuffer): Promise<void> {}
   async createFolder(_p: string): Promise<void> {}
   async delete(_f: TFile | TFolder, _force?: boolean): Promise<void> {}
@@ -77,11 +80,37 @@ export class Vault {
 
 export class DataAdapter {
   async exists(_p: string): Promise<boolean> { return false; }
+  async list(_p: string): Promise<{ files: string[]; folders: string[] }> { return { files: [], folders: [] }; }
   async read(_p: string): Promise<string> { return ""; }
   async write(_p: string, _d: string): Promise<void> {}
   async writeBinary(_p: string, _d: ArrayBuffer): Promise<void> {}
   async remove(_p: string): Promise<void> {}
   async rename(_from: string, _to: string): Promise<void> {}
+}
+
+export class SecretComponent {
+  value = "";
+  constructor(_app: App, _containerEl: HTMLElement) {}
+  setValue(value: string): this {
+    this.value = value;
+    return this;
+  }
+  onChange(_cb: (value: string) => unknown): this {
+    return this;
+  }
+}
+
+export class SecretStorage {
+  private secrets = new Map<string, string>();
+  setSecret(id: string, secret: string): void {
+    this.secrets.set(id, secret);
+  }
+  getSecret(id: string): string | null {
+    return this.secrets.get(id) ?? null;
+  }
+  listSecrets(): string[] {
+    return Array.from(this.secrets.keys());
+  }
 }
 
 export interface RequestUrlResponse {
