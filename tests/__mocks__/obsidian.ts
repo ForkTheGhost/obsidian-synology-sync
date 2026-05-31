@@ -41,8 +41,15 @@ export class Setting {
   addTextArea(_cb: (t: any) => any) { return this; }
 }
 
+export const noticeMessages: Array<{ message: any; timeout?: number }> = [];
+export function clearNoticeMessages(): void {
+  noticeMessages.length = 0;
+}
+
 export class Notice {
-  constructor(_msg: any, _timeout?: number) {}
+  constructor(msg: any, timeout?: number) {
+    noticeMessages.push({ message: msg, timeout });
+  }
   hide(): void {}
   noticeEl: any = { style: {}, addEventListener: () => {} };
 }

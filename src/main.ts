@@ -5,7 +5,7 @@ import { SyncEngine, SyncResult } from "./sync";
 import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
 import { CachedQuickConnectCandidate, SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, LATEST_SYNC_LOG_NOTE_PATH, SYNC_LOG_HISTORY_FOLDER, SYNC_LOG_HISTORY_RETENTION, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
 import { beginDebugSync, debugLog, endDebugSync, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics, redactSensitiveLogText } from "./debug";
-import { clearFileStationGitLease } from "./git-filestation-lease";
+import { FileStationGitLeaseHeldError, clearFileStationGitLease } from "./git-filestation-lease";
 
 interface SecretStorageLike {
   getSecret(id: string): string | null;
@@ -565,7 +565,7 @@ export default class SynologySync extends Plugin {
     } catch (e) {
       debugLog(`SYNC FINISHED: FAILED — ${(e as Error).message}`);
       debugLog(`SYNC FAILED: ${formatErrorForDebug(e)}`);
-      new Notice(`Sync failed: ${(e as Error).message}`);
+      this.showFailureNotice("Synology Sync failed.", e);
       console.error("Synology Sync error:", e);
     } finally {
       if (fs) {
@@ -622,7 +622,7 @@ export default class SynologySync extends Plugin {
       debugLog(`GIT-OVER-FILE-STATION SYNC FINISHED: FAILED — ${(e as Error).message}`);
       debugLog(`SYNC FINISHED: FAILED — ${(e as Error).message}`);
       debugLog(`GIT-OVER-FILE-STATION SYNC FAILED: ${formatErrorForDebug(e)}`);
-      new Notice(`Git-over-File-Station sync failed: ${(e as Error).message}`);
+      this.showFailureNotice(gitFileStationFailureNoticeTitle(e), e);
       console.error("Git-over-File-Station Synology Sync error:", e);
     } finally {
       if (progressLogInterval !== null) globalThis.clearInterval(progressLogInterval);
@@ -753,6 +753,41 @@ export default class SynologySync extends Plugin {
       new SyncLogModal(this.app, result, getDebugLog()).open();
     });
   }
+
+  private showFailureNotice(title: string, error: unknown) {
+    const result: SyncResult = {
+      uploaded: [],
+      downloaded: [],
+      deleted: [],
+      conflicts: [],
+      errors: [{ path: "<sync>", error: error instanceof Error ? error.message : String(error) }],
+    };
+    const content = typeof document !== "undefined" ? failureNoticeFragment(title) : `${title} Click for details.`;
+    const notice = new Notice(content, 15000);
+    notice.noticeEl.style.cursor = "pointer";
+    notice.noticeEl.addEventListener("click", () => {
+      notice.hide();
+      new SyncLogModal(this.app, result, getDebugLog()).open();
+    });
+  }
+}
+
+export function gitFileStationFailureNoticeTitle(error: unknown): string {
+  if (error instanceof FileStationGitLeaseHeldError) {
+    return "Sync blocked: another device holds the Git lock.";
+  }
+  return "Git-over-File-Station sync failed.";
+}
+
+function failureNoticeFragment(title: string): DocumentFragment {
+  const frag = document.createDocumentFragment();
+  frag.createEl("span", { text: title });
+  frag.createEl("br");
+  frag.createEl("span", {
+    text: "Click for details",
+    attr: { style: "font-size: 0.85em; opacity: 0.7;" },
+  });
+  return frag;
 }
 
 async function withTimeout<T>(fn: () => Promise<T>, ms: number, label: string): Promise<T> {
