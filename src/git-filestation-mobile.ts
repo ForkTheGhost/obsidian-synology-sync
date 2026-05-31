@@ -56,6 +56,8 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const MOBILE_GIT_OBJECT_CACHE_ROOT = ".obsidian/plugins/synology-sync/git-cache/v1";
 const MOBILE_GIT_CACHE_MARKER_PATH = `${MOBILE_GIT_OBJECT_CACHE_ROOT}/cache-marker.json`;
+const MOBILE_GIT_STATE_ROOT = `${MOBILE_GIT_OBJECT_CACHE_ROOT}/state`;
+const MOBILE_GIT_STATE_MANIFEST_PATH = `${MOBILE_GIT_STATE_ROOT}/manifest.json`;
 const MOBILE_GIT_CACHE_SCHEMA_VERSION = 1;
 const NATIVE_GIT_GUARD_HOOK_REL = "hooks/pre-receive";
 const NATIVE_GIT_GUARD_HOOK_SNIPPETS = [
@@ -72,11 +74,21 @@ type MobileGitCacheMarker = {
   branch: string;
   remoteIdentity: string;
   lastVerifiedRemoteRef?: string;
-  completeness: "partial" | "needs-rebuild";
+  completeness: "complete" | "partial" | "needs-rebuild";
   runtimeId: string;
   updatedAt: string;
   pluginVersion?: string;
   reason?: string;
+};
+
+type MobileGitStateManifest = {
+  schemaVersion: number;
+  mode: "git-filestation-state";
+  branch: string;
+  remoteIdentity: string;
+  lastVerifiedRemoteRef?: string;
+  updatedAt: string;
+  files: Array<{ rel: string; size: number; fingerprint: string }>;
 };
 
 /**
@@ -120,6 +132,7 @@ export class MobileGitFileStationSyncEngine {
     debugLog("[git-filestation-mobile] starting pure JS Git sync over File Station");
 
     await this.runPhase("load vault", () => this.loadVaultIntoMemory());
+    await this.runPhase("restore persistent Git state", () => this.restorePersistentGitState());
     await this.runPhase("ensure local repo", () => this.ensureLocalRepo());
     await this.runPhase("configure local repo", () => this.configureLocalRepo());
 
@@ -342,7 +355,7 @@ export class MobileGitFileStationSyncEngine {
       } finally {
         this.syncLeaseHeld = false;
         this.syncLeaseExpectedOldRef = undefined;
-        if (completed && result.errors.length === 0) await this.writeMobileGitCacheMarker(this.remoteBranchOidAtDownload, "partial", "sync completed");
+        if (completed && result.errors.length === 0) await this.persistMobileGitState(this.remoteBranchOidAtDownload, "sync completed");
       }
     });
   }
@@ -648,6 +661,43 @@ export class MobileGitFileStationSyncEngine {
     if (marker.remoteIdentity !== this.remoteCacheIdentity()) return false;
     if (marker.completeness === "needs-rebuild") return false;
     return true;
+  }
+
+  private async restorePersistentGitState(): Promise<void> {
+    const adapter = this.mobileGitCacheAdapter();
+    if (typeof adapter.readBinary !== "function") return;
+    const marker = await this.readMobileGitCacheMarker();
+    if (!marker || !(await this.mobileGitCacheCanReuse()) || marker.completeness !== "complete") {
+      debugLog(`[git-filestation-mobile] persistent Git state restore skipped marker=${marker ? marker.completeness : "missing"}`);
+      return;
+    }
+
+    try {
+      if (typeof adapter.exists === "function" && !(await adapter.exists(MOBILE_GIT_STATE_MANIFEST_PATH, true))) {
+        throw new Error("state manifest missing");
+      }
+      const manifestBytes = new Uint8Array(await adapter.readBinary(MOBILE_GIT_STATE_MANIFEST_PATH));
+      const manifest = JSON.parse(textDecoder.decode(manifestBytes)) as MobileGitStateManifest;
+      if (manifest.schemaVersion !== MOBILE_GIT_CACHE_SCHEMA_VERSION) throw new Error(`state schema ${manifest.schemaVersion} unsupported`);
+      if (manifest.mode !== "git-filestation-state") throw new Error(`state mode ${String((manifest as { mode?: unknown }).mode)} unsupported`);
+      if (manifest.branch !== this.opts.branch) throw new Error(`state branch ${manifest.branch} does not match ${this.opts.branch}`);
+      if (manifest.remoteIdentity !== this.remoteCacheIdentity()) throw new Error("state remote identity mismatch");
+
+      let restored = 0;
+      for (const file of manifest.files) {
+        if (!shouldPersistMobileGitStateFile(file.rel)) throw new Error(`state manifest contains unsupported git file ${file.rel}`);
+        const cachePath = mobileGitStateFilePath(file.rel);
+        if (typeof adapter.exists === "function" && !(await adapter.exists(cachePath, true))) throw new Error(`state file missing ${file.rel}`);
+        const bytes = new Uint8Array(await adapter.readBinary(cachePath));
+        if (bytes.byteLength !== file.size || dataFingerprint(bytes) !== file.fingerprint) throw new Error(`state file fingerprint mismatch ${file.rel}`);
+        await this.writeMemFile(`${GITDIR}/${file.rel}`, bytes);
+        restored++;
+      }
+      debugLog(`[git-filestation-mobile] restored persistent plugin Git state files=${restored} ref=${manifest.lastVerifiedRemoteRef || "<none>"}`);
+    } catch (e) {
+      debugLog(`[git-filestation-mobile] persistent Git state invalid; rebuilding: ${(e as Error).message}`);
+      await this.writeMobileGitCacheMarker(marker.lastVerifiedRemoteRef, "needs-rebuild", `persistent state invalid: ${(e as Error).message}`);
+    }
   }
 
   private async canRecoverEstablishedCheckout(hadLocalCommitsBeforeRemoteImport: boolean, hadUserFilesAtStart: boolean, remoteRef: string | undefined): Promise<boolean> {
@@ -1394,6 +1444,42 @@ export class MobileGitFileStationSyncEngine {
     }
   }
 
+  private async persistMobileGitState(lastVerifiedRemoteRef: string | undefined, reason: string): Promise<void> {
+    const adapter = this.mobileGitCacheAdapter();
+    if (typeof adapter.writeBinary !== "function") return;
+    try {
+      const files = (await this.listMemFiles(GITDIR))
+        .map((abs) => ({ abs, rel: abs.slice(GITDIR.length + 1) }))
+        .filter((file) => shouldPersistMobileGitStateFile(file.rel))
+        .sort((a, b) => a.rel.localeCompare(b.rel));
+      const manifest: MobileGitStateManifest = {
+        schemaVersion: MOBILE_GIT_CACHE_SCHEMA_VERSION,
+        mode: "git-filestation-state",
+        branch: this.opts.branch,
+        remoteIdentity: this.remoteCacheIdentity(),
+        lastVerifiedRemoteRef,
+        updatedAt: new Date().toISOString(),
+        files: [],
+      };
+
+      for (const file of files) {
+        const bytes = await this.readMemBytes(file.abs);
+        const cachePath = mobileGitStateFilePath(file.rel);
+        await this.ensureAdapterFolder(dirnameVaultPath(cachePath));
+        await adapter.writeBinary(cachePath, bytesToArrayBuffer(bytes));
+        manifest.files.push({ rel: file.rel, size: bytes.byteLength, fingerprint: dataFingerprint(bytes) });
+      }
+
+      await this.ensureAdapterFolder(dirnameVaultPath(MOBILE_GIT_STATE_MANIFEST_PATH));
+      await adapter.writeBinary(MOBILE_GIT_STATE_MANIFEST_PATH, bytesToArrayBuffer(textEncoder.encode(JSON.stringify(manifest, null, 2))));
+      await this.writeMobileGitCacheMarker(lastVerifiedRemoteRef, "complete", reason);
+      debugLog(`[git-filestation-mobile] persistent plugin Git state stored files=${manifest.files.length} ref=${lastVerifiedRemoteRef || "<none>"} reason=${reason}`);
+    } catch (e) {
+      debugLog(`[git-filestation-mobile] persistent plugin Git state store skipped: ${(e as Error).message}`);
+      await this.writeMobileGitCacheMarker(lastVerifiedRemoteRef, "partial", `persistent state store skipped: ${(e as Error).message}`);
+    }
+  }
+
   private async reachableObjectOids(rootOid: string): Promise<Set<string>> {
     const seen = new Set<string>();
     const visit = async (oid: string): Promise<void> => {
@@ -1967,6 +2053,17 @@ function relativeRemotePath(base: string, path: string): string {
 
 function remoteGitObjectCachePath(rel: string): string {
   return `${MOBILE_GIT_OBJECT_CACHE_ROOT}/${rel}`;
+}
+
+function mobileGitStateFilePath(rel: string): string {
+  return `${MOBILE_GIT_STATE_ROOT}/files/${rel}`;
+}
+
+function shouldPersistMobileGitStateFile(rel: string): boolean {
+  if (!rel || rel.endsWith(".lock") || rel.includes("/.lock/")) return false;
+  if (rel.startsWith("hooks/") || rel.startsWith("logs/")) return false;
+  if (rel.startsWith(".synology-sync/")) return false;
+  return true;
 }
 
 function parseGitOid(text: string | undefined): string | undefined {
