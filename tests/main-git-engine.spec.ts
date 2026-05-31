@@ -42,4 +42,23 @@ describe("Git-over-File-Station engine selection", () => {
       expect.objectContaining({ remotePath: "/homes/user/Vault.git", branch: "main" }),
     );
   });
+
+  it("clears the configured Git-over-File-Station lease and logs out", async () => {
+    const plugin = new SynologySync() as SynologySync & { getFileStation: jest.Mock };
+    const fs = {
+      delete: jest.fn().mockResolvedValue(undefined),
+      logout: jest.fn().mockResolvedValue(undefined),
+    };
+    plugin.settings = {
+      ...plugin.settings,
+      gitFileStationRepoPath: "/homes/user/Vault.git",
+      gitBranch: "feature/test branch",
+    };
+    plugin.getFileStation = jest.fn().mockResolvedValue(fs);
+
+    await expect(plugin.clearGitSyncLock()).resolves.toBe("/homes/user/Vault.git/.synology-sync/leases/feature-test-branch.lock");
+
+    expect(fs.delete).toHaveBeenCalledWith("/homes/user/Vault.git/.synology-sync/leases/feature-test-branch.lock");
+    expect(fs.logout).toHaveBeenCalledTimes(1);
+  });
 });

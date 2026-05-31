@@ -508,6 +508,15 @@ export class SynologySyncSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
             })
         );
+
+      new Setting(containerEl)
+        .setName("Git sync lock")
+        .setDesc("Clear only after confirming no Synology Sync is running on any device.")
+        .addButton((btn) =>
+          btn.setButtonText("Clear lock").onClick(() => {
+            new ClearGitSyncLockModal(this.app, this.plugin).open();
+          })
+        );
     }
 
     // Sync behavior
@@ -677,6 +686,51 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           new Notice("Debug log cleared");
         })
       );
+  }
+}
+
+class ClearGitSyncLockModal extends Modal {
+  private plugin: SynologySync;
+
+  constructor(app: App, plugin: SynologySync) {
+    super(app);
+    this.plugin = plugin;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Clear Git sync lock" });
+    contentEl.createEl("p", {
+      text: "Use this only after confirming no Obsidian/Synology Sync is running on any device. Clearing an active lock can cause conflicts or data loss.",
+      cls: "setting-item-description",
+    });
+    contentEl.createEl("p", {
+      text: `Branch: ${this.plugin.settings.gitBranch || "main"}`,
+      cls: "setting-item-description",
+    });
+
+    new Setting(contentEl)
+      .addButton((btn) =>
+        btn.setButtonText("Cancel").onClick(() => {
+          this.close();
+        })
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Clear lock").setWarning().onClick(async () => {
+          try {
+            const path = await this.plugin.clearGitSyncLock();
+            new Notice(`Cleared Git sync lock: ${path}`);
+            this.close();
+          } catch (e) {
+            new Notice(`Could not clear Git sync lock: ${(e as Error).message}`);
+          }
+        })
+      );
+  }
+
+  onClose() {
+    this.contentEl.empty();
   }
 }
 

@@ -1,5 +1,5 @@
 import { FileStationPathExistsError } from "../src/filestation";
-import { FileStationGitLeaseHeldError, withFileStationGitLease } from "../src/git-filestation-lease";
+import { FileStationGitLeaseHeldError, clearFileStationGitLease, gitLeaseDirectoryPath, withFileStationGitLease } from "../src/git-filestation-lease";
 
 describe("FileStationGitLease", () => {
   it("creates lease root, acquires strict lock, writes metadata, and releases", async () => {
@@ -182,6 +182,17 @@ describe("FileStationGitLease", () => {
       remotePath: "/repo.git", branch: "main", owner: "same-device", now: () => 2000,
     }, async () => undefined)).rejects.toThrow(/held for main by this device since 2026-05-30T17:51:11.084Z until 2026-05-30T18:21:11.084Z/);
     expect(fs.delete).not.toHaveBeenCalled();
+  });
+
+  it("exports the shared lease directory helper used by guarded clear-lock actions", async () => {
+    expect(gitLeaseDirectoryPath("/repo.git/", "feature/test branch")).toBe("/repo.git/.synology-sync/leases/feature-test-branch.lock");
+
+    const fs = {
+      delete: jest.fn(async () => undefined),
+    };
+
+    await expect(clearFileStationGitLease(fs as never, "/repo.git/", "feature/test branch")).resolves.toBe("/repo.git/.synology-sync/leases/feature-test-branch.lock");
+    expect(fs.delete).toHaveBeenCalledWith("/repo.git/.synology-sync/leases/feature-test-branch.lock");
   });
 
 });

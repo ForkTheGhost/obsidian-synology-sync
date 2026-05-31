@@ -3,7 +3,16 @@ import SynologySync from "../src/main";
 import { DEFAULT_SETTINGS, SynologySyncSettings } from "../src/settings";
 
 jest.mock("../src/filestation", () => {
+  class FileStationApiError extends Error {
+    code?: number;
+    constructor(message: string, code?: number) {
+      super(message);
+      this.code = code;
+    }
+  }
   return {
+    FileStationApiError,
+    FileStationPathExistsError: FileStationApiError,
     FileStation: jest.fn().mockImplementation(() => ({
       login: jest.fn().mockResolvedValue({
         sid: "sid",

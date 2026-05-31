@@ -5,6 +5,7 @@ import { SyncEngine, SyncResult } from "./sync";
 import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
 import { CachedQuickConnectCandidate, SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, LATEST_SYNC_LOG_NOTE_PATH, SYNC_LOG_HISTORY_FOLDER, SYNC_LOG_HISTORY_RETENTION, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
 import { beginDebugSync, debugLog, endDebugSync, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics, redactSensitiveLogText } from "./debug";
+import { clearFileStationGitLease } from "./git-filestation-lease";
 
 interface SecretStorageLike {
   getSecret(id: string): string | null;
@@ -480,6 +481,19 @@ export default class SynologySync extends Plugin {
     await this.setDsmDeviceTrust(result.deviceId || deviceId, result.deviceToken || this.getDsmDeviceToken());
 
     return result;
+  }
+
+  async clearGitSyncLock(): Promise<string> {
+    if (!this.settings.gitFileStationRepoPath) {
+      throw new Error("Configure Git bare repository path on NAS first");
+    }
+
+    const fs = await this.getFileStation();
+    try {
+      return await clearFileStationGitLease(fs, this.settings.gitFileStationRepoPath, this.settings.gitBranch);
+    } finally {
+      await fs.logout();
+    }
   }
 
   async runSync(overrideStrategy?: SynologySyncSettings["conflictStrategy"]): Promise<void> {
