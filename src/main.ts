@@ -3,8 +3,23 @@ import { FileStation, FileStationConfig, LoginResult } from "./filestation";
 import { compareQuickConnectCandidates, resolveQuickConnect, resolveQuickConnectCandidates, probeQuickConnectCandidates, QCCandidate } from "./quickconnect";
 import { SyncEngine, SyncResult } from "./sync";
 import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
-import { CachedQuickConnectCandidate, SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, LATEST_SYNC_LOG_NOTE_PATH, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
+import { CachedQuickConnectCandidate, SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, LATEST_SYNC_LOG_NOTE_PATH, SYNC_LOG_HISTORY_FOLDER, SYNC_LOG_HISTORY_RETENTION, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
 import { beginDebugSync, debugLog, endDebugSync, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics, redactSensitiveLogText } from "./debug";
+import { FileStationGitLeaseHeldError, clearFileStationGitLease } from "./git-filestation-lease";
+
+interface SecretStorageLike {
+  getSecret(id: string): string | null;
+  setSecret(id: string, secret: string): void;
+}
+
+const DSM_PASSWORD_SECRET_ID = "synology-sync-dsm-password";
+const DSM_DEVICE_ID_SECRET_ID = "synology-sync-dsm-device-id";
+const DSM_DEVICE_TOKEN_SECRET_ID = "synology-sync-dsm-device-token";
+
+function syncLogHistoryPath(now = new Date()): string {
+  const stamp = now.toISOString().replace(/[:.]/g, "-");
+  return `${SYNC_LOG_HISTORY_FOLDER}/sync-${stamp}.md`;
+}
 
 // UUID generator with fallbacks for older runtimes.
 // crypto.randomUUID requires iOS 15.4+ / Chromium 92+; we fall back through
@@ -171,6 +186,7 @@ export default class SynologySync extends Plugin {
     if (migrateLoadedSettings(this.settings)) {
       await this.saveSettings();
     }
+    await this.migrateLegacySecretsToStorage();
     if (!this.settings.syncIdentityId) {
       this.settings.syncIdentityId = generateSyncIdentityId();
       await this.saveSettings();
@@ -179,6 +195,120 @@ export default class SynologySync extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+
+  private getSecretStorage(): SecretStorageLike | null {
+    const app = this.app as App & { secretStorage?: unknown };
+    const storage = app?.secretStorage;
+    if (
+      storage &&
+      typeof (storage as SecretStorageLike).getSecret === "function" &&
+      typeof (storage as SecretStorageLike).setSecret === "function"
+    ) {
+      return storage as SecretStorageLike;
+    }
+    return null;
+  }
+
+  hasSecretStorageSupport(): boolean {
+    return this.getSecretStorage() !== null;
+  }
+
+  private getStoredSecret(secretId: string, fallback: string): string {
+    const storage = this.getSecretStorage();
+    if (!storage) return fallback;
+    const secret = storage.getSecret(secretId);
+    return secret !== null ? secret : fallback;
+  }
+
+  getDsmPassword(): string {
+    return this.getStoredSecret(DSM_PASSWORD_SECRET_ID, this.settings.password);
+  }
+
+  getDsmDeviceId(): string {
+    return this.getStoredSecret(DSM_DEVICE_ID_SECRET_ID, this.settings.deviceId);
+  }
+
+  getDsmDeviceToken(): string {
+    return this.getStoredSecret(DSM_DEVICE_TOKEN_SECRET_ID, this.settings.deviceToken);
+  }
+
+  hasDsmDeviceTrust(): boolean {
+    return !!this.getDsmDeviceToken();
+  }
+
+  async setDsmPassword(password: string): Promise<void> {
+    const storage = this.getSecretStorage();
+    if (!storage) {
+      this.settings.password = password;
+      await this.saveSettings();
+      return;
+    }
+
+    storage.setSecret(DSM_PASSWORD_SECRET_ID, password);
+    if (this.settings.password) {
+      this.settings.password = "";
+      await this.saveSettings();
+    }
+  }
+
+  private async setDsmDeviceTrust(deviceId: string, deviceToken: string): Promise<void> {
+    const storage = this.getSecretStorage();
+    if (!storage) {
+      this.settings.deviceId = deviceId;
+      this.settings.deviceToken = deviceToken;
+      await this.saveSettings();
+      return;
+    }
+
+    storage.setSecret(DSM_DEVICE_ID_SECRET_ID, deviceId);
+    storage.setSecret(DSM_DEVICE_TOKEN_SECRET_ID, deviceToken);
+    if (this.settings.deviceId || this.settings.deviceToken) {
+      this.settings.deviceId = "";
+      this.settings.deviceToken = "";
+      await this.saveSettings();
+    }
+  }
+
+  async clearDsmDeviceTrust(): Promise<void> {
+    const storage = this.getSecretStorage();
+    if (!storage) {
+      this.settings.deviceId = "";
+      this.settings.deviceToken = "";
+      await this.saveSettings();
+      return;
+    }
+
+    storage.setSecret(DSM_DEVICE_ID_SECRET_ID, "");
+    storage.setSecret(DSM_DEVICE_TOKEN_SECRET_ID, "");
+    if (this.settings.deviceId || this.settings.deviceToken) {
+      this.settings.deviceId = "";
+      this.settings.deviceToken = "";
+      await this.saveSettings();
+    }
+  }
+
+  private async migrateLegacySecretsToStorage(): Promise<void> {
+    const storage = this.getSecretStorage();
+    if (!storage) return;
+
+    let changed = false;
+    if (this.settings.password) {
+      storage.setSecret(DSM_PASSWORD_SECRET_ID, this.settings.password);
+      this.settings.password = "";
+      changed = true;
+    }
+    if (this.settings.deviceId) {
+      storage.setSecret(DSM_DEVICE_ID_SECRET_ID, this.settings.deviceId);
+      this.settings.deviceId = "";
+      changed = true;
+    }
+    if (this.settings.deviceToken) {
+      storage.setSecret(DSM_DEVICE_TOKEN_SECRET_ID, this.settings.deviceToken);
+      this.settings.deviceToken = "";
+      changed = true;
+    }
+    if (changed) await this.saveSettings();
   }
 
   setupAutoSync() {
@@ -201,9 +331,9 @@ export default class SynologySync extends Plugin {
     return {
       baseUrl,
       username: this.settings.username,
-      password: this.settings.password,
-      deviceId: this.settings.deviceId || undefined,
-      deviceToken: this.settings.deviceToken || undefined,
+      password: this.getDsmPassword(),
+      deviceId: this.getDsmDeviceId() || undefined,
+      deviceToken: this.getDsmDeviceToken() || undefined,
       otpCode,
       quickConnectRelay: candidate.kind === "portal",
     };
@@ -227,9 +357,9 @@ export default class SynologySync extends Plugin {
     return {
       baseUrl,
       username: this.settings.username,
-      password: this.settings.password,
-      deviceId: this.settings.deviceId || undefined,
-      deviceToken: this.settings.deviceToken || undefined,
+      password: this.getDsmPassword(),
+      deviceId: this.getDsmDeviceId() || undefined,
+      deviceToken: this.getDsmDeviceToken() || undefined,
       otpCode,
       quickConnectRelay,
     };
@@ -311,10 +441,8 @@ export default class SynologySync extends Plugin {
           const result = await fs.login();
           debugLog(`QC: authenticated candidate [${i}] ${config.baseUrl} (${candidate.kind}${candidate.source ? ` source=${candidate.source}` : ""}) endpoint=${fs.endpointKind()}`);
           await this.recordQuickConnectCandidateResult(this.settings.quickConnectId, candidate, true);
-          if (result.deviceToken && result.deviceToken !== this.settings.deviceToken) {
-            this.settings.deviceId = result.deviceId;
-            this.settings.deviceToken = result.deviceToken;
-            await this.saveSettings();
+          if (result.deviceToken && result.deviceToken !== this.getDsmDeviceToken()) {
+            await this.setDsmDeviceTrust(result.deviceId, result.deviceToken);
           }
           return fs;
         } catch (e) {
@@ -332,10 +460,8 @@ export default class SynologySync extends Plugin {
     const result = await fs.login();
 
     // If we got a new device token, save it
-    if (result.deviceToken && result.deviceToken !== this.settings.deviceToken) {
-      this.settings.deviceId = result.deviceId;
-      this.settings.deviceToken = result.deviceToken;
-      await this.saveSettings();
+    if (result.deviceToken && result.deviceToken !== this.getDsmDeviceToken()) {
+      await this.setDsmDeviceTrust(result.deviceId, result.deviceToken);
     }
 
     return fs;
@@ -343,24 +469,31 @@ export default class SynologySync extends Plugin {
 
   async trustDevice(otpCode: string): Promise<LoginResult> {
     // Generate a stable device ID if we don't have one
-    if (!this.settings.deviceId) {
-      this.settings.deviceId = generateSyncIdentityId();
-    }
+    const deviceId = this.getDsmDeviceId() || generateSyncIdentityId();
 
     const config = await this.buildConfig(otpCode);
-    config.deviceId = this.settings.deviceId;
+    config.deviceId = deviceId;
 
     const fs = new FileStation(config);
     const result = await fs.login();
     await fs.logout();
 
-    if (result.deviceToken) {
-      this.settings.deviceToken = result.deviceToken;
-    }
-    this.settings.deviceId = result.deviceId || this.settings.deviceId;
-    await this.saveSettings();
+    await this.setDsmDeviceTrust(result.deviceId || deviceId, result.deviceToken || this.getDsmDeviceToken());
 
     return result;
+  }
+
+  async clearGitSyncLock(): Promise<string> {
+    if (!this.settings.gitFileStationRepoPath) {
+      throw new Error("Configure Git bare repository path on NAS first");
+    }
+
+    const fs = await this.getFileStation();
+    try {
+      return await clearFileStationGitLease(fs, this.settings.gitFileStationRepoPath, this.settings.gitBranch);
+    } finally {
+      await fs.logout();
+    }
   }
 
   async runSync(overrideStrategy?: SynologySyncSettings["conflictStrategy"]): Promise<void> {
@@ -432,7 +565,7 @@ export default class SynologySync extends Plugin {
     } catch (e) {
       debugLog(`SYNC FINISHED: FAILED — ${(e as Error).message}`);
       debugLog(`SYNC FAILED: ${formatErrorForDebug(e)}`);
-      new Notice(`Sync failed: ${(e as Error).message}`);
+      this.showFailureNotice("Synology Sync failed.", e);
       console.error("Synology Sync error:", e);
     } finally {
       if (fs) {
@@ -489,7 +622,7 @@ export default class SynologySync extends Plugin {
       debugLog(`GIT-OVER-FILE-STATION SYNC FINISHED: FAILED — ${(e as Error).message}`);
       debugLog(`SYNC FINISHED: FAILED — ${(e as Error).message}`);
       debugLog(`GIT-OVER-FILE-STATION SYNC FAILED: ${formatErrorForDebug(e)}`);
-      new Notice(`Git-over-File-Station sync failed: ${(e as Error).message}`);
+      this.showFailureNotice(gitFileStationFailureNoticeTitle(e), e);
       console.error("Git-over-File-Station Synology Sync error:", e);
     } finally {
       if (progressLogInterval !== null) globalThis.clearInterval(progressLogInterval);
@@ -506,7 +639,6 @@ export default class SynologySync extends Plugin {
     if (!this.settings.persistSyncLogToVaultNote) return;
 
     try {
-      debugLog(`Persistent log ${status}: ${LATEST_SYNC_LOG_NOTE_PATH}`);
       const log = redactSensitiveLogText(getDebugLog());
       const body = [
         "# Synology Sync Latest Run",
@@ -523,15 +655,43 @@ export default class SynologySync extends Plugin {
       ].join("\n");
 
       await withTimeout(async () => {
-        await this.ensureAdapterFolder(LATEST_SYNC_LOG_NOTE_PATH);
-        const existing = typeof this.app.vault.getAbstractFileByPath === "function"
-          ? this.app.vault.getAbstractFileByPath(LATEST_SYNC_LOG_NOTE_PATH)
-          : null;
-        if (existing instanceof TFile) await this.app.vault.modify(existing, body);
-        else await this.app.vault.adapter.write(LATEST_SYNC_LOG_NOTE_PATH, body);
+        await this.writeSyncLogNote(LATEST_SYNC_LOG_NOTE_PATH, body);
+        if (status === "finished") {
+          await this.writeSyncLogNote(syncLogHistoryPath(), body, false);
+          await this.pruneSyncLogHistory();
+        }
       }, 2000, "persist latest sync log");
     } catch (e) {
       console.warn("Synology Sync could not persist latest sync log:", e);
+    }
+  }
+
+  private async writeSyncLogNote(path: string, body: string, updateExisting = true): Promise<void> {
+    await this.ensureAdapterFolder(path);
+    const existing = updateExisting && typeof this.app.vault.getAbstractFileByPath === "function"
+      ? this.app.vault.getAbstractFileByPath(path)
+      : null;
+    if (existing instanceof TFile) await this.app.vault.modify(existing, body);
+    else await this.app.vault.adapter.write(path, body);
+  }
+
+  private async pruneSyncLogHistory(): Promise<void> {
+    const adapter = this.app.vault.adapter as typeof this.app.vault.adapter & {
+      list?: (path: string) => Promise<{ files: string[]; folders: string[] }>;
+      remove?: (path: string) => Promise<void>;
+    };
+    if (typeof adapter.list !== "function" || typeof adapter.remove !== "function") return;
+
+    const listed = await adapter.list(SYNC_LOG_HISTORY_FOLDER);
+    const historyFiles = listed.files
+      .map((path) => path.includes("/") ? path : `${SYNC_LOG_HISTORY_FOLDER}/${path}`)
+      .filter((path) => path.startsWith(`${SYNC_LOG_HISTORY_FOLDER}/sync-`) && path.endsWith(".md"))
+      .sort();
+    const staleCount = historyFiles.length - SYNC_LOG_HISTORY_RETENTION;
+    if (staleCount <= 0) return;
+
+    for (const stalePath of historyFiles.slice(0, staleCount)) {
+      await adapter.remove(stalePath);
     }
   }
 
@@ -593,6 +753,41 @@ export default class SynologySync extends Plugin {
       new SyncLogModal(this.app, result, getDebugLog()).open();
     });
   }
+
+  private showFailureNotice(title: string, error: unknown) {
+    const result: SyncResult = {
+      uploaded: [],
+      downloaded: [],
+      deleted: [],
+      conflicts: [],
+      errors: [{ path: "<sync>", error: error instanceof Error ? error.message : String(error) }],
+    };
+    const content = typeof document !== "undefined" ? failureNoticeFragment(title) : `${title} Click for details.`;
+    const notice = new Notice(content, 15000);
+    notice.noticeEl.style.cursor = "pointer";
+    notice.noticeEl.addEventListener("click", () => {
+      notice.hide();
+      new SyncLogModal(this.app, result, getDebugLog()).open();
+    });
+  }
+}
+
+export function gitFileStationFailureNoticeTitle(error: unknown): string {
+  if (error instanceof FileStationGitLeaseHeldError) {
+    return "Sync blocked: another device holds the Git lock.";
+  }
+  return "Git-over-File-Station sync failed.";
+}
+
+function failureNoticeFragment(title: string): DocumentFragment {
+  const frag = document.createDocumentFragment();
+  frag.createEl("span", { text: title });
+  frag.createEl("br");
+  frag.createEl("span", {
+    text: "Click for details",
+    attr: { style: "font-size: 0.85em; opacity: 0.7;" },
+  });
+  return frag;
 }
 
 async function withTimeout<T>(fn: () => Promise<T>, ms: number, label: string): Promise<T> {

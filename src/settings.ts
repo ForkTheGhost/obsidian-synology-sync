@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, Notice, Modal } from "obsidian";
+import { App, PluginSettingTab, Setting, Notice, Modal, SecretComponent } from "obsidian";
 import type SynologySync from "./main";
 import { resolveQuickConnect } from "./quickconnect";
 import { getDebugLog, getDebugLogSnippet, clearDebugLog, subscribeDebugLog } from "./debug";
@@ -75,6 +75,8 @@ export interface SynologySyncSettings {
 }
 
 export const LATEST_SYNC_LOG_NOTE_PATH = "Synology Sync Logs/latest-run.md";
+export const SYNC_LOG_HISTORY_FOLDER = "Synology Sync Logs/history";
+export const SYNC_LOG_HISTORY_RETENTION = 20;
 export const DEFAULT_FILENAME_SANITIZE_RESTRICTED_CHARS = ":<>\"/\\|?*";
 export const DEFAULT_FILENAME_SANITIZE_REPLACEMENT_CHAR = "-";
 
@@ -273,29 +275,39 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
+    const passwordSetting = new Setting(containerEl)
       .setName("Password")
-      .addText((text) => {
+      .setDesc(this.plugin.hasSecretStorageSupport()
+        ? "Stored in Obsidian secure storage."
+        : "Stored in plugin settings on this Obsidian version. Upgrade to Obsidian 1.11.4+ for secure storage.");
+    if (this.plugin.hasSecretStorageSupport() && typeof SecretComponent === "function") {
+      new SecretComponent(this.app, passwordSetting.controlEl)
+        .setValue(this.plugin.getDsmPassword())
+        .onChange(async (value) => {
+          await this.plugin.setDsmPassword(value);
+        });
+    } else {
+      passwordSetting.addText((text) => {
         text.inputEl.type = "password";
         text
           .setPlaceholder("password")
-          .setValue(this.plugin.settings.password)
+          .setValue(this.plugin.getDsmPassword())
           .onChange(async (value) => {
-            this.plugin.settings.password = value;
-            await this.plugin.saveSettings();
+            await this.plugin.setDsmPassword(value);
           });
       });
+    }
 
     // 2FA device trust
-    if (this.plugin.settings.deviceToken) {
+    if (this.plugin.hasDsmDeviceTrust()) {
       new Setting(containerEl)
         .setName("2FA device trust")
-        .setDesc("This device is trusted - 2FA will be skipped on login")
+        .setDesc(this.plugin.hasSecretStorageSupport()
+          ? "This device is trusted. The DSM device token is stored in Obsidian secure storage."
+          : "This device is trusted. The DSM device token is stored in plugin settings on this Obsidian version.")
         .addButton((btn) =>
           btn.setButtonText("Forget device").onClick(async () => {
-            this.plugin.settings.deviceId = "";
-            this.plugin.settings.deviceToken = "";
-            await this.plugin.saveSettings();
+            await this.plugin.clearDsmDeviceTrust();
             new Notice("Device trust cleared. You will need to enter a 2FA code on next sync.");
             this.display();
           })
@@ -496,6 +508,15 @@ export class SynologySyncSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
             })
         );
+
+      new Setting(containerEl)
+        .setName("Git sync lock")
+        .setDesc("Clear only after confirming no Synology Sync is running on any device.")
+        .addButton((btn) =>
+          btn.setButtonText("Clear lock").onClick(() => {
+            new ClearGitSyncLockModal(this.app, this.plugin).open();
+          })
+        );
     }
 
     // Sync behavior
@@ -633,7 +654,7 @@ export class SynologySyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Persist latest run log")
-      .setDesc(`Write the redacted latest sync transcript to ${LATEST_SYNC_LOG_NOTE_PATH} at start and finish`)
+      .setDesc(`Write the redacted current transcript to ${LATEST_SYNC_LOG_NOTE_PATH} and roll completed runs into ${SYNC_LOG_HISTORY_FOLDER}`)
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.persistSyncLogToVaultNote).onChange(async (value) => {
           this.plugin.settings.persistSyncLogToVaultNote = value;
@@ -665,6 +686,51 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           new Notice("Debug log cleared");
         })
       );
+  }
+}
+
+class ClearGitSyncLockModal extends Modal {
+  private plugin: SynologySync;
+
+  constructor(app: App, plugin: SynologySync) {
+    super(app);
+    this.plugin = plugin;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Clear Git sync lock" });
+    contentEl.createEl("p", {
+      text: "Use this only after confirming no Obsidian/Synology Sync is running on any device. Clearing an active lock can cause conflicts or data loss.",
+      cls: "setting-item-description",
+    });
+    contentEl.createEl("p", {
+      text: `Branch: ${this.plugin.settings.gitBranch || "main"}`,
+      cls: "setting-item-description",
+    });
+
+    new Setting(contentEl)
+      .addButton((btn) =>
+        btn.setButtonText("Cancel").onClick(() => {
+          this.close();
+        })
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Clear lock").setWarning().onClick(async () => {
+          try {
+            const path = await this.plugin.clearGitSyncLock();
+            new Notice(`Cleared Git sync lock: ${path}`);
+            this.close();
+          } catch (e) {
+            new Notice(`Could not clear Git sync lock: ${(e as Error).message}`);
+          }
+        })
+      );
+  }
+
+  onClose() {
+    this.contentEl.empty();
   }
 }
 

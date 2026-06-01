@@ -1,6 +1,6 @@
 import SynologySync from "../src/main";
 import { debugLog } from "../src/debug";
-import { LATEST_SYNC_LOG_NOTE_PATH } from "../src/settings";
+import { LATEST_SYNC_LOG_NOTE_PATH, SYNC_LOG_HISTORY_FOLDER, SYNC_LOG_HISTORY_RETENTION } from "../src/settings";
 
 jest.mock("../src/git-filestation-mobile", () => {
   return {
@@ -17,6 +17,8 @@ function buildPlugin(persistSyncLogToVaultNote: boolean) {
   const adapter = {
     exists: jest.fn().mockResolvedValue(true),
     mkdir: jest.fn().mockResolvedValue(undefined),
+    list: jest.fn().mockResolvedValue({ files: [], folders: [] }),
+    remove: jest.fn().mockResolvedValue(undefined),
     write: jest.fn().mockResolvedValue(undefined),
   };
   const plugin = new SynologySync() as SynologySync & {
@@ -60,7 +62,7 @@ describe("persisted latest sync log", () => {
 
     await (plugin as unknown as { runGitFileStationSync: () => Promise<void> }).runGitFileStationSync();
 
-    expect(adapter.write).toHaveBeenCalledTimes(2);
+    expect(adapter.write).toHaveBeenCalledTimes(3);
     const [startedPath, startedBody] = adapter.write.mock.calls[0] as [string, string];
     expect(startedPath).toBe(LATEST_SYNC_LOG_NOTE_PATH);
     expect(startedBody).toContain("Status: started");
@@ -73,6 +75,9 @@ describe("persisted latest sync log", () => {
     expect(body).not.toContain("abc123");
     expect(body).not.toContain("token123");
     expect(body).toContain("password=***");
+    const [historyPath, historyBody] = adapter.write.mock.calls[2] as [string, string];
+    expect(historyPath).toMatch(/^Synology Sync Logs\/history\/sync-.+\.md$/);
+    expect(historyBody).toBe(body);
   });
 
   it("updates the persistent note while a sync is running", async () => {
@@ -116,5 +121,27 @@ describe("persisted latest sync log", () => {
 
     expect(warn).toHaveBeenCalledWith("Synology Sync could not persist latest sync log:", expect.any(Error));
     warn.mockRestore();
+  });
+
+  it("does not add persistent log housekeeping messages to the transcript", async () => {
+    const { plugin, adapter } = buildPlugin(true);
+
+    await (plugin as unknown as { runGitFileStationSync: () => Promise<void> }).runGitFileStationSync();
+
+    const bodies = adapter.write.mock.calls.map((call) => call[1] as string);
+    expect(bodies.join("\n")).not.toContain("Persistent log");
+  });
+
+  it("prunes rolled history to the retention limit when the adapter supports removal", async () => {
+    const staleFiles = Array.from({ length: SYNC_LOG_HISTORY_RETENTION + 3 }, (_, i) =>
+      `${SYNC_LOG_HISTORY_FOLDER}/sync-2026-05-30T00-${String(i).padStart(2, "0")}-00-000Z.md`
+    );
+    const { plugin, adapter } = buildPlugin(true);
+    adapter.list.mockResolvedValueOnce({ files: staleFiles, folders: [] });
+
+    await (plugin as unknown as { runGitFileStationSync: () => Promise<void> }).runGitFileStationSync();
+
+    expect(adapter.remove).toHaveBeenCalledTimes(3);
+    expect(adapter.remove.mock.calls.map((call) => call[0])).toEqual(staleFiles.slice(0, 3));
   });
 });

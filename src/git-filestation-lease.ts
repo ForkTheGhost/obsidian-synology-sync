@@ -54,8 +54,8 @@ export class FileStationGitLease {
       ttlMs: opts.ttlMs ?? DEFAULT_TTL_MS,
       now: opts.now ?? (() => Date.now()),
     };
-    this.leaseName = `${safeLeaseComponent(this.opts.branch)}.lock`;
-    this.leaseDir = joinRemotePath(this.opts.remotePath, `${LEASE_ROOT}/${this.leaseName}`);
+    this.leaseName = leaseNameForBranch(this.opts.branch);
+    this.leaseDir = gitLeaseDirectoryPath(this.opts.remotePath, this.opts.branch);
     this.metadataPath = joinRemotePath(this.leaseDir, "lease.json");
     this.token = `${safeLeaseComponent(this.opts.owner)}-${this.opts.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     this.verificationMetadataPath = joinRemotePath(this.leaseDir, `lease-${safeLeaseComponent(this.token)}.json`);
@@ -209,6 +209,17 @@ export class FileStationGitLease {
   }
 }
 
+export function gitLeaseDirectoryPath(remotePath: string, branch: string): string {
+  return joinRemotePath(remotePath, `${LEASE_ROOT}/${leaseNameForBranch(branch)}`);
+}
+
+export async function clearFileStationGitLease(fs: FileStation, remotePath: string, branch: string): Promise<string> {
+  const leaseDir = gitLeaseDirectoryPath(remotePath, branch);
+  await fs.delete(leaseDir);
+  debugLog(`[git-filestation-lease] cleared stale lease branch=${branch} path=${leaseDir}`);
+  return leaseDir;
+}
+
 export async function withFileStationGitLease<T>(fs: FileStation, opts: GitLeaseOptions, fn: (lease: GitLeaseInfo) => Promise<T>): Promise<T> {
   const lease = new FileStationGitLease(fs, opts);
   const info = await lease.acquire();
@@ -217,6 +228,10 @@ export async function withFileStationGitLease<T>(fs: FileStation, opts: GitLease
   } finally {
     await lease.release();
   }
+}
+
+function leaseNameForBranch(branch: string): string {
+  return `${safeLeaseComponent(branch)}.lock`;
 }
 
 function safeLeaseComponent(value: string): string {
