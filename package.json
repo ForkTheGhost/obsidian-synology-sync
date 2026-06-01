@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "test": "jest",
     "check": "npm test -- --runInBand && npm run lint && npm run build",
-    "smoke:vault": "./scripts/smoke-vault.sh"
+    "smoke:vault": "./scripts/smoke-vault.sh",
+    "smoke:obsidian-live": "node scripts/live-obsidian-smoke.mjs"
   },
   "keywords": [
     "obsidian",

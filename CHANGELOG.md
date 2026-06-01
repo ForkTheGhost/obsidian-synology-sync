@@ -6,11 +6,13 @@
 
 - Document the Git-over-File-Station responsiveness boundary, including when a worker-backed planner is feasible and where Obsidian vault API calls must remain on the main plugin runtime.
 - Add smoke coverage for a restored-state no-op sync across 750 vault files, proving the fast path returns zero changes without reading vault bytes or downloading Git objects.
+- Add a live Obsidian Desktop smoke script that drives the built plugin through Obsidian's vault APIs and proves Obsidian-to-bare, bare-to-Obsidian, and no-op sync behavior against a disposable local bare repo.
 
 ### Fixed
 
 - Short-circuit unchanged restored-state Git-over-File-Station syncs after lease-verified remote-ref and vault-metadata checks, avoiding persistent Git state restore, vault byte reads, object downloads, merge, and checkout work when there is nothing to sync.
 - Skip rewriting and counting remote materialization files whose bytes already match the live vault, and cache known vault folders during materialization to reduce repeated Obsidian folder lookups.
+- Skip restoring plugin-owned persistent Git state when its last verified ref is behind the current NAS branch ref, preventing a stale local checkout from deleting direct remote commits during resync.
 
 ## 2026.0530.3
 

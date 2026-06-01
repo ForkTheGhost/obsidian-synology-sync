@@ -63,16 +63,20 @@ export default tseslint.config(
     },
   },
   {
-    files: ["*.js", "*.mjs"],
+    files: ["*.js", "*.mjs", "scripts/**/*.js", "scripts/**/*.mjs"],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
       globals: {
         ...globals.node,
+        WebSocket: "readonly",
       },
     },
     rules: {
+      ...existingCodeCompatibilityRules,
       "import/no-nodejs-modules": "off",
       "import/no-extraneous-dependencies": "off",
+      "obsidianmd/no-plugin-as-component": "off",
+      "obsidianmd/prefer-window-timers": "off",
     },
   },
   globalIgnores([

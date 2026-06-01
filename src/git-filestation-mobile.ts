@@ -162,12 +162,13 @@ export class MobileGitFileStationSyncEngine {
     await this.memfs.promises.mkdir(WORKDIR, { recursive: true });
     const vaultFilesAtStart = await this.runPhase("inspect vault metadata", () => this.inspectVaultFiles());
     const fastNoopCandidate = await this.runPhase("inspect fast no-op cache", () => this.canAttemptFastNoop(vaultFilesAtStart));
-    let prepared: PreparedLocalState | undefined;
-    if (!fastNoopCandidate) {
-      prepared = await this.prepareLocalState(vaultFilesAtStart);
-    }
     const expectedOldRefHint = await this.runPhase("preflight remote ref", () => this.readRemoteBranchOidFromFileStation());
     await this.runPhase("verify native Git admin guardrail", () => this.verifyNativeGitAdminGuardrail());
+
+    let prepared: PreparedLocalState | undefined;
+    if (!fastNoopCandidate) {
+      prepared = await this.prepareLocalState(vaultFilesAtStart, expectedOldRefHint);
+    }
 
     return await this.withAuthoritativeSyncLease(result, expectedOldRefHint, async () => this.syncUnderHeldLease(
       result,
@@ -177,8 +178,8 @@ export class MobileGitFileStationSyncEngine {
     ));
   }
 
-  private async prepareLocalState(vaultFilesAtStart: LocalVaultFileMetadata[]): Promise<PreparedLocalState> {
-    await this.runPhase("restore persistent Git state", () => this.restorePersistentGitState());
+  private async prepareLocalState(vaultFilesAtStart: LocalVaultFileMetadata[], expectedRemoteRef?: string): Promise<PreparedLocalState> {
+    await this.runPhase("restore persistent Git state", () => this.restorePersistentGitState(expectedRemoteRef));
     await this.runPhase("load vault", () => this.loadVaultIntoMemory(vaultFilesAtStart));
     await this.runPhase("ensure local repo", () => this.ensureLocalRepo());
     await this.runPhase("configure local repo", () => this.configureLocalRepo());
@@ -231,7 +232,7 @@ export class MobileGitFileStationSyncEngine {
     const vaultFilesForPreparation = prepared
       ? vaultFilesAtStart
       : await this.runPhase("refresh vault metadata after fast no-op miss", () => this.inspectVaultFiles());
-    prepared = prepared || await this.prepareLocalState(vaultFilesForPreparation);
+    prepared = prepared || await this.prepareLocalState(vaultFilesForPreparation, expectedOldRefHint);
     const {
       hadLocalCommitsBeforeRemoteImport,
       hadUserFilesAtStart,
@@ -719,7 +720,7 @@ export class MobileGitFileStationSyncEngine {
     return true;
   }
 
-  private async restorePersistentGitState(): Promise<void> {
+  private async restorePersistentGitState(expectedRemoteRef?: string): Promise<void> {
     const adapter = this.mobileGitCacheAdapter();
     if (typeof adapter.readBinary !== "function") return;
     const marker = await this.readMobileGitCacheMarker();
@@ -738,6 +739,10 @@ export class MobileGitFileStationSyncEngine {
       if (manifest.mode !== "git-filestation-state") throw new Error(`state mode ${String((manifest as { mode?: unknown }).mode)} unsupported`);
       if (manifest.branch !== this.opts.branch) throw new Error(`state branch ${manifest.branch} does not match ${this.opts.branch}`);
       if (manifest.remoteIdentity !== this.remoteCacheIdentity()) throw new Error("state remote identity mismatch");
+      if (expectedRemoteRef && manifest.lastVerifiedRemoteRef !== expectedRemoteRef) {
+        debugLog(`[git-filestation-mobile] persistent Git state restore skipped: cached ref=${manifest.lastVerifiedRemoteRef || "<none>"} remote ref=${expectedRemoteRef}`);
+        return;
+      }
 
       let restored = 0;
       for (const file of manifest.files) {
