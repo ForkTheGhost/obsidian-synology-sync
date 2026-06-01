@@ -50,6 +50,21 @@ type MobileGitCacheAdapter = {
   writeBinary?: (path: string, data: ArrayBuffer) => Promise<void>;
 };
 
+type LocalVaultFileMetadata = {
+  path: string;
+  file: TFile;
+  size?: number;
+  mtime?: number;
+};
+
+type PreparedLocalState = {
+  hadLocalCommitsBeforeRemoteImport: boolean;
+  hadUserFilesAtStart: boolean;
+  workdirFilesAtStart: string[];
+  hiddenSystemFilesAtStart: string[];
+  initialLocalFiles: Map<string, Uint8Array>;
+};
+
 const WORKDIR = "/vault";
 const GITDIR = "/vault/.git";
 const textEncoder = new TextEncoder();
@@ -58,6 +73,7 @@ const MOBILE_GIT_OBJECT_CACHE_ROOT = ".obsidian/plugins/synology-sync/git-cache/
 const MOBILE_GIT_CACHE_MARKER_PATH = `${MOBILE_GIT_OBJECT_CACHE_ROOT}/cache-marker.json`;
 const MOBILE_GIT_STATE_ROOT = `${MOBILE_GIT_OBJECT_CACHE_ROOT}/state`;
 const MOBILE_GIT_STATE_MANIFEST_PATH = `${MOBILE_GIT_STATE_ROOT}/manifest.json`;
+const MOBILE_GIT_VAULT_MANIFEST_PATH = `${MOBILE_GIT_OBJECT_CACHE_ROOT}/vault-manifest.json`;
 const MOBILE_GIT_CACHE_SCHEMA_VERSION = 1;
 const NATIVE_GIT_GUARD_HOOK_REL = "hooks/pre-receive";
 const NATIVE_GIT_GUARD_HOOK_SNIPPETS = [
@@ -91,6 +107,16 @@ type MobileGitStateManifest = {
   files: Array<{ rel: string; size: number; fingerprint: string }>;
 };
 
+type MobileGitVaultManifest = {
+  schemaVersion: number;
+  mode: "git-filestation-vault";
+  branch: string;
+  remoteIdentity: string;
+  lastVerifiedRemoteRef?: string;
+  updatedAt: string;
+  files: Array<{ path: string; size: number; mtime: number; fingerprint?: string }>;
+};
+
 /**
  * Browser/mobile Git-over-File-Station engine.
  *
@@ -110,6 +136,8 @@ export class MobileGitFileStationSyncEngine {
   private syncLeaseHeld = false;
   private syncLeaseExpectedOldRef: string | undefined;
   private mobileCacheMarker: MobileGitCacheMarker | undefined;
+  private skipPersistentGitStateStore = false;
+  private knownVaultFolders = new Set<string>();
   private remotePackfilesDownloaded = false;
 
   constructor(vault: Vault, fs: FileStation, opts: MobileGitFileStationSyncOptions) {
@@ -131,28 +159,43 @@ export class MobileGitFileStationSyncEngine {
     const result = emptyResult();
     debugLog("[git-filestation-mobile] starting pure JS Git sync over File Station");
 
-    await this.runPhase("load vault", () => this.loadVaultIntoMemory());
-    await this.runPhase("restore persistent Git state", () => this.restorePersistentGitState());
-    await this.runPhase("ensure local repo", () => this.ensureLocalRepo());
-    await this.runPhase("configure local repo", () => this.configureLocalRepo());
-
-    const hadLocalCommitsBeforeRemoteImport = await this.localHasCommits();
-    const hadUserFilesAtStart = this.localHasUserFiles();
-    const workdirFilesAtStart = await this.listWorkdirFiles();
-    const hiddenSystemFilesAtStart = this.hiddenSystemVaultFilesAtStart(workdirFilesAtStart);
-    const initialLocalFiles = hadLocalCommitsBeforeRemoteImport ? new Map<string, Uint8Array>() : await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
+    await this.memfs.promises.mkdir(WORKDIR, { recursive: true });
+    const vaultFilesAtStart = await this.runPhase("inspect vault metadata", () => this.inspectVaultFiles());
+    const fastNoopCandidate = await this.runPhase("inspect fast no-op cache", () => this.canAttemptFastNoop(vaultFilesAtStart));
+    let prepared: PreparedLocalState | undefined;
+    if (!fastNoopCandidate) {
+      prepared = await this.prepareLocalState(vaultFilesAtStart);
+    }
     const expectedOldRefHint = await this.runPhase("preflight remote ref", () => this.readRemoteBranchOidFromFileStation());
     await this.runPhase("verify native Git admin guardrail", () => this.verifyNativeGitAdminGuardrail());
 
     return await this.withAuthoritativeSyncLease(result, expectedOldRefHint, async () => this.syncUnderHeldLease(
       result,
+      vaultFilesAtStart,
+      prepared,
+      expectedOldRefHint,
+    ));
+  }
+
+  private async prepareLocalState(vaultFilesAtStart: LocalVaultFileMetadata[]): Promise<PreparedLocalState> {
+    await this.runPhase("restore persistent Git state", () => this.restorePersistentGitState());
+    await this.runPhase("load vault", () => this.loadVaultIntoMemory(vaultFilesAtStart));
+    await this.runPhase("ensure local repo", () => this.ensureLocalRepo());
+    await this.runPhase("configure local repo", () => this.configureLocalRepo());
+
+    const hadLocalCommitsBeforeRemoteImport = await this.localHasCommits();
+    const hadUserFilesAtStart = this.localHasUserFiles(vaultFilesAtStart);
+    const workdirFilesAtStart = await this.listWorkdirFiles();
+    const hiddenSystemFilesAtStart = this.hiddenSystemVaultFilesAtStart(workdirFilesAtStart);
+    const initialLocalFiles = hadLocalCommitsBeforeRemoteImport ? new Map<string, Uint8Array>() : await this.snapshotInitialLocalFileBytes(workdirFilesAtStart);
+
+    return {
       hadLocalCommitsBeforeRemoteImport,
       hadUserFilesAtStart,
       workdirFilesAtStart,
       hiddenSystemFilesAtStart,
       initialLocalFiles,
-      expectedOldRefHint,
-    ));
+    };
   }
 
   private async verifyNativeGitAdminGuardrail(): Promise<void> {
@@ -178,13 +221,25 @@ export class MobileGitFileStationSyncEngine {
 
   private async syncUnderHeldLease(
     result: SyncResult,
-    hadLocalCommitsBeforeRemoteImport: boolean,
-    hadUserFilesAtStart: boolean,
-    workdirFilesAtStart: string[],
-    hiddenSystemFilesAtStart: string[],
-    initialLocalFiles: Map<string, Uint8Array>,
+    vaultFilesAtStart: LocalVaultFileMetadata[],
+    prepared: PreparedLocalState | undefined,
     expectedOldRefHint: string | undefined,
   ): Promise<SyncResult> {
+    if (!prepared && await this.runPhase("fast no-op check", () => this.tryFastNoopUnderHeldLease(vaultFilesAtStart, expectedOldRefHint))) {
+      return result;
+    }
+    const vaultFilesForPreparation = prepared
+      ? vaultFilesAtStart
+      : await this.runPhase("refresh vault metadata after fast no-op miss", () => this.inspectVaultFiles());
+    prepared = prepared || await this.prepareLocalState(vaultFilesForPreparation);
+    const {
+      hadLocalCommitsBeforeRemoteImport,
+      hadUserFilesAtStart,
+      workdirFilesAtStart,
+      hiddenSystemFilesAtStart,
+      initialLocalFiles,
+    } = prepared;
+
     await this.runPhase("fetch remote Git state", () => this.fetchRemoteGitStateIfPresent());
     if (!hadLocalCommitsBeforeRemoteImport) await this.runPhase("anchor local branch to remote", () => this.anchorLocalBranchToRemoteIfNeeded());
     await this.runPhase("verify downloaded Git store", () => this.verifyDownloadedGitStore());
@@ -355,7 +410,8 @@ export class MobileGitFileStationSyncEngine {
       } finally {
         this.syncLeaseHeld = false;
         this.syncLeaseExpectedOldRef = undefined;
-        if (completed && result.errors.length === 0) await this.persistMobileGitState(this.remoteBranchOidAtDownload, "sync completed");
+        if (completed && result.errors.length === 0 && !this.skipPersistentGitStateStore) await this.persistMobileGitState(this.remoteBranchOidAtDownload, "sync completed");
+        this.skipPersistentGitStateStore = false;
       }
     });
   }
@@ -700,6 +756,71 @@ export class MobileGitFileStationSyncEngine {
     }
   }
 
+  private async canAttemptFastNoop(vaultFiles: LocalVaultFileMetadata[]): Promise<boolean> {
+    const marker = await this.readMobileGitCacheMarker();
+    if (!marker || !(await this.mobileGitCacheCanReuse()) || marker.completeness !== "complete" || !marker.lastVerifiedRemoteRef) return false;
+    const manifest = await this.readMobileVaultManifest();
+    if (!manifest) return false;
+    if (manifest.schemaVersion !== MOBILE_GIT_CACHE_SCHEMA_VERSION) return false;
+    if (manifest.mode !== "git-filestation-vault") return false;
+    if (manifest.branch !== this.opts.branch) return false;
+    if (manifest.remoteIdentity !== this.remoteCacheIdentity()) return false;
+    if (manifest.lastVerifiedRemoteRef !== marker.lastVerifiedRemoteRef) return false;
+    return this.vaultMetadataMatchesManifest(vaultFiles, manifest);
+  }
+
+  private async tryFastNoopUnderHeldLease(vaultFiles: LocalVaultFileMetadata[], expectedOldRefHint: string | undefined): Promise<boolean> {
+    const manifest = await this.readMobileVaultManifest();
+    const marker = await this.readMobileGitCacheMarker();
+    if (!expectedOldRefHint || !manifest || !marker) return false;
+    if (marker.lastVerifiedRemoteRef !== expectedOldRefHint || manifest.lastVerifiedRemoteRef !== expectedOldRefHint) return false;
+    if (!this.vaultMetadataMatchesManifest(vaultFiles, manifest)) return false;
+
+    const observedRef = await this.readRemoteBranchOidFromFileStation();
+    if (observedRef !== expectedOldRefHint) {
+      debugLog(`[git-filestation-mobile] fast no-op skipped: remote ref changed observed=${observedRef || "<none>"} expected=${expectedOldRefHint}`);
+      return false;
+    }
+    const latestVaultFiles = await this.inspectVaultFiles();
+    if (!this.vaultMetadataMatchesManifest(latestVaultFiles, manifest)) {
+      debugLog("[git-filestation-mobile] fast no-op skipped: live vault metadata changed during preflight");
+      return false;
+    }
+
+    this.remoteBranchOidAtDownload = expectedOldRefHint;
+    this.skipPersistentGitStateStore = true;
+    debugLog(`[git-filestation-mobile] fast no-op: remote ref and local vault metadata unchanged ref=${expectedOldRefHint} files=${vaultFiles.length}`);
+    return true;
+  }
+
+  private async readMobileVaultManifest(): Promise<MobileGitVaultManifest | undefined> {
+    const adapter = this.mobileGitCacheAdapter();
+    if (typeof adapter.readBinary !== "function") return undefined;
+    try {
+      if (typeof adapter.exists === "function" && !(await adapter.exists(MOBILE_GIT_VAULT_MANIFEST_PATH, true))) return undefined;
+      const bytes = new Uint8Array(await adapter.readBinary(MOBILE_GIT_VAULT_MANIFEST_PATH));
+      return JSON.parse(textDecoder.decode(bytes)) as MobileGitVaultManifest;
+    } catch (e) {
+      debugLog(`[git-filestation-mobile] vault manifest unreadable; fast no-op disabled: ${(e as Error).message}`);
+      return undefined;
+    }
+  }
+
+  private vaultMetadataMatchesManifest(vaultFiles: LocalVaultFileMetadata[], manifest: MobileGitVaultManifest): boolean {
+    const current = vaultFiles.filter((file) => !this.isExcluded(file.path) && !file.path.startsWith("."));
+    const prior = manifest.files.filter((file) => !this.isExcluded(file.path) && !file.path.startsWith("."));
+    if (current.length !== prior.length) return false;
+
+    const byPath = new Map(prior.map((file) => [file.path, file]));
+    for (const file of current) {
+      const match = byPath.get(file.path);
+      if (!match) return false;
+      if (typeof file.size !== "number" || typeof file.mtime !== "number") return false;
+      if (match.size !== file.size || match.mtime !== file.mtime) return false;
+    }
+    return true;
+  }
+
   private async canRecoverEstablishedCheckout(hadLocalCommitsBeforeRemoteImport: boolean, hadUserFilesAtStart: boolean, remoteRef: string | undefined): Promise<boolean> {
     if (hadLocalCommitsBeforeRemoteImport || !hadUserFilesAtStart || !remoteRef) return false;
     const marker = await this.readMobileGitCacheMarker();
@@ -834,9 +955,8 @@ export class MobileGitFileStationSyncEngine {
     }
   }
 
-  private localHasUserFiles(): boolean {
-    return this.vault.getFiles().some((file) => {
-      if (!(file instanceof TFile)) return false;
+  private localHasUserFiles(files: LocalVaultFileMetadata[]): boolean {
+    return files.some((file) => {
       if (file.path.startsWith(".obsidian/")) return false;
       if (isGitIgnoredPath(file.path, this.gitExcludes)) return false;
       return true;
@@ -1472,12 +1592,61 @@ export class MobileGitFileStationSyncEngine {
 
       await this.ensureAdapterFolder(dirnameVaultPath(MOBILE_GIT_STATE_MANIFEST_PATH));
       await adapter.writeBinary(MOBILE_GIT_STATE_MANIFEST_PATH, bytesToArrayBuffer(textEncoder.encode(JSON.stringify(manifest, null, 2))));
+      await this.persistMobileVaultManifest(lastVerifiedRemoteRef);
       await this.writeMobileGitCacheMarker(lastVerifiedRemoteRef, "complete", reason);
       debugLog(`[git-filestation-mobile] persistent plugin Git state stored files=${manifest.files.length} ref=${lastVerifiedRemoteRef || "<none>"} reason=${reason}`);
     } catch (e) {
       debugLog(`[git-filestation-mobile] persistent plugin Git state store skipped: ${(e as Error).message}`);
       await this.writeMobileGitCacheMarker(lastVerifiedRemoteRef, "partial", `persistent state store skipped: ${(e as Error).message}`);
     }
+  }
+
+  private async persistMobileVaultManifest(lastVerifiedRemoteRef: string | undefined): Promise<void> {
+    const adapter = this.mobileGitCacheAdapter();
+    if (typeof adapter.writeBinary !== "function" || !lastVerifiedRemoteRef) return;
+
+    const vaultFiles = (await this.inspectVaultFiles()).filter((entry) => !this.isExcluded(entry.path) && !entry.path.startsWith("."));
+    const workdirFiles = (await this.listWorkdirFiles()).filter((path) => !this.isExcluded(path) && !path.startsWith(".")).sort();
+    const vaultPaths = vaultFiles.map((entry) => entry.path).sort();
+    if (vaultPaths.length !== workdirFiles.length || vaultPaths.some((path, index) => path !== workdirFiles[index])) {
+      debugLog(`[git-filestation-mobile] vault manifest skipped: live vault metadata does not match synced workdir files vault=${vaultPaths.length} workdir=${workdirFiles.length}`);
+      return;
+    }
+
+    const manifest: MobileGitVaultManifest = {
+      schemaVersion: MOBILE_GIT_CACHE_SCHEMA_VERSION,
+      mode: "git-filestation-vault",
+      branch: this.opts.branch,
+      remoteIdentity: this.remoteCacheIdentity(),
+      lastVerifiedRemoteRef,
+      updatedAt: new Date().toISOString(),
+      files: [],
+    };
+
+    for (const entry of vaultFiles) {
+      if (typeof entry.size !== "number" || typeof entry.mtime !== "number") {
+        debugLog(`[git-filestation-mobile] vault manifest skipped: missing metadata for ${entry.path}`);
+        return;
+      }
+      let fingerprint: string | undefined;
+      try {
+        fingerprint = await this.pathExists(`${WORKDIR}/${entry.path}`)
+          ? await this.fileHash(`${WORKDIR}/${entry.path}`)
+          : undefined;
+      } catch {
+        fingerprint = undefined;
+      }
+      manifest.files.push({
+        path: entry.path,
+        size: entry.size,
+        mtime: entry.mtime,
+        fingerprint,
+      });
+    }
+
+    manifest.files.sort((a, b) => a.path.localeCompare(b.path));
+    await this.ensureAdapterFolder(dirnameVaultPath(MOBILE_GIT_VAULT_MANIFEST_PATH));
+    await adapter.writeBinary(MOBILE_GIT_VAULT_MANIFEST_PATH, bytesToArrayBuffer(textEncoder.encode(JSON.stringify(manifest, null, 2))));
   }
 
   private async reachableObjectOids(rootOid: string): Promise<Set<string>> {
@@ -1643,16 +1812,28 @@ export class MobileGitFileStationSyncEngine {
     return paths.filter((path) => path.startsWith(".") && !path.startsWith(".obsidian/") && !this.isExcluded(path)).sort();
   }
 
-  private async loadVaultIntoMemory(): Promise<void> {
+  private async inspectVaultFiles(): Promise<LocalVaultFileMetadata[]> {
+    return this.vault.getFiles()
+      .filter((file): file is TFile => file instanceof TFile)
+      .map((file) => ({
+        path: file.path,
+        file,
+        size: file.stat?.size,
+        mtime: file.stat?.mtime,
+      }))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  private async loadVaultIntoMemory(files: LocalVaultFileMetadata[]): Promise<void> {
     await this.memfs.promises.mkdir(WORKDIR, { recursive: true });
-    for (const file of this.vault.getFiles()) {
-      if (!(file instanceof TFile)) continue;
-      if (this.isExcluded(file.path)) continue;
-      if (file.path.startsWith(".")) {
-        debugLog(`[git-filestation-mobile] ignoring hidden system vault file during mobile load: ${file.path}`);
+    for (const entry of files) {
+      if (this.isExcluded(entry.path)) continue;
+      if (entry.path.startsWith(".")) {
+        debugLog(`[git-filestation-mobile] ignoring hidden system vault file during mobile load: ${entry.path}`);
         continue;
       }
-      await this.writeMemFile(`${WORKDIR}/${file.path}`, new Uint8Array(await this.vault.readBinary(file)));
+      this.rememberVaultFolder(dirnameVaultPath(entry.path));
+      await this.writeMemFile(`${WORKDIR}/${entry.path}`, new Uint8Array(await this.vault.readBinary(entry.file)));
     }
   }
 
@@ -1690,15 +1871,22 @@ export class MobileGitFileStationSyncEngine {
   private async materializeRemoteFiles(remoteFiles: string[], result: SyncResult): Promise<void> {
     debugLog(`[git-filestation-mobile] materializing remote files count=${remoteFiles.length}`);
     const head = await git.resolveRef({ fs: this.memfs.client, gitdir: GITDIR, ref: `refs/heads/${this.opts.branch}` });
+    let written = 0;
+    let skippedUnchanged = 0;
     for (const path of remoteFiles) {
       if (this.isExcluded(path)) continue;
       const blob = await git.readBlob({ fs: this.memfs.client, gitdir: GITDIR, oid: head, filepath: path, cache: this.cache });
       const bytes = blob.blob instanceof Uint8Array ? blob.blob : new Uint8Array(blob.blob);
-      await this.writeVaultBinary(path, bytes);
+      const wrote = await this.writeVaultBinaryIfChanged(path, bytes);
       await this.writeMemFile(`${WORKDIR}/${path}`, bytes);
-      if (!result.downloaded.includes(path) && !result.uploaded.includes(path)) result.downloaded.push(path);
+      if (wrote) {
+        written++;
+        if (!result.downloaded.includes(path) && !result.uploaded.includes(path)) result.downloaded.push(path);
+      } else {
+        skippedUnchanged++;
+      }
     }
-    debugLog(`[git-filestation-mobile] materialized remote files count=${result.downloaded.length}`);
+    debugLog(`[git-filestation-mobile] materialized remote files written=${written} skippedUnchanged=${skippedUnchanged}`);
   }
 
   private async applyCheckoutChanges(before: Map<string, string>, result: SyncResult): Promise<void> {
@@ -1724,26 +1912,38 @@ export class MobileGitFileStationSyncEngine {
   }
 
   private async writeVaultBinary(path: string, bytes: Uint8Array): Promise<void> {
+    await this.writeVaultBinaryIfChanged(path, bytes, false);
+  }
+
+  private async writeVaultBinaryIfChanged(path: string, bytes: Uint8Array, skipUnchanged = true): Promise<boolean> {
     await this.ensureVaultFolder(dirnameVaultPath(path));
     const data = bytesToArrayBuffer(bytes);
     const existing = this.vault.getAbstractFileByPath(path);
     if (existing instanceof TFile) {
+      if (skipUnchanged) {
+        const current = new Uint8Array(await this.vault.readBinary(existing));
+        if (bytesEqual(current, bytes)) return false;
+      }
       await this.vault.modifyBinary(existing, data);
-      return;
+      return true;
     }
     try {
       await this.vault.createBinary(path, data);
-      return;
+      return true;
     } catch (e) {
       const afterCreate = this.vault.getAbstractFileByPath(path);
       if (afterCreate instanceof TFile) {
+        if (skipUnchanged) {
+          const current = new Uint8Array(await this.vault.readBinary(afterCreate));
+          if (bytesEqual(current, bytes)) return false;
+        }
         await this.vault.modifyBinary(afterCreate, data);
-        return;
+        return true;
       }
       if (/already exists/i.test((e as Error).message || "") && this.vault.adapter && typeof this.vault.adapter.writeBinary === "function") {
         debugLog(`[git-filestation-mobile] vault file already exists, overwriting through adapter: ${path}`);
         await this.vault.adapter.writeBinary(path, data);
-        return;
+        return true;
       }
       throw e;
     }
@@ -1754,18 +1954,33 @@ export class MobileGitFileStationSyncEngine {
     let current = "";
     for (const part of parts) {
       current = current ? `${current}/${part}` : part;
+      if (this.knownVaultFolders.has(current)) continue;
       const existing = this.vault.getAbstractFileByPath(current);
-      if (existing instanceof TFolder) continue;
+      if (existing instanceof TFolder) {
+        this.rememberVaultFolder(current);
+        continue;
+      }
       if (existing instanceof TFile) throw new Error(`Cannot create checkout folder ${current}; a file already exists at that path.`);
       try {
         await this.vault.createFolder(current);
+        this.rememberVaultFolder(current);
       } catch (e) {
         const afterCreate = this.vault.getAbstractFileByPath(current);
         if (afterCreate instanceof TFolder || /already exists/i.test((e as Error).message || "")) {
+          this.rememberVaultFolder(current);
           continue;
         }
         throw e;
       }
+    }
+  }
+
+  private rememberVaultFolder(path: string): void {
+    const parts = splitPath(path);
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      this.knownVaultFolders.add(current);
     }
   }
 
