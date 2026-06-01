@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## 2026.0530.3
+
+### Fixed
+
+- Replace the Obsidian SecretStorage Link password control with a normal masked password field that automatically saves to the plugin-owned `synology-sync-dsm-password` secret, avoiding confusing link popups and empty-password trust-device attempts.
+
 ## 2026.0530.2
 
 ### Added
