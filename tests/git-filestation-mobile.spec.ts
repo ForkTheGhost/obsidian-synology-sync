@@ -1277,6 +1277,55 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(cacheReads.some((path) => path.startsWith(".obsidian/plugins/synology-sync/git-cache/v1/state/files/"))).toBe(false);
   });
 
+  it("does not restore stale persistent Git state after the remote ref disappears", async () => {
+    const { remote } = await seededBareRemote({ "RemoteOnly.md": "remote baseline\n" });
+    const cache = new Map<string, Uint8Array>();
+    const folders = new Set<string>();
+    const uploaded: string[] = [];
+    const fs = remoteBackedFileStation(remote, uploaded);
+    const adapter = {
+      exists: jest.fn(async (path: string) => cache.has(path) || folders.has(path)),
+      mkdir: jest.fn(async (path: string) => { folders.add(path); }),
+      readBinary: jest.fn(async (path: string) => {
+        const bytes = cache.get(path);
+        if (!bytes) throw new Error("missing cache");
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }),
+      writeBinary: jest.fn(async (path: string, data: ArrayBuffer) => {
+        cache.set(path, new Uint8Array(data));
+      }),
+    };
+
+    const firstVault = { ...vaultWithFiles({}).vault, adapter };
+    const first = new MobileGitFileStationSyncEngine(firstVault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+
+    await first.sync();
+
+    expect(cache.has(".obsidian/plugins/synology-sync/git-cache/v1/state/manifest.json")).toBe(true);
+    adapter.readBinary.mockClear();
+    const secondVault = { ...vaultWithFiles({}).vault, adapter };
+    const second = new MobileGitFileStationSyncEngine(secondVault as never, fs as never, {
+      remotePath: "/homes/user/Obsidian/Test.git",
+      branch: "main",
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+    const exposed = second as unknown as { restorePersistentGitState: (expectedRemoteRef?: string) => Promise<void> };
+
+    await exposed.restorePersistentGitState(undefined);
+
+    const cacheReads = adapter.readBinary.mock.calls.map(([path]) => path);
+    expect(cacheReads).toContain(".obsidian/plugins/synology-sync/git-cache/v1/state/manifest.json");
+    expect(cacheReads.some((path) => path.startsWith(".obsidian/plugins/synology-sync/git-cache/v1/state/files/"))).toBe(false);
+  });
+
   it("short-circuits restored-state no-op syncs without reading vault bytes or Git objects", async () => {
     const textEncoder = new TextEncoder();
     const ref = "a".repeat(40);

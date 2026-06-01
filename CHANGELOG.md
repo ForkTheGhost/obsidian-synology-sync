@@ -12,7 +12,7 @@
 
 - Short-circuit unchanged restored-state Git-over-File-Station syncs after lease-verified remote-ref and vault-metadata checks, avoiding persistent Git state restore, vault byte reads, object downloads, merge, and checkout work when there is nothing to sync.
 - Skip rewriting and counting remote materialization files whose bytes already match the live vault, and cache known vault folders during materialization to reduce repeated Obsidian folder lookups.
-- Skip restoring plugin-owned persistent Git state when its last verified ref is behind the current NAS branch ref, preventing a stale local checkout from deleting direct remote commits during resync.
+- Skip restoring plugin-owned persistent Git state when its last verified ref differs from the current NAS branch ref, including a missing remote ref, preventing a stale local checkout from deleting direct remote commits during resync.
 
 ## 2026.0530.3
 

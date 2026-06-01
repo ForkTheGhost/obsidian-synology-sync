@@ -739,8 +739,9 @@ export class MobileGitFileStationSyncEngine {
       if (manifest.mode !== "git-filestation-state") throw new Error(`state mode ${String((manifest as { mode?: unknown }).mode)} unsupported`);
       if (manifest.branch !== this.opts.branch) throw new Error(`state branch ${manifest.branch} does not match ${this.opts.branch}`);
       if (manifest.remoteIdentity !== this.remoteCacheIdentity()) throw new Error("state remote identity mismatch");
-      if (expectedRemoteRef && manifest.lastVerifiedRemoteRef !== expectedRemoteRef) {
-        debugLog(`[git-filestation-mobile] persistent Git state restore skipped: cached ref=${manifest.lastVerifiedRemoteRef || "<none>"} remote ref=${expectedRemoteRef}`);
+      const cachedRemoteRef = manifest.lastVerifiedRemoteRef || undefined;
+      if (cachedRemoteRef !== expectedRemoteRef) {
+        debugLog(`[git-filestation-mobile] persistent Git state restore skipped: cached ref=${cachedRemoteRef || "<none>"} remote ref=${expectedRemoteRef || "<none>"}`);
         return;
       }
 
