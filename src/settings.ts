@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, Notice, Modal, SecretComponent } from "obsidian";
+import { App, PluginSettingTab, Setting, Notice, Modal } from "obsidian";
 import type SynologySync from "./main";
 import { resolveQuickConnect } from "./quickconnect";
 import { getDebugLog, getDebugLogSnippet, clearDebugLog, subscribeDebugLog } from "./debug";
@@ -275,19 +275,12 @@ export class SynologySyncSettingTab extends PluginSettingTab {
           })
       );
 
-    const passwordSetting = new Setting(containerEl)
+    new Setting(containerEl)
       .setName("Password")
       .setDesc(this.plugin.hasSecretStorageSupport()
-        ? "Stored in Obsidian secure storage."
-        : "Stored in plugin settings on this Obsidian version. Upgrade to Obsidian 1.11.4+ for secure storage.");
-    if (this.plugin.hasSecretStorageSupport() && typeof SecretComponent === "function") {
-      new SecretComponent(this.app, passwordSetting.controlEl)
-        .setValue(this.plugin.getDsmPassword())
-        .onChange(async (value) => {
-          await this.plugin.setDsmPassword(value);
-        });
-    } else {
-      passwordSetting.addText((text) => {
+        ? "Saved automatically to this plugin's secure Obsidian secret entry. No separate link step is required."
+        : "Stored in plugin settings on this Obsidian version. Upgrade to Obsidian 1.11.4+ for secure storage.")
+      .addText((text) => {
         text.inputEl.type = "password";
         text
           .setPlaceholder("password")
@@ -296,7 +289,6 @@ export class SynologySyncSettingTab extends PluginSettingTab {
             await this.plugin.setDsmPassword(value);
           });
       });
-    }
 
     // 2FA device trust
     if (this.plugin.hasDsmDeviceTrust()) {
