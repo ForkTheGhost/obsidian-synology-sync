@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## 2026.0530.2
+
+### Added
+
+- Store DSM password, device token, and device ID through Obsidian SecretStorage when available, with migration away from legacy plaintext settings and secure cleanup when forgetting a device.
+- Add a guarded Clear Git sync lock settings action for Git-over-File-Station mode, including confirmation text and shared lease-path handling.
+
+### Changed
+
+- Roll visible sync diagnostics into `Synology Sync Logs/history/sync-<timestamp>.md` while keeping `latest-run.md` focused on the current/last run and pruning old history entries when supported.
+- Shorten user-facing sync failure notices so banners/toasts stay readable while full details remain in the log.
+
 ## 2026.0530.1
 
 ### Added
