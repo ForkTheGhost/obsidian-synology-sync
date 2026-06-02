@@ -3,6 +3,7 @@ export const NOTES_ONLY_GIT_EXCLUDES = [
   // runtime/config state stays device-local.
   ".obsidian/",
   "Synology Sync Logs/latest-run*.md",
+  "Synology Sync Logs/history/",
   ".trash/",
   ".sync-tombstones/",
   "node_modules/",
@@ -26,6 +27,7 @@ export const SELECTED_SETTINGS_GIT_EXCLUDES = [
   ".obsidian/plugins/*/data.json",
   ".obsidian/plugins/synology-sync/",
   "Synology Sync Logs/latest-run*.md",
+  "Synology Sync Logs/history/",
   ".trash/",
   ".sync-tombstones/",
   "node_modules/",
@@ -56,6 +58,7 @@ export function buildGitExcludes(policy: ObsidianConfigSyncPolicy = "notes-only"
     return [
       ".obsidian/plugins/synology-sync/",
       "Synology Sync Logs/latest-run*.md",
+      "Synology Sync Logs/history/",
       ".trash/",
       ".sync-tombstones/",
       "node_modules/",

@@ -274,7 +274,7 @@ A valid implementation should:
 
 ### Responsive sync and worker boundary
 
-Git-over-File-Station sync should keep common no-op and small-resync paths out of the expensive Git/materialization pipeline whenever the device can prove the NAS ref and local vault metadata are unchanged. A restored-state no-op may return after acquiring the normal lease and re-reading the branch ref if the plugin-owned cache marker, vault manifest, branch, remote identity, last verified remote ref, and current live-vault file metadata all match. If any proof is missing or stale, the engine must fall back to the full verified sync path.
+Git-over-File-Station sync should keep common no-op and small-resync paths out of the expensive Git/materialization pipeline whenever the device can prove the NAS ref and local vault metadata are unchanged. A restored-state no-op may return after acquiring the normal lease and re-reading the branch ref if the plugin-owned cache marker, vault manifest, branch, remote identity, last verified remote ref, and current live-vault file metadata all match. The fast no-op proof boundary is intentionally metadata-only, using Obsidian-reported path, size, mtime, and ctime so large unchanged vaults avoid vault byte reads. If any proof is missing or stale, the engine must fall back to the full verified sync path.
 
 The current implementation uses the following fast-path boundary:
 

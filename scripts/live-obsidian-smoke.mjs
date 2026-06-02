@@ -8,7 +8,9 @@ import path from "node:path";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const obsidianExe = process.env.OBSIDIAN_EXE || "C:\\Program Files\\Obsidian\\Obsidian.exe";
-const runRoot = path.resolve(process.env.OBSIDIAN_LIVE_SMOKE_ROOT || path.join(os.tmpdir(), `obsidian-synology-live-smoke-${Date.now()}`));
+const runRootPrefix = "obsidian-synology-live-smoke-";
+const runRoot = path.resolve(process.env.OBSIDIAN_LIVE_SMOKE_ROOT || path.join(os.tmpdir(), `${runRootPrefix}${Date.now()}`));
+const runRootMarker = path.join(runRoot, ".obsidian-synology-live-smoke-root");
 const vaultDir = path.join(runRoot, "vault");
 const userDataDir = path.join(runRoot, "obsidian-user-data");
 const bareRepo = path.join(runRoot, "synology-bare.git");
@@ -70,8 +72,24 @@ function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+function isPathInside(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function assertSafeRunRootDelete() {
+  if (fs.existsSync(runRootMarker)) return;
+  if (isPathInside(os.tmpdir(), runRoot) && path.basename(runRoot).startsWith(runRootPrefix)) return;
+  throw new Error(`Refusing to delete unmarked OBSIDIAN_LIVE_SMOKE_ROOT: ${runRoot}`);
+}
+
 function prepareVault() {
-  if (fs.existsSync(runRoot)) fs.rmSync(runRoot, { recursive: true, force: true });
+  if (fs.existsSync(runRoot)) {
+    assertSafeRunRootDelete();
+    fs.rmSync(runRoot, { recursive: true, force: true });
+  }
+  fs.mkdirSync(runRoot, { recursive: true });
+  fs.writeFileSync(runRootMarker, `${new Date().toISOString()}\n`);
   fs.mkdirSync(pluginDir, { recursive: true });
   fs.mkdirSync(userDataDir, { recursive: true });
 

@@ -55,6 +55,7 @@ type LocalVaultFileMetadata = {
   file: TFile;
   size?: number;
   mtime?: number;
+  ctime?: number;
 };
 
 type PreparedLocalState = {
@@ -114,7 +115,7 @@ type MobileGitVaultManifest = {
   remoteIdentity: string;
   lastVerifiedRemoteRef?: string;
   updatedAt: string;
-  files: Array<{ path: string; size: number; mtime: number; fingerprint?: string }>;
+  files: Array<{ path: string; size: number; mtime: number; ctime?: number; fingerprint?: string }>;
 };
 
 /**
@@ -821,8 +822,9 @@ export class MobileGitFileStationSyncEngine {
     for (const file of current) {
       const match = byPath.get(file.path);
       if (!match) return false;
-      if (typeof file.size !== "number" || typeof file.mtime !== "number") return false;
-      if (match.size !== file.size || match.mtime !== file.mtime) return false;
+      if (typeof file.size !== "number" || typeof file.mtime !== "number" || typeof file.ctime !== "number") return false;
+      if (typeof match.ctime !== "number") return false;
+      if (match.size !== file.size || match.mtime !== file.mtime || match.ctime !== file.ctime) return false;
     }
     return true;
   }
@@ -1630,7 +1632,7 @@ export class MobileGitFileStationSyncEngine {
     };
 
     for (const entry of vaultFiles) {
-      if (typeof entry.size !== "number" || typeof entry.mtime !== "number") {
+      if (typeof entry.size !== "number" || typeof entry.mtime !== "number" || typeof entry.ctime !== "number") {
         debugLog(`[git-filestation-mobile] vault manifest skipped: missing metadata for ${entry.path}`);
         return;
       }
@@ -1646,6 +1648,7 @@ export class MobileGitFileStationSyncEngine {
         path: entry.path,
         size: entry.size,
         mtime: entry.mtime,
+        ctime: entry.ctime,
         fingerprint,
       });
     }
@@ -1826,6 +1829,7 @@ export class MobileGitFileStationSyncEngine {
         file,
         size: file.stat?.size,
         mtime: file.stat?.mtime,
+        ctime: file.stat?.ctime,
       }))
       .sort((a, b) => a.path.localeCompare(b.path));
   }

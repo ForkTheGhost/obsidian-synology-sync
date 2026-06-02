@@ -94,6 +94,7 @@ describe("Obsidian config sync policy", () => {
     const excludes = buildGitExcludes("notes-only");
     expect(excludes).toContain(".obsidian/");
     expect(excludes).toContain("Synology Sync Logs/latest-run*.md");
+    expect(excludes).toContain("Synology Sync Logs/history/");
   });
 
   it("allows selected settings opt-ins without blindly syncing plugin data", () => {
@@ -126,6 +127,7 @@ describe("Obsidian config sync policy", () => {
     expect(isGitIgnoredPath(".obsidian/plugins/calendar/main.js", excludes)).toBe(true);
     expect(isGitIgnoredPath("Synology Sync Logs/latest-run.md", excludes)).toBe(true);
     expect(isGitIgnoredPath("Synology Sync Logs/latest-run (conflict device abc123).md", excludes)).toBe(true);
+    expect(isGitIgnoredPath("Synology Sync Logs/history/sync-2026-06-02T13-26-13-479Z.md", excludes)).toBe(true);
     expect(isGitIgnoredPath(".trash/deleted.md", excludes)).toBe(true);
     expect(isGitIgnoredPath(".sync-tombstones/device.json", excludes)).toBe(true);
     expect(isGitIgnoredPath("Daily/today.md", excludes)).toBe(false);

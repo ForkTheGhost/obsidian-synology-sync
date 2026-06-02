@@ -136,7 +136,7 @@ describe("MobileGitFileStationSyncEngine", () => {
     for (const [index, path] of Object.keys(files).entries()) {
       const file = new TFile();
       file.path = path;
-      file.stat = { mtime: 1_700_000_000_000 + index, size: textEncoder.encode(files[path]).byteLength };
+      file.stat = { ctime: 1_699_999_000_000 + index, mtime: 1_700_000_000_000 + index, size: textEncoder.encode(files[path]).byteLength };
       fileMap.set(path, file);
       const parts = path.split("/").slice(0, -1);
       for (let i = 1; i <= parts.length; i++) folders.add(parts.slice(0, i).join("/"));
@@ -1359,6 +1359,7 @@ describe("MobileGitFileStationSyncEngine", () => {
         path: file.path,
         size: file.stat.size,
         mtime: file.stat.mtime,
+        ctime: file.stat.ctime,
         fingerprint: `${file.stat.size}:0`,
       })),
     };
@@ -1411,6 +1412,62 @@ describe("MobileGitFileStationSyncEngine", () => {
     expect(vault.createBinary).not.toHaveBeenCalled();
     expect(vault.modifyBinary).not.toHaveBeenCalled();
     expect(fs.download.mock.calls.some(([path]) => path.includes("/objects/"))).toBe(false);
+  });
+
+  it("skips the restored-state fast no-op when vault ctime metadata changed", async () => {
+    const textEncoder = new TextEncoder();
+    const ref = "a".repeat(40);
+    const branch = "main";
+    const remotePath = "/homes/user/Obsidian/Test.git";
+    const remoteIdentity = testRemoteCacheIdentity(remotePath, branch);
+    const { vault } = vaultWithFiles({ "Note.md": "unchanged\n" });
+    const [file] = vault.getFiles();
+    const cache = new Map<string, Uint8Array>();
+    cache.set(".obsidian/plugins/synology-sync/git-cache/v1/cache-marker.json", textEncoder.encode(JSON.stringify({
+      schemaVersion: 1,
+      mode: "git-filestation",
+      branch,
+      remoteIdentity,
+      lastVerifiedRemoteRef: ref,
+      completeness: "complete",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+    })));
+    cache.set(".obsidian/plugins/synology-sync/git-cache/v1/vault-manifest.json", textEncoder.encode(JSON.stringify({
+      schemaVersion: 1,
+      mode: "git-filestation-vault",
+      branch,
+      remoteIdentity,
+      lastVerifiedRemoteRef: ref,
+      updatedAt: "2026-06-01T00:00:00.000Z",
+      files: [{
+        path: file.path,
+        size: file.stat.size,
+        mtime: file.stat.mtime,
+        ctime: file.stat.ctime - 1,
+        fingerprint: `${file.stat.size}:0`,
+      }],
+    })));
+    vault.adapter = {
+      exists: jest.fn(async (path: string) => cache.has(path)),
+      readBinary: jest.fn(async (path: string) => {
+        const bytes = cache.get(path);
+        if (!bytes) throw new Error(`missing cache ${path}`);
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }),
+    } as never;
+    const engine = new MobileGitFileStationSyncEngine(vault as never, {} as never, {
+      remotePath,
+      branch,
+      syncIdentityId: "ios-device",
+      authorName: "Obsidian Synology Sync",
+      authorEmail: "synology-sync@local",
+    });
+    const exposed = engine as unknown as {
+      inspectVaultFiles: () => Promise<Array<{ path: string; file: TFile; size?: number; mtime?: number; ctime?: number }>>;
+      canAttemptFastNoop: (vaultFiles: Array<{ path: string; file: TFile; size?: number; mtime?: number; ctime?: number }>) => Promise<boolean>;
+    };
+
+    await expect(exposed.canAttemptFastNoop(await exposed.inspectVaultFiles())).resolves.toBe(false);
   });
 
   it("invalidates corrupt persistent Git state and falls back to remote object reads", async () => {

@@ -18,6 +18,9 @@ Prerequisites:
 - Close any already-running Obsidian instance.
 - Install Obsidian Desktop at the default Windows path, or set `OBSIDIAN_EXE`.
 - Optional: set `OBSIDIAN_LIVE_SMOKE_FILE_COUNT` to change the seeded vault size.
+- Optional: set `OBSIDIAN_LIVE_SMOKE_ROOT` to reuse a disposable root. If the
+  path already exists, the script deletes it only when it has the smoke marker
+  file or is clearly under the generated temp smoke prefix.
 
 The test proves:
 
@@ -28,14 +31,14 @@ The test proves:
 4. A restored-state no-op sync uses the fast no-op path and leaves the remote ref
    unchanged.
 
-Latest local proof run, 2026-06-01:
+Latest local proof run, 2026-06-02:
 
 | Step | Result |
 | --- | --- |
-| Initial sync, 750 seed files plus 1 Obsidian-created file | 18.361s, ref `95b8dab8542b3f99c172e683339da2c1ad63624a`, tree count 751 |
-| Obsidian edit to bare repo | 22.255s, ref advanced to `9f56f0d80796aecc58843a162ee92162222e5278`, SHA-256 `6ecbb67b17caa10962cb678de928bffebbee630fa7a2f25852c7690c8f88e1cd` |
-| Direct bare commit to Obsidian | 2.499s, ref `c4e42e1231ccfb9192c38cd80bd3e98c2a9d643f`, SHA-256 `fbdba35ca11c37ca70406f959a3ffc84a15df353422f2562320775e479e1b722` |
-| Restored-state no-op | 81ms, fast no-op hit, ref unchanged at `c4e42e1231ccfb9192c38cd80bd3e98c2a9d643f` |
+| Initial sync, 750 seed files plus 1 Obsidian-created file | 15.922s, ref `1309bcd15d57f75db7e43a97d310df51e6b670f4`, tree count 751 |
+| Obsidian edit to bare repo | 20.416s, ref advanced to `8e89bf6b02e1c797903ac336f1e7aa99eaab2849` |
+| Direct bare commit to Obsidian | 2.368s, ref `18edac53ee148dd396b0aafebc6c0a134d36be58` |
+| Restored-state no-op | 86.8ms, fast no-op hit, ref unchanged at `18edac53ee148dd396b0aafebc6c0a134d36be58` |
 
 The run writes `evidence.json` and per-step `latest-run-*.md` log snapshots under
 its disposable temp root. The script prints that path on success.
