@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## 2026.0601.1
+
+### Added
+
+- Add debug-only iOS Git-over-File-Station breadcrumbs for phase timing, runtime instance IDs, coarse memory availability, in-memory file counts, cache marker decisions, and lease acquire/release state to diagnose Obsidian mobile UX reload/resource-pressure loops while keeping regular logs light.
+
 ## 2026.0530.3
 
 ### Fixed

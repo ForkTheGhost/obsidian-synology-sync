@@ -4,7 +4,7 @@ import { compareQuickConnectCandidates, resolveQuickConnect, resolveQuickConnect
 import { SyncEngine, SyncResult } from "./sync";
 import { MobileGitFileStationSyncEngine } from "./git-filestation-mobile";
 import { CachedQuickConnectCandidate, SynologySyncSettings, SynologySyncSettingTab, DEFAULT_SETTINGS, LATEST_SYNC_LOG_NOTE_PATH, SYNC_LOG_HISTORY_FOLDER, SYNC_LOG_HISTORY_RETENTION, migrateLoadedSettings, sanitizeSyncBackendForRuntime } from "./settings";
-import { beginDebugSync, debugLog, endDebugSync, formatErrorForDebug, getDebugLog, logRuntimeDiagnostics, redactSensitiveLogText } from "./debug";
+import { beginDebugSync, debugBreadcrumb, debugLog, endDebugSync, formatErrorForDebug, getDebugLog, getRuntimeInstanceId, logRuntimeDiagnostics, redactSensitiveLogText, setDebugBreadcrumbsEnabled } from "./debug";
 import { FileStationGitLeaseHeldError, clearFileStationGitLease } from "./git-filestation-lease";
 
 interface SecretStorageLike {
@@ -186,6 +186,7 @@ export default class SynologySync extends Plugin {
     if (migrateLoadedSettings(this.settings)) {
       await this.saveSettings();
     }
+    setDebugBreadcrumbsEnabled(this.settings.debugLogEnabled);
     await this.migrateLegacySecretsToStorage();
     if (!this.settings.syncIdentityId) {
       this.settings.syncIdentityId = generateSyncIdentityId();
@@ -585,7 +586,10 @@ export default class SynologySync extends Plugin {
     }
 
     this.syncing = true;
+    setDebugBreadcrumbsEnabled(this.settings.debugLogEnabled);
     beginDebugSync(this.app);
+    const runtimeInstanceId = getRuntimeInstanceId();
+    debugBreadcrumb(`[git-filestation-mobile] debug run start runtimeInstance=${runtimeInstanceId} syncing=${this.syncing} debugLogEnabled=${this.settings.debugLogEnabled}`);
     new Notice("Git-over-File-Station sync starting...");
     void this.persistLatestSyncLog("started");
     const progressLogInterval = this.settings.persistSyncLogToVaultNote
@@ -607,6 +611,8 @@ export default class SynologySync extends Plugin {
         configOptIns: this.settings.obsidianConfigOptIns,
         filenameSanitizeRestrictedChars: this.settings.filenameSanitizeRestrictedChars,
         filenameSanitizeReplacementChar: this.settings.filenameSanitizeReplacementChar,
+        debugBreadcrumbs: this.settings.debugLogEnabled,
+        runtimeInstanceId,
       });
 
       const result = await engine.sync();
@@ -625,6 +631,7 @@ export default class SynologySync extends Plugin {
       this.showFailureNotice(gitFileStationFailureNoticeTitle(e), e);
       console.error("Git-over-File-Station Synology Sync error:", e);
     } finally {
+      debugBreadcrumb(`[git-filestation-mobile] debug run cleanup runtimeInstance=${runtimeInstanceId} syncing=${this.syncing}`);
       if (progressLogInterval !== null) globalThis.clearInterval(progressLogInterval);
       if (fs) {
         try { await fs.logout(); } catch { /* ignore */ }
@@ -632,6 +639,7 @@ export default class SynologySync extends Plugin {
       endDebugSync();
       await this.persistLatestSyncLog();
       this.syncing = false;
+      debugBreadcrumb(`[git-filestation-mobile] debug run ended runtimeInstance=${runtimeInstanceId} syncing=${this.syncing}`);
     }
   }
 

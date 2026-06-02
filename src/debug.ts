@@ -5,6 +5,24 @@ const entries: string[] = [];
 const lastSyncEntries: string[] = [];
 let activeSyncEntries: string[] | null = null;
 const listeners = new Set<() => void>();
+let debugBreadcrumbsEnabled = false;
+
+export function setDebugBreadcrumbsEnabled(enabled: boolean): void {
+  debugBreadcrumbsEnabled = enabled;
+}
+
+export function debugBreadcrumb(msg: string): void {
+  if (!debugBreadcrumbsEnabled) return;
+  debugLog(msg);
+}
+
+export function getRuntimeInstanceId(): string {
+  const scope = globalThis as typeof globalThis & { __synologySyncRuntimeInstanceId?: string };
+  if (!scope.__synologySyncRuntimeInstanceId) {
+    scope.__synologySyncRuntimeInstanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+  return scope.__synologySyncRuntimeInstanceId;
+}
 
 function formatDebugEntry(msg: string): string {
   const ts = new Date().toISOString().substring(11, 23);

@@ -1,4 +1,4 @@
-import { beginDebugSync, clearDebugLog, debugLog, endDebugSync, formatErrorForDebug, formatRuntimeDiagnostics, getDebugLog, getDebugLogSnippet, getRuntimeDiagnostics, redactSensitiveLogText } from "../src/debug";
+import { beginDebugSync, clearDebugLog, debugBreadcrumb, debugLog, endDebugSync, formatErrorForDebug, formatRuntimeDiagnostics, getDebugLog, getDebugLogSnippet, getRuntimeDiagnostics, redactSensitiveLogText, setDebugBreadcrumbsEnabled } from "../src/debug";
 
 describe("debug logging", () => {
   beforeEach(() => clearDebugLog());
@@ -21,6 +21,15 @@ describe("debug logging", () => {
     debugLog(`SYNC FAILED: ${formatErrorForDebug(new Error("boom"))}`);
 
     expect(getDebugLog()).toContain("SYNC FAILED: Error: boom");
+  });
+
+  it("keeps heavy breadcrumbs behind the debug logging gate", () => {
+    debugBreadcrumb("heavy mobile breadcrumb hidden");
+    expect(getDebugLog()).not.toContain("heavy mobile breadcrumb hidden");
+
+    setDebugBreadcrumbsEnabled(true);
+    debugBreadcrumb("heavy mobile breadcrumb visible");
+    expect(getDebugLog()).toContain("heavy mobile breadcrumb visible");
   });
 
   it("redacts sensitive values before logs are persisted to a note", () => {
