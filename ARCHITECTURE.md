@@ -272,6 +272,22 @@ A valid implementation should:
 - Exclude the plugin-owned cache/staging area from user sync content.
 - Provide a clear user-facing way to clear/rebuild the cache when recovery is needed.
 
+### Responsive sync and worker boundary
+
+Git-over-File-Station sync should keep common no-op and small-resync paths out of the expensive Git/materialization pipeline whenever the device can prove the NAS ref and local vault metadata are unchanged. A restored-state no-op may return after acquiring the normal lease and re-reading the branch ref if the plugin-owned cache marker, vault manifest, branch, remote identity, last verified remote ref, and current live-vault file metadata all match. The fast no-op proof boundary is intentionally metadata-only, using Obsidian-reported path, size, mtime, and ctime so large unchanged vaults avoid vault byte reads. If any proof is missing or stale, the engine must fall back to the full verified sync path.
+
+The current implementation uses the following fast-path boundary:
+
+- Inspect live vault file metadata without reading every file body.
+- Validate the plugin-owned cache marker and vault manifest.
+- Re-read the NAS branch ref through File Station while the lease is held.
+- Return a zero-change sync only when the leased NAS ref still matches the manifest ref and the live-vault file metadata still matches the manifest.
+- Skip vault rewrites during remote materialization when existing vault bytes already match the Git blob, so unchanged files are not counted as downloads.
+
+Worker-backed execution is feasible for CPU-only planning phases, but not for direct Obsidian vault or File Station API calls. The main plugin runtime should own `Vault.getFiles`, `Vault.readBinary`, `Vault.createBinary`, `Vault.modifyBinary`, File Station downloads/uploads, notices, and settings. A worker can safely own pure data work such as comparing sorted metadata manifests, planning materialization operations, hashing byte buffers already provided by the main thread, parsing Git tree/object data, and producing an operation plan. That keeps the eventual worker contract explicit: main thread gathers bytes/metadata and applies the plan; worker computes the plan and never calls Obsidian APIs directly.
+
+This is intentionally similar to high-performance sync designs that use cheap metadata and a compact change journal before falling back to content reads. The important correctness rule is fail-closed behavior: metadata is an optimization, not authority. When metadata cannot prove no-op, sync must verify by reading/hashing the required content.
+
 ### Git history retention and packfile policy
 
 Long-running automatic sync can create many commits. The bare NAS repo can grow over time, especially with large binary attachments and frequent autosync commits. The default architecture should prefer client-side shallow/single-branch/minimal-object reads and persistent caches over rewriting shared history.

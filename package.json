@@ -1,6 +1,6 @@
 {
   "name": "obsidian-synology-sync",
-  "version": "2026.0530.3",
+  "version": "2026.0602.1",
   "description": "Sync Obsidian vault to Synology NAS via File Station API",
   "main": "main.js",
   "scripts": {
@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "test": "jest",
     "check": "npm test -- --runInBand && npm run lint && npm run build",
-    "smoke:vault": "./scripts/smoke-vault.sh"
+    "smoke:vault": "./scripts/smoke-vault.sh",
+    "smoke:obsidian-live": "node scripts/live-obsidian-smoke.mjs"
   },
   "keywords": [
     "obsidian",
