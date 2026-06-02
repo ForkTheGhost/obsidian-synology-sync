@@ -1,5 +1,5 @@
 import { FileStation, FileStationApiError, FileStationPathExistsError } from "./filestation";
-import { debugLog } from "./debug";
+import { debugBreadcrumb, debugLog } from "./debug";
 import { Notice } from "obsidian";
 
 export interface GitLeaseInfo {
@@ -74,18 +74,23 @@ export class FileStationGitLease {
   }
 
   async acquire(): Promise<GitLeaseInfo> {
+    debugBreadcrumb(`[git-filestation-lease-debug] acquire start branch=${this.opts.branch} owner=${this.opts.owner} expectedOldRef=${this.opts.expectedOldRef || "<none>"} ttlMs=${this.opts.ttlMs} path=${this.leaseDir}`);
     await this.ensureLeaseRoot();
     let createdLeaseDir = false;
     try {
       await this.fs.createFolderStrict(joinRemotePath(this.opts.remotePath, LEASE_ROOT), this.leaseName);
       createdLeaseDir = true;
+      debugBreadcrumb(`[git-filestation-lease-debug] lease directory created branch=${this.opts.branch} owner=${this.opts.owner} path=${this.leaseDir}`);
     } catch (e) {
       if (e instanceof FileStationPathExistsError) {
+        debugBreadcrumb(`[git-filestation-lease-debug] lease directory exists branch=${this.opts.branch} owner=${this.opts.owner} code=${e.code ?? "unknown"}`);
         if (await this.tryRecoverExpiredLease(e.code)) {
           await this.fs.createFolderStrict(joinRemotePath(this.opts.remotePath, LEASE_ROOT), this.leaseName);
           createdLeaseDir = true;
+          debugBreadcrumb(`[git-filestation-lease-debug] lease directory recreated after recovery branch=${this.opts.branch} owner=${this.opts.owner} path=${this.leaseDir}`);
         } else {
           const heldDetails = await this.describeHeldLease();
+          debugBreadcrumb(`[git-filestation-lease-debug] lease held branch=${this.opts.branch} owner=${this.opts.owner}${heldDetails}`);
           throw new FileStationGitLeaseHeldError(`Git-backed File Station lease is already held for ${this.opts.branch}${heldDetails}. Try again after the other device finishes, or clear stale lease ${this.leaseDir} only after verifying no sync is running.`, e.code);
         }
       } else {
@@ -99,8 +104,10 @@ export class FileStationGitLease {
       await this.verifyMetadata(info);
       this.acquired = true;
       debugLog(`[git-filestation-lease] acquired branch=${this.opts.branch} owner=${this.opts.owner} expires=${info.expiresAt}`);
+      debugBreadcrumb(`[git-filestation-lease-debug] acquire complete branch=${this.opts.branch} owner=${this.opts.owner} token=${info.token} expires=${info.expiresAt}`);
       return info;
     } catch (e) {
+      debugBreadcrumb(`[git-filestation-lease-debug] acquire failed branch=${this.opts.branch} owner=${this.opts.owner} createdDir=${createdLeaseDir} error=${(e as Error).name}: ${(e as Error).message}`);
       if (createdLeaseDir) {
         try { await this.fs.delete(this.leaseDir); } catch { /* best effort cleanup */ }
       }
@@ -110,12 +117,15 @@ export class FileStationGitLease {
 
   async release(): Promise<void> {
     if (!this.acquired) return;
+    debugBreadcrumb(`[git-filestation-lease-debug] release start branch=${this.opts.branch} owner=${this.opts.owner} path=${this.leaseDir}`);
     try {
       await this.fs.delete(this.leaseDir);
       debugLog(`[git-filestation-lease] released branch=${this.opts.branch} owner=${this.opts.owner}`);
+      debugBreadcrumb(`[git-filestation-lease-debug] release complete branch=${this.opts.branch} owner=${this.opts.owner}`);
       this.acquired = false;
     } catch (e) {
       debugLog(`[git-filestation-lease] release failed for ${this.leaseDir}: ${(e as Error).message}`);
+      debugBreadcrumb(`[git-filestation-lease-debug] release failed branch=${this.opts.branch} owner=${this.opts.owner} error=${(e as Error).name}: ${(e as Error).message}`);
       throw e;
     }
   }
@@ -125,6 +135,7 @@ export class FileStationGitLease {
     let prior: GitLeaseInfo | undefined;
     try {
       prior = await this.readMetadata();
+      debugBreadcrumb(`[git-filestation-lease-debug] existing lease metadata branch=${this.opts.branch} owner=${prior.owner || "unknown"} created=${prior.createdAt || "unknown"} expires=${prior.expiresAt || "unknown"} sameOwner=${prior.owner === this.opts.owner} code=${code ?? "unknown"}`);
     } catch (e) {
       const message = (e as Error).message;
       debugLog(`[git-filestation-lease] existing lease metadata unreadable for ${this.leaseDir}: ${message}`);
@@ -137,7 +148,10 @@ export class FileStationGitLease {
       return false;
     }
     const expiresAt = Date.parse(prior.expiresAt);
-    if (!Number.isFinite(expiresAt) || expiresAt > this.opts.now()) return false;
+    if (!Number.isFinite(expiresAt) || expiresAt > this.opts.now()) {
+      debugBreadcrumb(`[git-filestation-lease-debug] existing lease still active branch=${this.opts.branch} sameOwner=${prior.owner === this.opts.owner} expires=${prior.expiresAt || "unknown"} now=${new Date(this.opts.now()).toISOString()}`);
+      return false;
+    }
     debugLog(`[git-filestation-lease] recovering expired lease branch=${this.opts.branch} priorOwner=${prior.owner} expired=${prior.expiresAt}`);
     try { new Notice(`Synology Sync recovered an expired Git sync lease for ${this.opts.branch}. Previous owner: ${prior.owner || "unknown"}.`); } catch { /* Notice unavailable in tests */ }
     await this.fs.delete(this.leaseDir);

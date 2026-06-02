@@ -1,7 +1,7 @@
 import { TFile, TFolder, Vault } from "obsidian";
 import { FileStation } from "./filestation";
 import { withFileStationGitLease } from "./git-filestation-lease";
-import { debugLog } from "./debug";
+import { debugBreadcrumb, debugLog } from "./debug";
 import { SyncResult } from "./sync";
 import { buildGitExcludes, classifyGitConflict, findInvalidLocalFilesystemPaths, invalidLocalFilesystemPathError, nestedGitRepoError, sanitizeVaultPath } from "./git-sync";
 import { isGitIgnoredPath } from "./git-excludes";
@@ -23,6 +23,8 @@ export interface MobileGitFileStationSyncOptions {
   configOptIns?: import("./git-excludes").ObsidianConfigOptIns;
   filenameSanitizeRestrictedChars?: string;
   filenameSanitizeReplacementChar?: string;
+  debugBreadcrumbs?: boolean;
+  runtimeInstanceId?: string;
 }
 
 type FsData = Uint8Array;
@@ -130,6 +132,7 @@ export class MobileGitFileStationSyncEngine {
   async sync(): Promise<SyncResult> {
     const result = emptyResult();
     debugLog("[git-filestation-mobile] starting pure JS Git sync over File Station");
+    this.debugOnly(`run context runtimeInstance=${this.runtimeInstanceId()} owner=${this.opts.syncIdentityId} branch=${this.opts.branch} remote=${this.opts.remotePath} memory=${this.memoryDiagnostics()} vaultFiles=${this.vault.getFiles().length}`);
 
     await this.runPhase("load vault", () => this.loadVaultIntoMemory());
     await this.runPhase("restore persistent Git state", () => this.restorePersistentGitState());
@@ -329,15 +332,46 @@ export class MobileGitFileStationSyncEngine {
 
   private async runPhase<T>(phase: string, fn: () => Promise<T>): Promise<T> {
     debugLog(`[git-filestation-mobile] phase: ${phase}`);
+    const started = Date.now();
+    this.debugOnly(`phase start name=${phase} memory=${this.memoryDiagnostics()}`);
     try {
-      return await fn();
+      const value = await fn();
+      this.debugOnly(`phase end name=${phase} elapsedMs=${Date.now() - started} memFiles=${await this.memFileCountForDebug()} memory=${this.memoryDiagnostics()}`);
+      return value;
     } catch (e) {
       debugLog(`[git-filestation-mobile] phase failed: ${phase}: ${(e as Error).message}`);
+      this.debugOnly(`phase failed name=${phase} elapsedMs=${Date.now() - started} memFiles=${await this.memFileCountForDebug()} memory=${this.memoryDiagnostics()} error=${(e as Error).name}: ${(e as Error).message}`);
       throw e;
     }
   }
 
+  private runtimeInstanceId(): string {
+    return this.opts.runtimeInstanceId || "unknown";
+  }
+
+  private debugOnly(message: string): void {
+    if (!this.opts.debugBreadcrumbs) return;
+    debugBreadcrumb(`[git-filestation-mobile-debug] ${message}`);
+  }
+
+  private memoryDiagnostics(): string {
+    const perf = (globalThis as typeof globalThis & { performance?: { memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number; jsHeapSizeLimit?: number } } }).performance;
+    const memory = perf?.memory;
+    if (!memory) return "unavailable";
+    return `used=${formatBytes(memory.usedJSHeapSize)} total=${formatBytes(memory.totalJSHeapSize)} limit=${formatBytes(memory.jsHeapSizeLimit)}`;
+  }
+
+  private async memFileCountForDebug(): Promise<number | string> {
+    if (!this.opts.debugBreadcrumbs) return "skipped";
+    try {
+      return (await this.listMemFiles(WORKDIR)).length;
+    } catch {
+      return "unavailable";
+    }
+  }
+
   private async withAuthoritativeSyncLease<T>(result: SyncResult, expectedOldRef: string | undefined, fn: () => Promise<T>): Promise<T> {
+    this.debugOnly(`lease acquire start branch=${this.opts.branch} owner=${this.opts.syncIdentityId} runtimeInstance=${this.runtimeInstanceId()} expectedOldRef=${expectedOldRef || "<none>"}`);
     return await withFileStationGitLease(this.fs, {
       remotePath: this.opts.remotePath,
       branch: this.opts.branch,
@@ -348,11 +382,14 @@ export class MobileGitFileStationSyncEngine {
       this.syncLeaseExpectedOldRef = expectedOldRef;
       let completed = false;
       debugLog(`[git-filestation-mobile] authoritative File Station lease held branch=${this.opts.branch} expected=${expectedOldRef || "<none>"}`);
+      this.debugOnly(`lease held branch=${this.opts.branch} owner=${this.opts.syncIdentityId} runtimeInstance=${this.runtimeInstanceId()} expectedOldRef=${expectedOldRef || "<none>"}`);
       try {
         const value = await fn();
         completed = true;
+        this.debugOnly(`lease work completed branch=${this.opts.branch} resultErrors=${result.errors.length} remoteRef=${this.remoteBranchOidAtDownload || "<none>"}`);
         return value;
       } finally {
+        this.debugOnly(`lease callback finally branch=${this.opts.branch} completed=${completed} resultErrors=${result.errors.length} held=${this.syncLeaseHeld}`);
         this.syncLeaseHeld = false;
         this.syncLeaseExpectedOldRef = undefined;
         if (completed && result.errors.length === 0) await this.persistMobileGitState(this.remoteBranchOidAtDownload, "sync completed");
@@ -2234,6 +2271,14 @@ function normalizeReplacementChar(value: string | undefined): string {
   const trimmed = (value || "").trim();
   if (!trimmed || trimmed === "/" || trimmed === "\\") return "-";
   return trimmed.slice(0, 1);
+}
+
+function formatBytes(value: number | undefined): string {
+  if (!Number.isFinite(value)) return "unknown";
+  const bytes = value as number;
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KiB`;
+  return `${Math.round(bytes / (1024 * 1024))}MiB`;
 }
 
 function sleep(ms: number): Promise<void> {
